@@ -476,4 +476,125 @@ RSpec.describe "script/demo-calculator2" do
       expect(adds).to all(include("acceptance=script/demo_calculator2/acceptance_runner "))
     end
   end
+
+  describe "series" do
+    let(:bin_dir) { File.join(tmp, "bin") }
+    let(:series_log) { File.join(tmp, "series-calls.log") }
+    let(:series_workspace) do
+      path = File.join(bin_dir, "workspace")
+      File.write(path, <<~SH)
+        #!/bin/sh
+        echo "workspace $@" >> #{series_log}
+        case "$1 $2" in
+          "list --all") echo '[{"name":"other","directory":"/elsewhere"}]' ;;
+          "lock status") echo '{"locks":{}}' ;;
+          "workflow status") echo '{"runs":[]}' ;;
+          "config show") echo '{"keys":[{"key":"workflows.sources","effective":[]}]}' ;;
+          "workflow show") echo '{"code":"unknown_workflow"}' ;;
+        esac
+      SH
+      File.chmod(0o755, path)
+      path
+    end
+    let(:fake_gh) do
+      path = File.join(bin_dir, "gh")
+      File.write(path, <<~SH)
+        #!/bin/sh
+        echo "gh $@" >> #{series_log}
+        echo '[{"status":"completed","conclusion":"success"}]'
+      SH
+      File.chmod(0o755, path)
+      path
+    end
+
+    def series(*argv) = DemoCalculator2.main(["series", *argv], out: out, err: err, root: work_dir)
+
+    def with_fakes
+      FileUtils.mkdir_p(bin_dir)
+      series_workspace
+      fake_gh
+      saved = ENV.to_h.slice("PATH", "WORKSPACE_BIN")
+      ENV["PATH"] = "#{bin_dir}:#{ENV["PATH"]}"
+      ENV["WORKSPACE_BIN"] = series_workspace
+      yield
+    ensure
+      saved.each { |key, value| ENV[key] = value }
+      ENV.delete("WORKSPACE_BIN") unless saved.key?("WORKSPACE_BIN")
+    end
+
+    def snapshot
+      common = File.expand_path(git(work_dir, "rev-parse", "--git-common-dir").strip, work_dir)
+      info = Dir.glob(File.join(common, "info", "*")).sort.to_h { |path| [File.basename(path), File.read(path)] }
+      {
+        refs: git(work_dir, "for-each-ref"),
+        config: git(work_dir, "config", "--list", "--local"),
+        info: info,
+        status: git(work_dir, "status", "--porcelain"),
+        registry_dir: File.exist?(File.join(common, "demo-calc2")),
+        calls: File.exist?(series_log) ? File.read(series_log) : ""
+      }
+    end
+
+    it "lists series and its options in the help" do
+      expect(series("--help")).to eq(0)
+      expect(out.string).to include("series --id ID", "--lanes", "--workflow", "--sonnet", "--base", "--keep", "--evidence-dir", "--scoreboard", "--dry-run", "--take-over", "--forget")
+      expect(out.string).to match(/--take-over.*\n.*only when that owning checkout has no going run/)
+      expect(out.string).to include("Exit codes: 0", "3 it stopped", "1 a refusal")
+      expect(DemoCalculator2.main([], out: out, err: err, root: work_dir)).to eq(1)
+      expect(err.string).to include("reset|run|eval|integrate|series", "series --id ID")
+    end
+
+    it "prints every shared key with its state and action on --dry-run, and changes nothing" do
+      git(work_dir, "update-ref", "refs/remotes/origin/main", "main")
+      with_fakes do
+        before = snapshot
+        expect(series("--dry-run", "--id", "x")).to eq(0), err.string
+        after = snapshot
+        expect(after.except(:calls)).to eq(before.except(:calls))
+        expect(after[:registry_dir]).to be(false)
+      end
+      expect(out.string).to include("series x: preflight ok (base main)")
+      expect(out.string).to include("merge.calc-demo-tests.driver", "merge.calc-demo-tests.name", "attributes:", "workflows.sources", "exclude:")
+      expect(out.string.lines.grep(/^  .+: now .+; /).size).to eq(5)
+      expect(out.string).to include("would add").and include("now nil")
+      common = File.expand_path(git(work_dir, "rev-parse", "--git-common-dir").strip, work_dir)
+      expect(out.string).to include(
+        "  2. register x in #{common}/demo-calc2/series.json",
+        "#{series_workspace} start calc2-demo-x --base main --headless --yes --json",
+        "#{series_workspace} start calc2-demo-x-b --base main --headless --yes --json",
+        "  3. skipped, no --sonnet",
+        "  4. wait for an idle Claude Code pane in both lanes: poll every 5s, at most 300s",
+        "  5. write the shared values",
+        "  6. run <lane A path>/script/demo-calculator2 run --lanes --lane-b calc2-demo-x-b --id x --wait --out runs/x",
+        "<lane A path>/runs/x/driver.log",
+        "  7. save evidence to <lane A path>/runs/x: eval.txt",
+        "  8. pin refs/demo-calc2-runs/x and refs/demo-calc2-runs/x-b",
+        "refs/demo-calc2/acceptance/x",
+        "  9. print the scoreboard row on stdout, then print `LOOP DONE: series x ...`"
+      )
+      expect(out.string.lines.grep(/^  [2-9]\. /).size).to eq(8)
+      verbs = File.read(series_log).lines.map { |line| line.split.first(3) }
+      expect(verbs.map { |words| words.first(2).join(" ") }.uniq).to all(match(/\A(workspace (list|lock|workflow|config)|gh run)/))
+      expect(File.read(series_log)).not_to match(/workspace (config set|workflow install|start|kill|stop)/)
+    end
+
+    it "refuses in preflight with exit 1 when the base is not origin/main" do
+      git(work_dir, "update-ref", "refs/remotes/origin/main", "HEAD~0")
+      File.write(File.join(work_dir, "x.txt"), "x")
+      git(work_dir, "add", "x.txt")
+      git(work_dir, "commit", "-q", "-m", "ahead")
+      git(work_dir, "update-ref", "refs/heads/main", "HEAD")
+      with_fakes do
+        expect(series("--dry-run", "--id", "x")).to eq(1)
+      end
+      expect(err.string).to eq("")
+      expect(out.string).to include("would refuse:\n  - main is not origin/main", "  2. register x", "merge.calc-demo-tests.driver")
+      expect(series("--id", "x")).to eq(1)
+    end
+
+    it "exits 1 with a message for a missing --id" do
+      expect(series("--dry-run")).to eq(1)
+      expect(err.string).to include("--id")
+    end
+  end
 end

@@ -73,7 +73,8 @@ module DemoCalculator2
     Shared = Struct.new(:key, :live, :wanted, :state, :action, keyword_init: true)
 
     # What preflight found: the shared values and the stale ids it only reports.
-    Report = Struct.new(:shared, :stale, keyword_init: true)
+    # `refusals` is only ever filled on a dry run, which goes on after a refusal; a real run raises at the first one.
+    Report = Struct.new(:shared, :stale, :refusals, keyword_init: true)
 
     # Runs only commands that read, for `--dry-run`. Anything else raises {DryRunWrite}.
     class ReadOnlyExec
@@ -171,6 +172,7 @@ module DemoCalculator2
       @exec = (options.dry_run && !exec.is_a?(ReadOnlyExec)) ? ReadOnlyExec.new(exec) : exec
       raise ArgumentError, "a dry run needs a read-only registry" if options.dry_run && !registry.read_only?
       @registry = registry
+      @refusals = []
       @out = out
       @err = err
       @workspace = workspace
@@ -178,13 +180,17 @@ module DemoCalculator2
       @path_exists = path_exists
     end
 
-    # @return [Integer] 0 when the run ends on `items=7/7`, 3 on a stop after step 2 began, 1 on a refusal before it. A dry run ends
-    #   after preflight with 0.
+    # @return [Integer] 0 when the run ends on `items=7/7`, 3 on a stop after step 2 began, 1 on a refusal before it. A dry run lists every
+    #   refusal, prints the plan anyway and ends with 1 if there were any, else 0.
     def call
       return forget if @options.forget
       report = preflight
       say_report(report)
-      return 0 if @options.dry_run
+      if @options.dry_run
+        say_plan(report)
+        say_refusals(report)
+        return report.refusals.empty? ? 0 : 1
+      end
       run_steps
     rescue Refused, SeriesRegistry::Corrupt => e
       @err.puts "demo-calculator2: series refused: #{e.message}"
@@ -193,16 +199,17 @@ module DemoCalculator2
 
     # Step 1. Reads only.
     # @return [Report]
-    # @raise [Refused] with the first problem found
+    # @raise [Refused] with the first problem found; a dry run collects every one into {Report#refusals} instead
     def preflight
-      check_id
-      check_unused
-      check_base
-      check_ci
-      check_test_db
-      shared = check_shared_values
+      @refusals = []
+      collect { check_id }
+      collect { check_unused }
+      collect { check_base }
+      collect { check_ci }
+      collect { check_test_db }
+      shared = collect { check_shared_values } || []
       check_definitions
-      Report.new(shared: shared, stale: @registry.stale)
+      Report.new(shared: shared, stale: collect { @registry.stale } || [], refusals: @refusals)
     end
 
     # One row of the scoreboard, from what eval and the run record say. Every field is nil when its source is missing.
@@ -671,6 +678,7 @@ module DemoCalculator2
       raise Refused, "id #{id} is used: a worktree calc2-demo-#{id} exists" if paths.any? { |path| File.basename(path).match?(/\Acalc2-demo-#{id}(-b)?\z/) }
       names = json(@workspace, "list", "--all", "--json")
       raise Refused, "`workspace list --all --json` did not print a list" unless names.is_a?(Array)
+      names = names.map { |row| row.is_a?(Hash) ? row["name"].to_s : row.to_s }
       raise Refused, "id #{id} is used: a workspace calc2-demo-#{id} exists" if names.any? { |name| name.match?(/(\A|\.worktree-|\.)calc2-demo-#{id}(-b)?\z/) }
       raise Refused, "id #{id} is used: it is in the series registry (series --forget #{id})" if @registry.entries.key?(id)
     end
@@ -708,12 +716,26 @@ module DemoCalculator2
     end
 
     def check_shared_values
-      rows = shared_inputs.map do |key, live, wanted, extra|
+      rows = shared_inputs.map do |key, read_live, wanted, extra|
+        live = read_live.call
         state = SharedValues.classify(key, live: live, wanted: wanted, path_exists: @path_exists, **extra)
         Shared.new(key: key, live: live, wanted: wanted, state: state, action: action_for(key, live, state))
+      rescue Refused => e
+        raise unless @options.dry_run
+        @refusals << e.message
+        Shared.new(key: key, live: nil, wanted: wanted, state: :unreadable, action: "? (#{e.message[/\A`[^`]+` failed/] || e.message})")
       end
-      rows.select { |row| row.state == :foreign_live }.each { |row| refuse_foreign(row) }
+      rows.select { |row| row.state == :foreign_live }.each { |row| collect { refuse_foreign(row) } }
       rows
+    end
+
+    # Runs one check. A dry run notes a refusal and goes on, so it can list them all; a real run raises at the first.
+    def collect
+      yield
+    rescue Refused, SeriesRegistry::Corrupt => e
+      raise unless @options.dry_run
+      @refusals << e.message
+      nil
     end
 
     def action_for(key, live, state)
@@ -740,16 +762,14 @@ module DemoCalculator2
     end
 
     def shared_inputs
-      driver = live_git_config("merge.#{MERGE_DRIVER}.driver")
-      name = live_git_config("merge.#{MERGE_DRIVER}.name")
       sources = File.join(@root, DEMO_DIR, "workflows")
       same = ->(entry) { DEFINITION_IDS.all? { |def_id| (text = @read_file.call(File.join(entry, "#{def_id}.yml"))) && text == base_copy(def_id) } }
       [
-        [SharedValues::DRIVER_KEY, driver, SharedValues::DRIVER_COMMAND, {}],
-        [NAME_KEY, name, NAME_VALUE, {}],
-        ["attributes:#{ATTRIBUTES_LINE}", live_info_line("attributes") { |line| line.start_with?("#{DEMO_DIR}/test/calc_test.rb ") }, ATTRIBUTES_LINE, {}],
-        ["#{SharedValues::SOURCES_PREFIX}#{sources}", live_sources, sources, {same_definitions: same}],
-        ["exclude:#{exclude_line}", live_info_line("exclude") { |line| line == exclude_line }, exclude_line, {}]
+        [SharedValues::DRIVER_KEY, -> { live_git_config("merge.#{MERGE_DRIVER}.driver") }, SharedValues::DRIVER_COMMAND, {}],
+        [NAME_KEY, -> { live_git_config("merge.#{MERGE_DRIVER}.name") }, NAME_VALUE, {}],
+        ["attributes:#{ATTRIBUTES_LINE}", -> { live_info_line("attributes") { |line| line.start_with?("#{DEMO_DIR}/test/calc_test.rb ") } }, ATTRIBUTES_LINE, {}],
+        ["#{SharedValues::SOURCES_PREFIX}#{sources}", -> { live_sources }, sources, {same_definitions: same}],
+        ["exclude:#{exclude_line}", -> { live_info_line("exclude") { |line| line == exclude_line } }, exclude_line, {}]
       ]
     end
 
@@ -777,18 +797,20 @@ module DemoCalculator2
 
     # Every definition the catalog would resolve must be the base's bytes; an id it does not resolve yet is ours to add.
     def check_definitions
-      DEFINITION_IDS.each do |def_id|
-        wanted = base_copy(def_id)
-        out, = read(@workspace, "workflow", "show", def_id, "--json")
-        doc = parse(out)
-        raise Refused, "`workspace workflow show #{def_id} --json` did not print a JSON object" unless doc.is_a?(Hash)
-        next if doc["code"] == "unknown_workflow"
-        resolved = doc["workflow"]
-        raise Refused, "cannot read workflow #{def_id}: #{doc["error"] || "no definition in the answer"}" unless resolved.is_a?(Hash)
-        have = resolved["sha256"] || @read_file.call(resolved["path"].to_s)&.then { |text| Digest::SHA256.hexdigest(text) }
-        next if have == Digest::SHA256.hexdigest(wanted)
-        raise Refused, "workflow #{def_id} resolves to #{resolved["path"]} (#{resolved["source"]}), which differs from #{@options.base}'s #{DEMO_DIR}/workflows/#{def_id}.yml"
-      end
+      DEFINITION_IDS.each { |def_id| collect { check_definition(def_id) } }
+    end
+
+    def check_definition(def_id)
+      wanted = base_copy(def_id)
+      out, = read(@workspace, "workflow", "show", def_id, "--json")
+      doc = parse(out)
+      raise Refused, "`workspace workflow show #{def_id} --json` did not print a JSON object" unless doc.is_a?(Hash)
+      return if doc["code"] == "unknown_workflow"
+      resolved = doc["workflow"]
+      raise Refused, "cannot read workflow #{def_id}: #{doc["error"] || "no definition in the answer"}" unless resolved.is_a?(Hash)
+      have = resolved["sha256"] || @read_file.call(resolved["path"].to_s)&.then { |text| Digest::SHA256.hexdigest(text) }
+      return if have == Digest::SHA256.hexdigest(wanted)
+      raise Refused, "workflow #{def_id} resolves to #{resolved["path"]} (#{resolved["source"]}), which differs from #{@options.base}'s #{DEMO_DIR}/workflows/#{def_id}.yml"
     end
 
     def base_copy(def_id)
@@ -825,9 +847,73 @@ module DemoCalculator2
     end
 
     def say_report(report)
-      @out.puts "series #{id}: preflight ok (base #{@options.base})"
-      report.shared.each { |row| @out.puts "  #{row.key}: now #{row.live.inspect}; #{row.action}" }
+      @out.puts "series #{id}: preflight #{report.refusals.empty? ? "ok" : "found #{report.refusals.size} problem(s)"} (base #{@options.base})"
+      report.shared.each { |row| @out.puts "  #{row.key}: now #{(row.state == :unreadable) ? "?" : row.live.inspect}; #{row.action}" }
       @out.puts "  stale ids in the registry (not removed; `series --forget ID`): #{report.stale.join(", ")}" unless report.stale.empty?
+    end
+
+    # What a dry run prints after the shared values: steps 2 to 9, in the order the real series takes them.
+    def say_plan(report)
+      o = @options
+      a, b = "calc2-demo-#{id}", "calc2-demo-#{id}-b"
+      keep = o.keep
+      @out.puts "steps a real series would take (nothing below was run):"
+      @out.puts "  2. register #{id} in #{@registry.path}, then start both lanes:"
+      [a, b].each { |name| @out.puts "       #{@workspace} start #{name} --base #{o.base} --headless --yes --json" }
+      @out.puts "     then check each lane's HEAD equals #{o.base}"
+      if o.sonnet
+        [a, b].each do |name|
+          @out.puts "  3. #{@workspace} config set --scope workspace --name #{name} agent.commands.claude #{SONNET_COMMAND}; " \
+            "#{@workspace} template apply #{name} --relaunch; check its Claude pane runs #{SONNET_COMMAND}"
+        end
+      else
+        @out.puts "  3. skipped, no --sonnet"
+      end
+      @out.puts "  4. wait for an idle Claude Code pane in both lanes: poll every #{@idle_poll}s, at most #{@idle_wait}s"
+      @out.puts "  5. write the shared values (each recorded in #{@registry.path} first):"
+      report.shared.sort_by { |row| row.key.start_with?(SharedValues::SOURCES_PREFIX) ? 0 : 1 }.each do |row|
+        @out.puts "       #{row.key}: #{plan_write(row)}"
+      end
+      argv = ["<lane A path>/script/demo-calculator2", "run", "--lanes", "--lane-b", b, "--id", id, "--wait", "--out", File.join("runs", id)]
+      argv += ["--workflow", o.workflow] unless o.workflow == WORKFLOW_ID
+      @out.puts "  6. run #{argv.join(" ")}"
+      @out.puts "     in <lane A path>, output appended to <lane A path>/runs/#{id}/driver.log"
+      @out.puts "  7. save evidence to <lane A path>/runs/#{id}: eval.txt, work-queue-history-a.json, work-queue-history-b.json, " \
+        "attempts-<run id>.json, trace-<run id>.json for each run, command.txt (#{command_line})"
+      if keep
+        @out.puts "  8. kept: --keep; nothing pinned, copied, killed or deleted, and the id stays registered (series --forget #{id})"
+      else
+        @out.puts "  8. pin refs/demo-calc2-runs/#{id} and refs/demo-calc2-runs/#{id}-b at the lanes' heads; copy runs/#{id} to #{evidence_target}; " \
+          "kill #{a} and #{b}; delete the calc-demo/<stamp>-#{id}[-b] branches and refs/demo-calc2/acceptance/#{id}; deregister #{id} and undo:"
+        report.shared.each { |row| @out.puts "       #{row.key}: #{undo_text(row)}" }
+      end
+      target = o.scoreboard ? "append the scoreboard row to #{File.expand_path(o.scoreboard, @root)}" : "print the scoreboard row on stdout"
+      @out.puts "  9. #{target}, then print `#{LOOP_DONE}: series #{id} ...`"
+    end
+
+    def plan_write(row)
+      case row.state
+      when :equal then "nothing, equal"
+      when :unreadable then "unknown, #{row.action}"
+      else "write #{row.wanted.inspect} (#{row.state})"
+      end
+    end
+
+    # A dry run's closing list of what a real series would refuse for.
+    def say_refusals(report)
+      return if report.refusals.empty?
+      @out.puts "would refuse:"
+      report.refusals.each { |message| @out.puts "  - #{message}" }
+    end
+
+    def undo_text(row)
+      return "unknown, #{row.action}" if row.state == :unreadable
+      return "nothing (it was there already)" if row.state == :equal
+      case row.key
+      when /\Aexclude:|\Aattributes:/ then "drop the line again"
+      when /\Aworkflows\.sources:/ then "drop our entry from #{SOURCES_KEY}"
+      else "restore the previous value if its checkout is still there, else unset it"
+      end
     end
   end
 end

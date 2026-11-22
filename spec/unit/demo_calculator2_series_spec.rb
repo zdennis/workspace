@@ -48,7 +48,7 @@ RSpec.describe DemoCalculator2::Series do
     SeriesExecFake.new
       .on(%w[git show-ref], "", false)
       .on(%w[git worktree list], "worktree /repo\nHEAD abc\n\n")
-      .on(%w[workspace list], ["workspace"].to_json)
+      .on(%w[workspace list], [{"name" => "workspace", "directory" => "/repo"}].to_json)
       .on(%w[git rev-parse main], "aaa\n")
       .on(%w[git rev-parse origin/main], "aaa\n")
       .on(%w[git rev-parse --git-common-dir], "/repo/.git\n")
@@ -126,7 +126,7 @@ RSpec.describe DemoCalculator2::Series do
     end
 
     it "refuses an id with a workspace" do
-      exec.on(%w[workspace list], ["workspace.worktree-calc2-demo-s1-b"].to_json)
+      exec.on(%w[workspace list], [{"name" => "workspace.worktree-calc2-demo-s1-b", "directory" => "/elsewhere"}].to_json)
       expect(refusal).to match(/workspace calc2-demo-s1 exists/)
     end
 
@@ -333,6 +333,61 @@ RSpec.describe DemoCalculator2::Series do
     it "prints the report and returns 0 on a clean dry run" do
       expect(dry_series.call).to eq(0)
       expect(out.string).to include("preflight ok", "would add git-config:merge.calc-demo-tests.driver", "exclude:/runs/s1/")
+    end
+
+    it "prints steps 2 to 9 on a dry run, with the names and paths a real series would use" do
+      expect(dry_series.call).to eq(0)
+      text = out.string
+      expect(text).to include(
+        "  2. register s1 in #{registry_dir}/series.json",
+        "workspace start calc2-demo-s1 --base main --headless --yes --json",
+        "workspace start calc2-demo-s1-b --base main --headless --yes --json",
+        "  3. skipped, no --sonnet",
+        "  4. wait for an idle Claude Code pane in both lanes: poll every 5s, at most 300s",
+        "  5. write the shared values",
+        "  6. run <lane A path>/script/demo-calculator2 run --lanes --lane-b calc2-demo-s1-b --id s1 --wait --out runs/s1",
+        "runs/s1/driver.log",
+        "  7. save evidence",
+        "  8. pin refs/demo-calc2-runs/s1 and refs/demo-calc2-runs/s1-b",
+        "kill calc2-demo-s1 and calc2-demo-s1-b",
+        "refs/demo-calc2/acceptance/s1",
+        "  9. print the scoreboard row on stdout, then print `LOOP DONE: series s1 ...`"
+      )
+      expect(text.lines.grep(/^  [2-9]\. /).size).to eq(8)
+      expect(text).to match(/^ {7}\S.*: (nothing, equal|write )/)
+      expect(text).to include("drop the line again")
+    end
+
+    it "prints the sonnet steps, the scoreboard target and the kept line when asked" do
+      options = described_class.parse(%w[--id s1 --dry-run --sonnet --keep --scoreboard board.md])
+      described_class.new(root: root, options: options, exec: exec, registry: registry, out: out, err: err,
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }).call
+      expect(out.string).to include("agent.commands.claude claude-sonnet", "template apply calc2-demo-s1-b --relaunch",
+        "8. kept: --keep", "9. append the scoreboard row to #{root}/board.md")
+    end
+
+    it "lists every refusal on a dry run, still prints the rows and the plan, and returns 1" do
+      exec.on(%w[gh run list], "[]").on(%w[git rev-parse origin/main], "bbb\n")
+      expect(dry_series.call).to eq(1)
+      text = out.string
+      expect(text).to include("preflight found 2 problem(s)", "git-config:merge.calc-demo-tests.driver", "  2. register s1", "  9. print the scoreboard")
+      expect(text).to match(/would refuse:\n  - main is not origin\/main.*\n  - the latest CI run on main is not a success/)
+      expect(err.string).to eq("")
+    end
+
+    it "shows a key whose read failed as unreadable and still lists the rest" do
+      exec.on(%w[git rev-parse --git-common-dir], "", false)
+      expect(dry_series.call).to eq(1)
+      expect(out.string).to include("attributes:", "now ?; ? (`git rev-parse --git-common-dir` failed)", "merge.calc-demo-tests.driver: now nil; would add")
+      expect(out.string).to include("unknown, ? (`git rev-parse --git-common-dir` failed)")
+    end
+
+    it "still stops a real run at the first refusal" do
+      exec.on(%w[gh run list], "[]").on(%w[git rev-parse origin/main], "bbb\n")
+      expect(series.call).to eq(1)
+      expect(err.string).to include("main is not origin/main")
+      expect(err.string).not_to include("CI run")
+      expect(out.string).to eq("")
     end
 
     it "prints a refusal to err and returns 1" do

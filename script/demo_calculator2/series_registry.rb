@@ -115,6 +115,9 @@ module DemoCalculator2
     # @return [Boolean] whether this registry never writes
     def read_only? = @read_only
 
+    # @return [String] the `series.json` file
+    attr_reader :path
+
     # @return [Hash{String=>Hash}] the registered series by id
     def entries
       read["series"]
