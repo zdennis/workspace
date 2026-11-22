@@ -308,9 +308,10 @@ module Workspace
         return recorded[:run] unless recorded[:wanted]
         # The reviewers start fresh, each told of its own earlier write-up by `review.previous`.
         kicked = true
-        # A window opened ahead of the round (warm) has been in the daemon's rows for minutes: no wait for its row.
+        # True for any window that is neither reused nor carried (a new or a warm one): it was never prompted, so a screen-only
+        # `working` in its row is the agent's start-up redraw, not a turn, and the kick waits for the row and ignores it.
         kick = @panes.kick(workspace: workspace, pane: window[:pane], text: format(WorkflowDispatch::KICK, written["path"]), fresh: window[:fresh], run_id: run.id,
-          opened: !(window[:reused] || window[:carried] || window[:warm]))
+          opened: !(window[:reused] || window[:carried]))
         # A window being cleared that refused the line (a person's turn running, no quiet in time) holds no reviewer of
         # this round: kept, still to be cleared, for the round's next delivery. A failure that does not prove the line
         # never went out (the daemon gave no answer) may have reviewers at work: typed.

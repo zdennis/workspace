@@ -253,6 +253,37 @@ RSpec.describe Workspace::WorkflowReviewRound, "over a warm review window" do
     end
   end
 
+  describe "the line typed into the warm pane, over a real WorkflowPanes" do
+    let(:bindings) { Workspace::PaneBindings.new(path: File.join(@dir, "state", "bindings.json")) }
+    let(:pane_tmux) { instance_double(Workspace::Tmux, session_name_for_pane: "app", pane_slot: "app:1.0", server_pid_for_pane: 7, deliver: Workspace::Tmux::Delivery.new(status: :submitted, message: "ok")) }
+    let(:locator) { instance_double(Workspace::PaneLocator, locate: {id: "%100", session: "app"}) }
+    let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
+    let(:ensurer) { ->(name:) { Workspace::Commands::EnsureAgent::Result.new(:running) } }
+    let(:review_panes) do
+      Workspace::WorkflowPanes.new(config: instance_double(Workspace::Config, agent_running?: true), bindings: bindings, tmux: pane_tmux, locator: locator,
+        binder: Workspace::Commands::Binding.new(bindings: bindings, locator: locator, tmux: pane_tmux, output: StringIO.new),
+        snapshot_client: snapshot_client, agent_ensurer: ensurer, clock: -> { now.first }, sleeper: ->(_) {}, error_output: StringIO.new)
+    end
+
+    # The row of a Claude Code pane the daemon has seen only draw its start-up: working by the screen, no prompt submitted.
+    let(:startup_row) do
+      {"pane_id" => review_pane, "kind" => "claude", "state" => "working", "state_changed_by" => "screen", "hook_mode" => "hooks", "user_prompt_at" => nil,
+       "main_turn_over_since" => nil, "open_tools" => [], "subagents" => [], "window" => 1}
+    end
+
+    it "types the review line into a warm pane that reads working from its start-up redraw, and does not close it" do
+      allow(snapshot_client).to receive(:fetch).and_return("panes" => [startup_row])
+      adopt_warm_window
+
+      expect(pane_tmux).to have_received(:deliver).with("app", review_pane, a_string_including("plan.1.r1.review.md"))
+      expect(tmux.killed_windows).to be_empty
+      expect(round).to include("pane" => review_pane, "window" => "@100")
+      events = File.readlines(store.events_path("wr_1")).map { |line| JSON.parse(line) }
+      expect(events.select { |line| line["type"] == "review_delivered" }).to contain_exactly(include("step" => "plan", "round" => 1, "warm" => true))
+      expect(events.map { |line| line["type"] }).not_to include("review_delivery_failed")
+    end
+  end
+
   describe "a SessionStart in the warm process, which has WORKSPACE_REVIEW_RUN and no binding" do
     let(:ledger) { Workspace::SessionLedger.new(path: File.join(@dir, "state", "ledger.jsonl")) }
     let(:bindings) { Workspace::PaneBindings.new(path: File.join(@dir, "state", "bindings.json")) }

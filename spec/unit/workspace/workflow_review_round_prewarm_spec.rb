@@ -472,14 +472,14 @@ RSpec.describe Workspace::WorkflowReviewRound, "#call into a warm window" do
 
   def delivered = change.events.find { |event| event[1] == "review_delivered" }&.last
 
-  it "adopts the warm window: no new window, no /clear, no wait for the daemon's row, and review_delivered says warm" do
+  it "adopts the warm window: no new window, no /clear, a kick that ignores a screen-only working row, and review_delivered says warm" do
     runner.call("wr_1", pending)
 
     expect(tmux.opened_windows).to be_empty
     expect(tmux.killed_windows).to be_empty
     expect(tmux.marked_windows).to be_empty
     expect(readiness.calls).to eq([[:await_ready, "app", "%70", "claude", {window: "@7", keep: true}]])
-    expect(kick).to include(pane: "%70", fresh: false, opened: false)
+    expect(kick).to include(pane: "%70", fresh: false, opened: true)
     expect(round).to include("pane" => "%70", "window" => "@7", "delivery" => nil)
     expect(round).not_to have_key("clear_from")
     expect(round).not_to have_key("cleared_at")
