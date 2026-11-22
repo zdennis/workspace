@@ -112,6 +112,9 @@ module DemoCalculator2
       end
     end
 
+    # @return [Boolean] whether this registry never writes
+    def read_only? = @read_only
+
     # @return [Hash{String=>Hash}] the registered series by id
     def entries
       read["series"]
