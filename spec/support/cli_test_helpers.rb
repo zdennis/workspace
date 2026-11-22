@@ -204,6 +204,7 @@ module CLITestHelpers
 
   class FakeITerm
     def session_map = {}
+    def single_session_windows(tail_lines: 200) = []
     def last_call_timed_out? = false
     def applescript_timeout = 5
     def find_existing_sessions(_state, **_opts) = {}

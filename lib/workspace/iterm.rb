@@ -53,6 +53,40 @@ module Workspace
       result
     end
 
+    # Lists the iTerm windows that hold exactly one tab with exactly one
+    # session, with the tail of each session's screen text. Fields are
+    # separated by ASCII 31 and records by ASCII 30, which screen text
+    # cannot hold. Answers empty when iTerm2 does not answer in time.
+    #
+    # @param tail_lines [Integer] how many of the last screen lines to keep
+    # @return [Array<Hash>] one `{window_id:, unique_id:, tty:, contents:}`
+    #   per window (`window_id` an Integer)
+    def single_session_windows(tail_lines: 200)
+      script = <<~APPLESCRIPT
+        tell application "iTerm2"
+          set fs to character id 31
+          set rs to character id 30
+          set output to ""
+          repeat with w in every window
+            if (count of tabs of w) is 1 then
+              set t to item 1 of (every tab of w)
+              if (count of sessions of t) is 1 then
+                set s to item 1 of (every session of t)
+                set output to output & (id of w) & fs & (unique ID of s) & fs & (tty of s) & fs & (contents of s) & rs
+              end if
+            end if
+          end repeat
+          return output
+        end tell
+      APPLESCRIPT
+      execute_applescript(script).split(30.chr).filter_map do |record|
+        wid, uid, tty, contents = record.lstrip.split(31.chr, 4)
+        next unless wid&.match?(/\A\d+\z/) && uid
+
+        {window_id: wid.to_i, unique_id: uid, tty: tty.to_s, contents: contents.to_s.lines.last(tail_lines).join}
+      end
+    end
+
     # @param state [#each] state object or hash with project => {"unique_id" => ...} entries
     # @param live_sessions [Hash, nil] optional pre-fetched session_map for testing
     # @return [Hash{String => String}] mapping of project name to unique_id for live sessions

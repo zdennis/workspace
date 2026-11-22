@@ -121,6 +121,9 @@ require_relative "workspace/start_ref"
 require_relative "workspace/timed_process"
 require_relative "workspace/branch_name_picker"
 require_relative "workspace/ssh_host_resolver"
+require_relative "workspace/tty_processes"
+require_relative "workspace/gateway_window_match"
+require_relative "workspace/gateway_window_closer"
 require_relative "workspace/workspace_checkout"
 require_relative "workspace/ticket_source"
 require_relative "workspace/project_catalog"
@@ -844,7 +847,9 @@ module Workspace
     launch_mode = LaunchMode.new(project_settings: project_settings)
 
     # Pre-build command objects so CLI delegates rather than constructs
-    stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, window_positions: window_positions, output: output, error_output: error_output)
+    stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, window_positions: window_positions,
+      gateway_closer: GatewayWindowCloser.new(iterm: iterm, window_manager: window_manager, tmux: tmux, tty_processes: TtyProcesses.new),
+      launch_mode: launch_mode, output: output, error_output: error_output)
     agent_labels = AgentLabels.new(process_tree: ProcessTree.new(logger: logger))
     agent_readiness = AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new(logger: logger), logger: logger)
     name_migration = NameMigration.new(config: config, project_config: project_config, tmux: tmux, state: state, event_log: event_log,
