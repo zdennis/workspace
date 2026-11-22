@@ -223,6 +223,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/cli/agent.rb` — `CLI::Agent`, the `agent`, `agentd`, `daemon`, `sessions` and `review` verb family parser.
 - `lib/workspace/cli/agent_run.rb` — `CLI::AgentRun`, the `agent-run` and `handoff` verb family parser.
 - `lib/workspace/cli/session_event_wiring.rb` — `CLI::SessionEventWiring.build`, the one construction of `Commands::SessionEvent` and its guards, which takes the objects `build_cli` shares and builds the rest, without needing `lib/workspace.rb`.
+- `lib/workspace/cli/session_event_entry.rb` — The fast `session-event` path `bin/workspace` takes before loading `lib/workspace`: checks the argv, loads only the hook's files and builds the command through `SessionEventWiring`, passing SessionStart, SessionEnd and PermissionRequest to the full CLI.
 - `lib/workspace/cli/pipeline.rb` — `CLI::Pipeline`, the deprecated `pipeline` verb family.
 - `lib/workspace/cli/plan_spine.rb` — `CLI::PlanSpine`, the `plan`, `spine`/`journey` and `goal` verb family parser.
 - `lib/workspace/help_pages.rb` — Data-only help pages for the verbs that share one option parser.

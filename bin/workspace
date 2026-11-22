@@ -1,4 +1,9 @@
 #!/usr/bin/env ruby
+if ARGV[0] == "session-event"
+  require_relative "../lib/workspace/cli/session_event_entry"
+  # A session-event line .fast? refuses (--help, --debug, --json, a bad flag) falls through to the whole CLI on purpose.
+  exit Workspace::CLI::SessionEventEntry.run(ARGV, stdin: $stdin, stdout: $stdout, stderr: $stderr, env: ENV) if Workspace::CLI::SessionEventEntry.fast?(ARGV)
+end
 require_relative "../lib/workspace"
 cli = Workspace.build_cli
 cli.run(ARGV)

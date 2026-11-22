@@ -59,6 +59,28 @@ module Workspace
       # The hooks recorded in the session ledger, as the names it stores.
       LEDGER_EVENTS = {"SessionStart" => "session_start", "SessionEnd" => "session_end"}.freeze
 
+      # The hooks that need the whole CLI's wiring (the instruction composer, the permission
+      # policy, the dev-lock release), rather than the fast entry's; see {.full_wiring?}.
+      FULL_WIRING_EVENTS = %w[SessionStart SessionEnd PermissionRequest].freeze
+
+      # Whether a payload is one of {FULL_WIRING_EVENTS} in the agent's own table, so
+      # `bin/workspace` hands it to the whole CLI instead of the fast entry. A payload that does not
+      # parse as a JSON object, or an agent with no table, is not: the command drops those itself.
+      #
+      # @param raw [String, nil] the hook payload as read from stdin
+      # @param agent [String, nil] the `--agent` value; nil is {DEFAULT_AGENT}
+      # @return [Boolean]
+      def self.full_wiring?(raw, agent)
+        table = AGENT_EVENTS[agent.nil? ? DEFAULT_AGENT : agent.downcase]
+        return false unless table && raw
+
+        payload = JSON.parse(raw.dup.force_encoding(Encoding::UTF_8).scrub)
+        hook = payload.is_a?(Hash) ? payload["hook_event_name"] : nil
+        FULL_WIRING_EVENTS.include?(hook) && table.key?(hook)
+      rescue JSON::ParserError
+        false
+      end
+
       # Longest notification message forwarded to the daemon. The message is
       # shown in `sessions --json` and handed to the notify command; a long
       # one is cut rather than dropped.
@@ -535,7 +557,7 @@ module Workspace
 
       def clean(value, limit)
         return nil unless value.is_a?(String)
-        cleaned = value.gsub(/[[:space:][:cntrl:]]+/, " ").strip[0, limit]
+        cleaned = value.gsub(/(?:[[:space:]]|[[:cntrl:]])+/, " ").strip[0, limit]
         cleaned unless cleaned.empty?
       end
 

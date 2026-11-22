@@ -103,6 +103,14 @@ RSpec.describe Workspace::CLI::SessionEventWiring do
     expect(release).to include(executable: executable, recovery_marker: shared[:recovery_stop_marker], config: config)
   end
 
+  {lineage: :lock_namespace, process_tree: :lock_holder, config_names: :workspace_for_session}.each do |input, built_from_it|
+    it "refuses to build without #{input} when #{built_from_it} is not given either" do
+      inputs = {lineage: double("lineage"), process_tree: double("process_tree"), config_names: double("config_names")}.except(input)
+
+      expect { described_class.build(**base, **inputs) }.to raise_error(ArgumentError, /needs #{input}: when #{built_from_it}: is not given/)
+    end
+  end
+
   it "records a session two configs claim in the delivery log it built" do
     capture_session_event
     allow(tmux).to receive(:session_option).and_return(nil)

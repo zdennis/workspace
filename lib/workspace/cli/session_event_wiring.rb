@@ -6,6 +6,8 @@ module Workspace
     # `build_cli` calls it with the objects it shares with other commands; a caller that shares
     # nothing leaves those keywords out and each is built here. It names only classes that have a
     # file of their own, never anything `lib/workspace.rb` alone defines.
+    # A new collaborator's file must also be added to {SessionEventEntry::CLOSURE} (or to one of
+    # its deferred lists), which loads it for the fast path, or the fast path cannot build the command.
     class SessionEventWiring
       # @param config [Workspace::Config]
       # @param tmux [Workspace::Tmux]
@@ -32,9 +34,14 @@ module Workspace
       # @param config_names [#available_projects, nil] the configs {SessionWorkspace} looks through; needed only when workspace_for_session is not given
       # @param workspace_for_session [Workspace::SessionWorkspace, nil] nil builds one whose ambiguity lines go to delivery_log
       # @return [Workspace::Commands::SessionEvent]
+      # @raise [ArgumentError] when lineage, process_tree or config_names is missing and the object built from it is not given
       def self.build(config:, tmux:, input:, output:, error_output:, logger:, env:, event_log:, permission_policy_config:, instruction_composer:, executable:,
         lineage: nil, pane_bindings: nil, lock_namespace: nil, process_tree: nil, run_liveness: nil, lock_holder: nil, bound_run: nil, run_store: nil,
         session_ledger: nil, recovery_stop_marker: nil, delivery_log: nil, config_names: nil, workspace_for_session: nil)
+        raise ArgumentError, "SessionEventWiring.build needs lineage: when lock_namespace: is not given" unless lock_namespace || lineage
+        raise ArgumentError, "SessionEventWiring.build needs process_tree: when lock_holder: is not given" unless lock_holder || process_tree
+        raise ArgumentError, "SessionEventWiring.build needs config_names: when workspace_for_session: is not given" unless workspace_for_session || config_names
+
         pane_bindings ||= PaneBindings.new(path: config.pane_bindings_path, logger: logger, error_output: error_output)
         lock_namespace ||= LockNamespace.new(config: config, lineage: lineage)
         lock_holder ||= LockHolder.new(process_tree: process_tree, run_liveness: run_liveness || RunLiveness.new(dir: config.workflow_runs_dir), tmux: tmux)

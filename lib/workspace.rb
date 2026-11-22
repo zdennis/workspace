@@ -458,6 +458,7 @@ require_relative "workspace/cli/plan_spine"
 require_relative "workspace/cli/work_queue"
 require_relative "workspace/cli/template"
 require_relative "workspace/cli/session_event_wiring"
+require_relative "workspace/cli/session_event_entry"
 require_relative "workspace/cli"
 
 module Workspace
