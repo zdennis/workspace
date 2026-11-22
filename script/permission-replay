@@ -9,7 +9,11 @@
 # policy (agent dialog)" when none is set. "candidate" is the policy built from --rules FILE:
 #   {default: ask|allow|deny (optional), rules: [{tool, pattern, action}, ...]}
 # --marks FILE is a YAML list of {workspace, seq, mark: safe|unsafe}; a row marked unsafe that the candidate allows
-# is an "unsafe allowed" row, and the script then exits 1. Exit 2 for bad options or an invalid file.
+# is an "unsafe allowed" row, and so is a row marked unsafe that today's policy allows; the script then exits 1.
+# Marks join on workspace + seq, and seq can restart after a daemon restart, so a mark may hit more than one row.
+# --marks needs --rules. Exit 2 for bad options, a missing directory or file, or an invalid file.
+# In --json rows, candidate is null without --rules and "skipped (not Bash)" for a non-Bash row; unsafe_rows lists
+# the unsafe-marked rows an allow reached, each with allowed_by (candidate and/or today).
 #
 #   script/permission-replay [--events-dir DIR] [--rules FILE] [--marks FILE] [--json]
 #   script/permission-replay --file PATH [--rules FILE] [--marks FILE] [--json]
@@ -37,13 +41,19 @@ module PermissionReplay
     paths.flat_map do |path|
       File.foreach(path).filter_map do |line|
         event = begin
-          JSON.parse(line)
+          JSON.parse(line.scrub)
         rescue JSON::ParserError
           next
         end
         event if event.is_a?(Hash) && event["type"] == "permission_requested"
       end
+    rescue SystemCallError => e
+      raise ArgumentError, io_message(path, e)
     end
+  end
+
+  def self.io_message(path, error)
+    "#{path}: #{SystemCallError.new(nil, error.errno).message}"
   end
 
   # @raise [ArgumentError] when the file is not `{default:, rules:}` with valid rules
@@ -57,8 +67,10 @@ module PermissionReplay
     raise ArgumentError, "#{path}: default must be allow, ask or deny" unless default.nil? || %w[allow ask deny].include?(default)
     rules = Workspace::PermissionRules.parse(data["rules"], label: "rules")
     Workspace::PermissionPolicy.new(layers: [{source: "candidate", rules: rules, default: default}])
-  rescue Psych::Exception, SystemCallError => e
+  rescue Psych::Exception => e
     raise ArgumentError, "#{path}: #{e.message}"
+  rescue SystemCallError => e
+    raise ArgumentError, io_message(path, e)
   end
 
   # @return [Hash{Array => String}] mark by [workspace, seq as string]
@@ -71,8 +83,10 @@ module PermissionReplay
       raise ArgumentError, "#{path}: mark must be safe or unsafe, got #{mark.inspect}" unless %w[safe unsafe].include?(mark)
       marks[[entry["workspace"].to_s, entry["seq"].to_s]] = mark
     end
-  rescue Psych::Exception, SystemCallError => e
+  rescue Psych::Exception => e
     raise ArgumentError, "#{path}: #{e.message}"
+  rescue SystemCallError => e
+    raise ArgumentError, io_message(path, e)
   end
 
   # Today's policy per logged workspace, from real config files only: no CLI, no tmux, no bound run.
@@ -101,9 +115,9 @@ module PermissionReplay
     flags << "substitution" if pieces.substitution?(command)
     flags << "redirect" if pieces.redirect?(command)
     flags << "opaque" if pieces.opaque?(command)
-    return flags.join(", ") unless flags.empty?
-    return "no matching rule" if decision && decision[:action] != "allow"
-    decision ? decision[:rule].to_s : ""
+    rule = decision ? decision[:rule].to_s : ""
+    return rule if flags.empty?
+    rule.empty? ? flags.join(", ") : "#{rule} (#{flags.join(", ")})"
   end
 
   # The one place a row is built; a later --transcripts source can feed it the same event shape.
@@ -111,7 +125,7 @@ module PermissionReplay
     row = {"at" => event["at"], "workspace" => event["workspace"], "seq" => event["seq"], "tool" => event["tool"],
            "command" => event["input"].to_s, "mark" => marks[[event["workspace"].to_s, event["seq"].to_s]]}
     unless event["tool"] == "Bash"
-      row.merge!("today" => SKIPPED, "candidate" => (candidate ? SKIPPED : nil), "reason" => "")
+      row.merge!("today" => SKIPPED, "candidate" => (candidate ? SKIPPED : nil), "reason" => "", "allowed_by" => [])
       return row
     end
     input = {"command" => event["input"]}
@@ -121,11 +135,13 @@ module PermissionReplay
     row.merge!("today" => today_decision ? today_decision[:action] : NO_POLICY,
       "candidate" => candidate_decision&.fetch(:action),
       "reason" => reason(event["input"].to_s, pieces, candidate_decision || today_decision))
+    row["allowed_by"] = {"candidate" => row["candidate"], "today" => row["today"]}.select { |_, v| v == "allow" }.keys
     row
   end
 
-  def self.summarize(rows, with_candidate:)
-    unsafe = with_candidate ? rows.select { |r| r["mark"] == "unsafe" && r["candidate"] == "allow" } : []
+  # @return [Array(Hash, Array<Hash>)] counts and the unsafe-marked rows that an allow reached
+  def self.summarize(rows)
+    unsafe = rows.select { |r| r["mark"] == "unsafe" && !r["allowed_by"].empty? }
     counts = {"requests" => rows.size, "allowed_today" => rows.count { |r| r["today"] == "allow" },
               "allowed_candidate" => rows.count { |r| r["candidate"] == "allow" }, "unsafe_allowed" => unsafe.size}
     [counts, unsafe]
@@ -140,7 +156,7 @@ module PermissionReplay
     lines << "allowed today: #{counts["allowed_today"]}"
     lines << "allowed candidate: #{counts["allowed_candidate"]}" if with_candidate
     lines << "unsafe allowed: #{counts["unsafe_allowed"]}"
-    unsafe.each { |r| lines << "  #{r["at"]} #{r["workspace"]} seq=#{r["seq"]} #{r["command"][0, 80].tr("\n\t", "  ")}" }
+    unsafe.each { |r| lines << "  #{r["at"]} #{r["workspace"]} seq=#{r["seq"]} allowed by #{r["allowed_by"].join(" and ")}: #{r["command"][0, 80].tr("\n\t", "  ")}" }
     lines.join("\n")
   end
 
@@ -155,23 +171,31 @@ module PermissionReplay
       o.on("--json", "Print JSON") { opts[:json] = true }
     end
     parser.parse!(argv)
+    raise ArgumentError, "--marks needs --rules" if opts[:marks] && !opts[:rules]
+    if opts[:file]
+      raise ArgumentError, "#{opts[:file]}: no such file" unless File.file?(opts[:file])
+    else
+      raise ArgumentError, "#{opts[:events_dir]}: no such directory" unless File.directory?(opts[:events_dir])
+    end
 
     candidate = opts[:rules] && candidate_policy(opts[:rules])
     marks = opts[:marks] ? read_marks(opts[:marks]) : {}
     paths = opts[:file] ? [opts[:file]] : event_files(opts[:events_dir])
     today = Today.new
     rows = read_requests(paths).map { |event| build_row(event, today: today, candidate: candidate, marks: marks) }
-    rows.sort_by! { |r| r["at"].to_s }
-    counts, unsafe = summarize(rows, with_candidate: !candidate.nil?)
+    rows.sort_by! { |r| [r["at"].to_s, r["workspace"].to_s, r["seq"].to_i] }
+    counts, unsafe = summarize(rows)
+    unmatched = marks.keys - rows.map { |r| [r["workspace"].to_s, r["seq"].to_s] }
+    err.puts "permission-replay: #{unmatched.size} marks match no row: #{unmatched.map { |w, q| "#{w}/#{q}" }.join(", ")}" unless unmatched.empty?
 
     if opts[:json]
-      out.puts JSON.generate("requests" => rows, "counts" => counts, "unsafe_allowed" => unsafe)
+      out.puts JSON.generate("requests" => rows, "counts" => counts, "unsafe_rows" => unsafe)
     else
       out.puts format_text(rows, counts, unsafe, with_candidate: !candidate.nil?)
     end
     unsafe.empty? ? 0 : 1
   rescue OptionParser::ParseError, ArgumentError, SystemCallError => e
-    err.puts e.message
+    err.puts "permission-replay: #{e.message}"
     2
   end
 end

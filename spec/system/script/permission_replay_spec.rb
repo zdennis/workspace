@@ -71,7 +71,7 @@ RSpec.describe "script/permission-replay" do
     File.write(marks_file, YAML.dump([{"workspace" => "ws", "seq" => 1, "mark" => "unsafe"}, {"workspace" => "ws", "seq" => 2, "mark" => "safe"}]))
     data, _, code = replay("--rules", rules_file, "--marks", marks_file)
     expect(code).to eq(1)
-    expect(data["unsafe_allowed"].map { |r| r["seq"] }).to eq([1])
+    expect(data["unsafe_rows"].map { |r| r["seq"] }).to eq([1])
     expect(data["counts"]["unsafe_allowed"]).to eq(1)
     out, = run_script("--file", log, "--rules", rules_file, "--marks", marks_file)
     expect(out).to include("unsafe allowed: 1")
@@ -109,7 +109,7 @@ RSpec.describe "script/permission-replay" do
   it "prints the JSON shape" do
     write_log(request(1, "ls"))
     data, = replay
-    expect(data.keys).to eq(%w[requests counts unsafe_allowed])
+    expect(data.keys).to eq(%w[requests counts unsafe_rows])
     expect(data["requests"].first.keys).to include("at", "workspace", "seq", "mark", "today", "candidate", "reason", "command")
     expect(data["counts"].keys).to eq(%w[requests allowed_today allowed_candidate unsafe_allowed])
   end
@@ -129,5 +129,98 @@ RSpec.describe "script/permission-replay" do
     expect(code).to eq(2)
     expect(out).to be_empty
     expect(err).to include("rules[0]")
+  end
+
+  it "exits 2 for a missing --file" do
+    out, err, code = run_script("--file", File.join(dir, "nope.jsonl"))
+    expect([out, code]).to eq(["", 2])
+    expect(err).to eq("permission-replay: #{dir}/nope.jsonl: no such file\n")
+  end
+
+  it "exits 2 for a missing explicit or default events dir" do
+    _, err, code = run_script("--events-dir", File.join(dir, "nope"))
+    expect(code).to eq(2)
+    expect(err).to include("permission-replay: #{dir}/nope: no such directory")
+    _, err, code = run_script
+    expect(code).to eq(2)
+    expect(err).to include("#{home}/.local/state/workspace/.events: no such directory")
+  end
+
+  it "exits 2 for an invalid marks file" do
+    write_log(request(1, "ls"))
+    write_rules(allow_rspec)
+    File.write(marks_file, YAML.dump("a" => 1))
+    _, err, code = run_script("--file", log, "--rules", rules_file, "--marks", marks_file)
+    expect(code).to eq(2)
+    expect(err).to include("permission-replay: #{marks_file}: must be a list")
+  end
+
+  it "reports a missing marks file without raw Errno text" do
+    write_log(request(1, "ls"))
+    write_rules(allow_rspec)
+    _, err, code = run_script("--file", log, "--rules", rules_file, "--marks", File.join(dir, "none.yml"))
+    expect(code).to eq(2)
+    expect(err).to include("none.yml: No such file or directory")
+    expect(err).not_to include("Errno")
+  end
+
+  it "exits 2 for an unknown option" do
+    _, err, code = run_script("--bogus")
+    expect(code).to eq(2)
+    expect(err).to start_with("permission-replay: invalid option: --bogus")
+  end
+
+  it "exits 2 for --marks without --rules" do
+    write_log(request(1, "ls"))
+    File.write(marks_file, YAML.dump([]))
+    _, err, code = run_script("--file", log, "--marks", marks_file)
+    expect(code).to eq(2)
+    expect(err).to include("--marks needs --rules")
+  end
+
+  it "warns about marks that match no row" do
+    write_log(request(1, "ls"))
+    write_rules(allow_rspec)
+    File.write(marks_file, YAML.dump([{"workspace" => "ws", "seq" => 9, "mark" => "safe"}]))
+    _, err, code = replay("--rules", rules_file, "--marks", marks_file)
+    expect(code).to eq(0)
+    expect(err).to include("1 marks match no row: ws/9")
+  end
+
+  it "exits 0 with empty unsafe_rows when an unsafe-marked row is not allowed" do
+    write_log(request(1, "rm -rf x"))
+    write_rules(allow_rspec)
+    File.write(marks_file, YAML.dump([{"workspace" => "ws", "seq" => 1, "mark" => "unsafe"}]))
+    data, _, code = replay("--rules", rules_file, "--marks", marks_file)
+    expect(code).to eq(0)
+    expect(data["unsafe_rows"]).to eq([])
+  end
+
+  it "counts an unsafe-marked row that today's policy allows" do
+    FileUtils.mkdir_p("#{home}/.config/workspace")
+    File.write("#{home}/.config/workspace/config.yml", YAML.dump("agent" => {"permissions" => {"rules" => [allow_rspec]}}))
+    write_log(request(1, "bundle exec rspec x_spec.rb"))
+    write_rules(allow_rspec.merge("action" => "ask"))
+    File.write(marks_file, YAML.dump([{"workspace" => "ws", "seq" => 1, "mark" => "unsafe"}]))
+    data, _, code = replay("--rules", rules_file, "--marks", marks_file)
+    expect(code).to eq(1)
+    expect(data["unsafe_rows"].first["allowed_by"]).to eq(["today"])
+  end
+
+  it "names the redirect and opaque reasons with the deciding rule" do
+    write_log(request(1, "echo hi > out.txt"), request(2, "eval ls"))
+    write_rules({"tool" => "Bash", "pattern" => "*", "action" => "allow"}, default: "ask")
+    data, = replay("--rules", rules_file)
+    expect(data["requests"][0]["reason"]).to include("redirect")
+    expect(data["requests"][1]["reason"]).to include("opaque")
+    expect(data["requests"][0]["reason"]).to include("candidate:")
+  end
+
+  it "scrubs invalid UTF-8 and sorts rows by time, workspace and seq" do
+    File.binwrite(log, ([request(2, "b", workspace: "b"), request(2, "a", workspace: "a"), request(1, "cBAD")].join("\n") + "\n").b.sub("BAD", "\xFF".b))
+    data, _, code = replay
+    expect(code).to eq(0)
+    expect(data["requests"].map { |r| r["seq"] }).to eq([1, 2, 2])
+    expect(data["requests"].map { |r| r["workspace"] }).to eq(%w[ws a b])
   end
 end
