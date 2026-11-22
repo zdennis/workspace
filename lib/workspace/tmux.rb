@@ -17,6 +17,17 @@ module Workspace
     REVIEW_STORE_OPTION = "@workspace-review-store"
     # What a tmux window id looks like.
     WINDOW_ID = /\A@\d+\z/
+
+    # How many rows of scrollback #capture_screen_scrollback adds above the visible screen.
+    SCROLLBACK_ROWS = 5
+
+    # A styled capture and how many of its leading rows are scrollback.
+    #
+    # @!attribute [r] raw
+    #   @return [String] the capture exactly as `capture-pane -e -p` printed it
+    # @!attribute [r] history_rows
+    #   @return [Integer] how many leading rows of +raw+ come from scrollback
+    StyledCapture = Struct.new(:raw, :history_rows)
     # What tmux says on stderr when a session, or the whole server, isn't there.
     SESSION_GONE = /can't find session|no server running|error connecting to .* \(No such file or directory\)/
 
@@ -374,6 +385,26 @@ module Workspace
     def capture_screen_styled(target)
       stdout, _, status = Open3.capture3("tmux", "capture-pane", "-e", "-p", "-t", target)
       status.success? ? stdout : nil
+    end
+
+    # Reads a pane like #capture_screen_styled with up to SCROLLBACK_ROWS rows of
+    # scrollback above the screen, in one tmux call, and says how many of them
+    # there are (fewer when the pane has less history).
+    #
+    # @param target [String] any tmux target: "session:0.1", a pane id ("%23")
+    # @return [StyledCapture, nil] the frozen capture, or nil if tmux reported
+    #   failure or did not answer the history size first
+    def capture_screen_scrollback(target)
+      stdout, _, status = Open3.capture3(
+        "tmux", "display-message", "-p", "-t", target, "\#{history_size}",
+        ";", "capture-pane", "-e", "-p", "-S", "-#{SCROLLBACK_ROWS}", "-t", target
+      )
+      return nil unless status.success?
+
+      size, raw = stdout.split("\n", 2)
+      return nil unless size.to_s.match?(/\A\d+\z/)
+
+      StyledCapture.new(raw.to_s, [SCROLLBACK_ROWS, size.to_i].min).freeze
     end
 
     private

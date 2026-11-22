@@ -197,4 +197,43 @@ RSpec.describe Workspace::StyledScreen do
       end
     end
   end
+
+  describe "history rows" do
+    let(:capture) { Struct.new(:raw, :history_rows) }
+    let(:pattern) { Workspace::AgentProvider::CLAUDE_READY_PATTERN }
+    let(:box) { "─────\n❯ \n" }
+
+    it "has no history rows for a String and finds the box" do
+      screen = parse("old\n" + box)
+      expect(screen.history_rows).to eq(0)
+      expect(screen.input_box(pattern)).not_to be_nil
+      expect(screen.visible_lines.first).to eq("old")
+    end
+
+    it "finds a box whose rule is in history and whose prompt is visible" do
+      screen = parse(capture.new(box, 1))
+      expect(screen.input_box(pattern)).not_to be_nil
+    end
+
+    it "is nil for a box whose prompt sits in history" do
+      screen = parse(capture.new(box + "other\n", 2))
+      expect(screen.input_box(pattern)).to be_nil
+    end
+
+    it "returns the visible box when an older one sits in history" do
+      screen = parse(capture.new(box + "─────\n❯ newer\n", 2))
+      expect(screen.input_box(pattern).post_match).to start_with("newer")
+    end
+
+    it "clamps history rows larger than the text" do
+      screen = parse(capture.new(box, 50))
+      expect(screen.input_box(pattern)).to be_nil
+      expect(screen.visible_lines).to eq([])
+    end
+
+    it "drops history rows from visible_lines" do
+      screen = parse(capture.new("a\nb\nc", 2))
+      expect(screen.visible_lines).to eq(["c"])
+    end
+  end
 end

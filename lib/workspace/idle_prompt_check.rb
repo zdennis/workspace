@@ -46,23 +46,28 @@ module Workspace
     end
 
     # @param facts [Hash, nil] {Workspace::SessionMonitor#typing_facts}
-    # @param styled_capture [String, nil] {Workspace::Tmux#capture_screen_styled}
+    # @param styled_capture [String, #raw, nil] {Workspace::Tmux#capture_screen_styled},
+    #   or a {Workspace::Tmux::StyledCapture} with scrollback rows
     # @return [Hash, nil] nil when the box is empty and nothing is running, else
     #   `:reason` and `:message`: {TypingSafety}'s, or `turn_started` for a busy row
     def refusal(facts, styled_capture)
       screen = StyledScreen.parse(styled_capture)
       refused = @safety.check(facts, screen)
       return refused.slice(:reason, :message) if refused
-      return nil unless busy_row?(screen.text, facts[:kind])
+      return nil unless busy_row?(screen, facts[:kind])
 
       {reason: "turn_started", message: "a spinner or another sign of a running turn shows above the input box"}
     end
 
     private
 
-    def busy_row?(text, kind)
+    def busy_row?(screen, kind)
       pattern = @providers.find { |provider| provider.key == kind }.ready_pattern
-      opening_rule = text[0...text.rindex(pattern)].count("\n")
+      box = screen.input_box(pattern)
+      return true if box.nil?
+
+      text = screen.text
+      opening_rule = text[0...box.begin(0)].count("\n")
       lines = text.tr("\u00a0", " ").split("\n", -1)
       above = lines[[opening_rule - ROWS_ABOVE, 0].max...opening_rule]
       done = above.rindex { |row| row.match?(DONE_ROW) }

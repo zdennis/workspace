@@ -15,7 +15,9 @@ module Workspace
   # 4. The current screen shows the agent's input prompt (the pattern
   #    {AgentReadiness} waits for). A dialog replaces Claude Code's input box,
   #    so this also catches a permission prompt whose Notification hook
-  #    hasn't arrived yet. `no_input_prompt` otherwise.
+  #    hasn't arrived yet. `no_input_prompt` otherwise. Given a capture
+  #    with scrollback, only a prompt on the visible screen counts, though its
+  #    top rule may sit in history.
   # 5. The input box is empty (no text on the prompt row or on any row down to
   #    its closing rule, when that rule is on screen), or shows only the
   #    agent's placeholder, so the
@@ -77,19 +79,19 @@ module Workspace
       question = (facts[:open_tools] & QUESTION_TOOLS).first
       return refusal("question_open", "#{provider.label} is showing #{question}, which typed text would answer") if question
 
-      styled = screen if screen.is_a?(StyledScreen)
+      styled = screen.is_a?(StyledScreen) ? screen : (StyledScreen.parse(screen) if screen.respond_to?(:raw))
       screen = styled.text if styled
-      input = input_line(pattern, screen)
-      return refusal("no_input_prompt", "#{provider.label}'s input prompt isn't on screen (a dialog may be open)") unless input
+      last = input_box(pattern, screen, styled)
+      return refusal("no_input_prompt", "#{provider.label}'s input prompt isn't on screen (a dialog may be open)") unless last
       if exact
-        unless squeeze(whole_input(pattern, screen)) == squeeze(exact)
+        unless squeeze(whole_input(last)) == squeeze(exact)
           return refusal("input_changed", "#{provider.label}'s input isn't exactly the given text")
         end
       elsif pasted
-        unless pasted_shown?(pattern, screen, pasted)
+        unless pasted_shown?(last, pasted)
           return refusal("input_changed", "#{provider.label}'s input box doesn't hold exactly the pasted text")
         end
-      elsif !empty_input?(pattern, screen, styled, input)
+      elsif !empty_input?(last, styled)
         return refusal("input_not_empty", "#{provider.label}'s input line already holds text (a draft)")
       end
       nil
@@ -102,34 +104,36 @@ module Workspace
     # a wrapped line gains spaces). A draft before or after the paste, or a
     # placeholder the person typed ahead of a paste, makes the box differ and
     # refuses. Also refuses when the box's closing rule isn't on screen.
-    def pasted_shown?(pattern, screen, pasted)
-      last = screen.to_enum(:scan, pattern).map { Regexp.last_match }.last
+    def pasted_shown?(last, pasted)
       return false unless last.post_match.lines.any? { |line| closing_rule?(line) }
 
-      box = squeeze(whole_input(pattern, screen))
+      box = squeeze(whole_input(last))
       wanted = squeeze(pasted)
       !wanted.empty? && (box == wanted || box.match?(PASTE_PLACEHOLDER_ONLY))
     end
 
-    # The text after the last input prompt on screen, stripped, or nil when
-    # there is no prompt.
-    def input_line(pattern, screen)
+    # The one lookup of the input box: the last match of the prompt pattern.
+    # On a {StyledScreen} it counts only when its prompt row is on the visible
+    # screen, not in scrollback; a plain String has no history rows.
+    def input_box(pattern, screen, styled)
+      return styled.input_box(pattern) if styled
       return nil unless screen
-      matches = screen.scan(/(?:#{pattern.source})([^\n]*)/)
-      return nil if matches.empty?
-      matches.last.first.gsub(/[[:space:] ]+/, " ").strip
+
+      screen.to_enum(:scan, pattern).map { Regexp.last_match }.last
+    end
+
+    # The text after the input prompt on its row, stripped.
+    def input_line(last)
+      last.post_match.lines.first.to_s.chomp.gsub(/[[:space:] ]+/, " ").strip
     end
 
     # Whether the input is Claude Code's suggestion: at least one visible
     # character, all of them faint, on the prompt line and on any line down
     # to the closing rule, and every one of those lines proven.
-    def suggestion?(pattern, styled)
+    def suggestion?(last, styled)
       return false unless styled
 
       text = styled.text
-      last = text.to_enum(:scan, pattern).map { Regexp.last_match }.last
-      return false unless last
-
       line = text[0...last.end(0)].count("\n")
       newline = text.rindex("\n", last.end(0) - 1)
       column = last.end(0) - (newline ? newline + 1 : 0)
@@ -157,10 +161,10 @@ module Workspace
     # only when that rule is on screen; without one the prompt row decides.
     # `Try "` is the placeholder only on a plain String, which has no styling
     # to tell it from a typed draft.
-    def empty_input?(pattern, screen, styled, input)
-      return true if suggestion?(pattern, styled)
+    def empty_input?(last, styled)
+      return true if suggestion?(last, styled)
 
-      last = screen.to_enum(:scan, pattern).map { Regexp.last_match }.last
+      input = input_line(last)
       rows = last.post_match.lines.drop(1)
       if rows.any? { |row| closing_rule?(row) }
         return false if rows.take_while { |row| !closing_rule?(row) }.any? { |row| row.match?(/\S/) }
@@ -169,8 +173,7 @@ module Workspace
     end
 
     # Everything from the last input prompt down to the rule that closes the box.
-    def whole_input(pattern, screen)
-      last = screen.to_enum(:scan, pattern).map { Regexp.last_match }.last
+    def whole_input(last)
       last.post_match.lines.take_while { |line| !closing_rule?(line) }.join
     end
 
