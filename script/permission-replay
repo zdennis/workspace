@@ -15,18 +15,32 @@
 # In --json rows, candidate is null without --rules and "skipped (not Bash)" for a non-Bash row; unsafe_rows lists
 # the unsafe-marked rows an allow reached, each with allowed_by (candidate and/or today).
 #
-#   script/permission-replay [--events-dir DIR] [--rules FILE] [--marks FILE] [--json]
-#   script/permission-replay --file PATH [--rules FILE] [--marks FILE] [--json]
+# The logged input is only the command's first line (cut at 4096 bytes, secrets redacted), so a later line could
+# write. Every row is "partial" unless --transcripts DIR finds exactly one Bash tool_use in Claude Code
+# transcripts (DIR/<project>/<session>.jsonl, DIR/<project>/<session>/subagents/agent-<id>.jsonl) whose first line
+# starts with the logged text and whose timestamp is 10s before to 1s after the request; that full command is then
+# replayed (source "transcript"). A row with an agent_id looks only in agent-<id>.jsonl, else only in session files.
+# An allow on a partial row is shown as "allowed on partial text", counted apart from the clean allows, and still
+# counts as unsafe allowed when the row is marked unsafe. JSON rows add source, partial, partial_reason,
+# transcript_hits (null without --transcripts) and command (the replayed text).
+#
+#   script/permission-replay [--events-dir DIR] [--rules FILE] [--marks FILE] [--transcripts DIR] [--json]
+#   script/permission-replay --file PATH [--rules FILE] [--marks FILE] [--transcripts DIR] [--json]
 
 require "json"
 require "optparse"
+require "shellwords"
+require "time"
 require "yaml"
 require_relative "../lib/workspace"
 
 module PermissionReplay
   NO_POLICY = "no policy (agent dialog)"
   SKIPPED = "skipped (not Bash)"
-  COLUMNS = %w[at workspace seq mark today candidate reason command].freeze
+  COLUMNS = %w[at workspace seq mark today candidate source partial reason command].freeze
+  PARTIAL_ALLOW = "allowed on partial text"
+  WINDOW_BEFORE = 10
+  WINDOW_AFTER = 1
 
   def self.default_events_dir
     File.join(File.expand_path(ENV.fetch("XDG_STATE_HOME", "~/.local/state")), "workspace/.events")
@@ -110,6 +124,77 @@ module PermissionReplay
     end
   end
 
+  # Bash tool_use commands of Claude Code transcripts, read line by line, grouped by the agent they belong to.
+  class Transcripts
+    def initialize(dir)
+      @entries = Hash.new { |h, k| h[k] = [] }
+      Dir.glob(File.join(dir, "**", "*.jsonl")).sort.each do |path|
+        key = File.basename(path)[/\Aagent-(.+)\.jsonl\z/, 1]
+        scan(path, key)
+      end
+    end
+
+    # @return [Array<String>] full commands of the tool_use entries that match the logged first line in the window
+    def hits(agent_id, logged, at)
+      time = begin
+        Time.iso8601(at.to_s)
+      rescue ArgumentError
+        return []
+      end
+      prefix = logged.to_s.sub(/…\z/, "").split("[redacted]", 2).first.to_s
+      @entries[agent_id&.to_s].filter_map do |stamp, command|
+        delta = time - stamp
+        command if delta.between?(-WINDOW_AFTER, WINDOW_BEFORE) && command.lines.first.to_s.chomp.start_with?(prefix)
+      end
+    end
+
+    private
+
+    def scan(path, key)
+      File.foreach(path) do |raw|
+        line = raw.scrub
+        next unless line.include?("tool_use") && line.include?("Bash")
+        entry = begin
+          JSON.parse(line)
+        rescue JSON::ParserError
+          next
+        end
+        next unless entry.is_a?(Hash)
+        stamp = begin
+          Time.iso8601(entry["timestamp"].to_s)
+        rescue ArgumentError
+          next
+        end
+        content = entry.dig("message", "content")
+        next unless content.is_a?(Array)
+        content.each do |item|
+          next unless item.is_a?(Hash) && item["type"] == "tool_use" && item["name"] == "Bash"
+          command = item.dig("input", "command")
+          @entries[key] << [stamp, command] if command.is_a?(String)
+        end
+      end
+    rescue SystemCallError => e
+      raise ArgumentError, io_message(path, e)
+    end
+
+    def io_message(path, error)
+      "#{path}: #{SystemCallError.new(nil, error.errno).message}"
+    end
+  end
+
+  # @return [String] why a logged first line cannot stand for the whole command
+  def self.first_line_reason(input)
+    return "truncated" if input.end_with?("…") || input.bytesize >= 4096
+    return "redacted" if input.include?("[redacted]")
+    return "heredoc" if input.match?(/<<-?\s*['"]?\w/)
+    begin
+      Shellwords.split(input)
+    rescue ArgumentError
+      return "unclosed quote"
+    end
+    "first line only"
+  end
+
   def self.reason(command, pieces, decision)
     flags = []
     flags << "substitution" if pieces.substitution?(command)
@@ -120,21 +205,36 @@ module PermissionReplay
     rule.empty? ? flags.join(", ") : "#{rule} (#{flags.join(", ")})"
   end
 
-  # The one place a row is built; a later --transcripts source can feed it the same event shape.
-  def self.build_row(event, today:, candidate:, marks:, pieces: Workspace::BashCommandPieces.new)
+  # The one place a row is built.
+  def self.build_row(event, today:, candidate:, marks:, transcripts: nil, pieces: Workspace::BashCommandPieces.new)
+    logged = event["input"].to_s
     row = {"at" => event["at"], "workspace" => event["workspace"], "seq" => event["seq"], "tool" => event["tool"],
-           "command" => event["input"].to_s, "mark" => marks[[event["workspace"].to_s, event["seq"].to_s]]}
+           "command" => logged, "mark" => marks[[event["workspace"].to_s, event["seq"].to_s]],
+           "source" => "log", "partial" => false, "partial_reason" => "", "transcript_hits" => nil}
     unless event["tool"] == "Bash"
       row.merge!("today" => SKIPPED, "candidate" => (candidate ? SKIPPED : nil), "reason" => "", "allowed_by" => [])
       return row
     end
-    input = {"command" => event["input"]}
+    command = logged
+    row["partial"] = true
+    row["partial_reason"] = first_line_reason(logged)
+    if transcripts
+      found = transcripts.hits(event["agent_id"], logged, event["at"])
+      row["transcript_hits"] = found.size
+      if found.size == 1
+        command = found.first
+        row.merge!("source" => "transcript", "partial" => false, "partial_reason" => "", "command" => command)
+      else
+        row["partial_reason"] = found.empty? ? "no transcript match" : "#{found.size} transcript matches"
+      end
+    end
+    input = {"command" => command}
     today_policy = today.policy(event["workspace"].to_s)
     today_decision = today_policy&.decide(tool_name: "Bash", tool_input: input, cwd: nil)
     candidate_decision = candidate&.decide(tool_name: "Bash", tool_input: input, cwd: nil)
     row.merge!("today" => today_decision ? today_decision[:action] : NO_POLICY,
       "candidate" => candidate_decision&.fetch(:action),
-      "reason" => reason(event["input"].to_s, pieces, candidate_decision || today_decision))
+      "reason" => reason(command, pieces, candidate_decision || today_decision))
     row["allowed_by"] = {"candidate" => row["candidate"], "today" => row["today"]}.select { |_, v| v == "allow" }.keys
     row
   end
@@ -142,19 +242,36 @@ module PermissionReplay
   # @return [Array(Hash, Array<Hash>)] counts and the unsafe-marked rows that an allow reached
   def self.summarize(rows)
     unsafe = rows.select { |r| r["mark"] == "unsafe" && !r["allowed_by"].empty? }
-    counts = {"requests" => rows.size, "allowed_today" => rows.count { |r| r["today"] == "allow" },
-              "allowed_candidate" => rows.count { |r| r["candidate"] == "allow" }, "unsafe_allowed" => unsafe.size}
+    clean = rows.reject { |r| r["partial"] }
+    partial = rows.select { |r| r["partial"] }
+    counts = {"requests" => rows.size, "allowed_today" => clean.count { |r| r["today"] == "allow" },
+              "allowed_candidate" => clean.count { |r| r["candidate"] == "allow" },
+              "allowed_partial" => {"today" => partial.count { |r| r["today"] == "allow" },
+                                    "candidate" => partial.count { |r| r["candidate"] == "allow" }},
+              "unsafe_allowed" => unsafe.size}
     [counts, unsafe]
   end
 
   def self.format_text(rows, counts, unsafe, with_candidate:)
     cols = with_candidate ? COLUMNS : COLUMNS - ["candidate"]
     lines = [cols.join("\t")]
-    rows.each { |r| lines << cols.map { |c| (c == "command") ? r[c][0, 80].tr("\n\t", "  ") : r[c].to_s }.join("\t") }
+    rows.each do |r|
+      lines << cols.map { |c|
+        case c
+        when "command" then r[c][0, 80].tr("\n\t", "  ")
+        when "partial" then r["partial_reason"]
+        when "today", "candidate" then (r["partial"] && r[c] == "allow") ? PARTIAL_ALLOW : r[c].to_s
+        else r[c].to_s
+        end
+      }.join("\t")
+    end
     lines << ""
+    partial = counts["allowed_partial"]
     lines << "requests: #{counts["requests"]}"
     lines << "allowed today: #{counts["allowed_today"]}"
     lines << "allowed candidate: #{counts["allowed_candidate"]}" if with_candidate
+    lines << "allowed on partial text, today: #{partial["today"]}"
+    lines << "allowed on partial text, candidate: #{partial["candidate"]}" if with_candidate
     lines << "unsafe allowed: #{counts["unsafe_allowed"]}"
     unsafe.each { |r| lines << "  #{r["at"]} #{r["workspace"]} seq=#{r["seq"]} allowed by #{r["allowed_by"].join(" and ")}: #{r["command"][0, 80].tr("\n\t", "  ")}" }
     lines.join("\n")
@@ -163,11 +280,12 @@ module PermissionReplay
   def self.main(argv, out: $stdout, err: $stderr)
     opts = {json: false, events_dir: default_events_dir}
     parser = OptionParser.new do |o|
-      o.banner = "Usage: permission-replay [--events-dir DIR | --file PATH] [--rules FILE] [--marks FILE] [--json]"
+      o.banner = "Usage: permission-replay [--events-dir DIR | --file PATH] [--rules FILE] [--marks FILE] [--transcripts DIR] [--json]"
       o.on("--events-dir DIR", "Directory of hook event logs (default ~/.local/state/workspace/.events)") { |v| opts[:events_dir] = v }
       o.on("--file PATH", "Read this one event log") { |v| opts[:file] = v }
       o.on("--rules FILE", "Candidate rules, YAML {default:, rules: [{tool, pattern, action}]}") { |v| opts[:rules] = v }
       o.on("--marks FILE", "YAML list of {workspace, seq, mark: safe|unsafe}") { |v| opts[:marks] = v }
+      o.on("--transcripts DIR", "Claude Code transcripts to recover each command's full text (no default)") { |v| opts[:transcripts] = v }
       o.on("--json", "Print JSON") { opts[:json] = true }
     end
     parser.parse!(argv)
@@ -178,11 +296,16 @@ module PermissionReplay
       raise ArgumentError, "#{opts[:events_dir]}: no such directory" unless File.directory?(opts[:events_dir])
     end
 
+    if opts[:transcripts] && !File.directory?(opts[:transcripts])
+      raise ArgumentError, "#{opts[:transcripts]}: no such directory"
+    end
+
     candidate = opts[:rules] && candidate_policy(opts[:rules])
     marks = opts[:marks] ? read_marks(opts[:marks]) : {}
     paths = opts[:file] ? [opts[:file]] : event_files(opts[:events_dir])
     today = Today.new
-    rows = read_requests(paths).map { |event| build_row(event, today: today, candidate: candidate, marks: marks) }
+    transcripts = opts[:transcripts] && Transcripts.new(opts[:transcripts])
+    rows = read_requests(paths).map { |event| build_row(event, today: today, candidate: candidate, marks: marks, transcripts: transcripts) }
     rows.sort_by! { |r| [r["at"].to_s, r["workspace"].to_s, r["seq"].to_i] }
     counts, unsafe = summarize(rows)
     unmatched = marks.keys - rows.map { |r| [r["workspace"].to_s, r["seq"].to_s] }
