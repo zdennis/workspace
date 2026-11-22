@@ -41,4 +41,60 @@ RSpec.describe DemoCalculator2 do
     expect(DemoCalculator::Config.v1).to have_attributes(demo_dir: "demo/calculator", workflows_suffix: "/demo/calculator/workflows",
       runs_dir: "tmp/demo-calculator/runs", acceptance_ref: nil, lint_command: nil)
   end
+  describe "the workflow id" do
+    it "defaults to deliver-goal and takes another for every item" do
+      fast = described_class.config(workflow_id: "deliver-goal-fast", goals: %w[01-add-sub])
+      expect(fast.queue_items.call([]).first.first).to eq("deliver-goal-fast")
+      expect(fast.queue_items.call([]).first.last).to start_with("work-queue", "add", "workflow", "deliver-goal-fast")
+    end
+
+    it "lists the three definitions the run record hashes" do
+      expect(config.definition_ids).to eq(%w[deliver-goal deliver-goal-fast integrate-branch])
+      expect(described_class::GOAL_WORKFLOW_IDS).to eq(%w[deliver-goal deliver-goal-fast])
+    end
+
+    it "names a definition file that exists for each id" do
+      expect(config.definition_ids.map { |id| File.exist?(File.join(PROJECT_ROOT, "demo/calculator2/workflows/#{id}.yml")) }).to all(be(true))
+    end
+  end
+
+  describe "the lanes" do
+    it "puts 01-05 in lane A and 06 and 07 in lane B, forking after 03" do
+      expect(described_class::LANES).to eq(a: %w[01-add-sub 02-mul-div 03-div-zero 04-precedence 05-mod-pow], b: %w[06-json 07-repl], fork_after: "03-div-zero")
+      expect(described_class::LANES[:a] + described_class::LANES[:b]).to eq(described_class::GOALS)
+    end
+
+    it "queues each lane's goals under the lanes' acceptance runner, and gives only lane B the prompt that names the earlier goals" do
+      a = described_class.lane_config(:a, workflow_id: "deliver-goal-fast").queue_items.call(["--name", "a"])
+      b = described_class.lane_config(:b, workflow_id: "deliver-goal-fast").queue_items.call(["--name", "b"])
+      expect(a.size).to eq(5)
+      expect(b.map { |_, argv| argv[argv.index("--dedupe-key") + 1] }).to eq(%w[calculator2-demo:06-json calculator2-demo:07-repl])
+      (a + b).each { |_, argv| expect(argv).to include("acceptance=script/demo_calculator2/acceptance_runner_lanes") }
+      expect(a.map { |_, argv| argv[argv.index("--prompt") + 1] }).to all(satisfy { |text| text.start_with?("Deliver the goal in demo/calculator2/goals/0") && !text.include?("Earlier goals") })
+      expect(b.map { |_, argv| argv[argv.index("--prompt") + 1] }).to all(end_with("Earlier goals here means 01, 02 and 03. This branch has no 04 or 05, so do not look for or build precedence, `%` or `**`."))
+    end
+
+    it "takes each lane's goals from the goals of the run" do
+      expect(described_class.lane_goals(:a, %w[01-add-sub 06-json])).to eq(%w[01-add-sub])
+      expect(described_class.lane_goals(:b, %w[01-add-sub 06-json])).to eq(%w[06-json])
+    end
+
+    it "forks after the last lane A goal at or before 03 in the run" do
+      expect(described_class.fork_goal).to eq("03-div-zero")
+      expect(described_class.fork_goal(%w[01-add-sub 06-json])).to eq("01-add-sub")
+      expect(described_class.fork_goal(%w[01-add-sub 03-div-zero 05-mod-pow 06-json])).to eq("03-div-zero")
+      expect(described_class.fork_goal(%w[05-mod-pow 06-json])).to be_nil
+    end
+
+    it "keeps the integration run on the 07 goal name with the plain acceptance runner" do
+      argv = described_class.integrate_argv("calc-demo/x-b", ["--name", "a"])
+      expect(argv).to include("integrate-branch", "branch=calc-demo/x-b", "goal=demo/calculator2/goals/07-repl.md", "acceptance=script/demo_calculator2/acceptance_runner")
+    end
+
+    it "tells which groups no item's own check runs, so the plain 07 run after the merge is the only one to cover them" do
+      expect(described_class.group_coverage(%w[06-json 07-repl])).to eq("06-json" => [1, 2, 3, 6], "07-repl" => [1, 2, 3, 6, 7])
+      expect(described_class.coverage_check(described_class::GOALS)).to eq(covered: [1, 2, 3, 4, 5, 6, 7], integration_only: [])
+      expect(described_class.coverage_check(%w[01-add-sub 06-json])).to eq(covered: [1, 2, 3, 6], integration_only: [4, 5, 7])
+    end
+  end
 end

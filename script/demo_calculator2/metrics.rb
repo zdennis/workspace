@@ -138,6 +138,133 @@ module DemoCalculator2
       lines
     end
 
+    # How far the critical path's parts may differ from the measured wall before the eval flags an error.
+    PATH_TOLERANCE = 5
+
+    # The numbers of a lanes run that no single item has: wall, the sequential equivalent, the critical path, the waits
+    # on it, lock waits per lane and the integration. A row needs `lane` ("A" or "B"), `goal`, `started_at` and `ended_at`
+    # (ISO strings) to count; a part that cannot be worked out is nil.
+    #
+    # Wall runs from the earliest item start in either lane to the end of the integration. The critical path is the
+    # 01-03 span (to the end of the fork goal), fork latency (to lane B's first start), the longer lane's tail from that start and
+    # the integration (its recorded start to its end). A gap between the later lane's end and the integration's start is the delta.
+    #
+    # @param rows [Array<Hash>] both lanes' item rows
+    # @param fork [Hash, nil] run.json's `fork` block (`goal`)
+    # @param integration [Hash, nil] run.json's `integration` block (`started_at`, `ended_at`, `first_pass`, `conflict`, `integrate_run`)
+    # @param integrate_attempts [Integer, nil] attempts of the integrate-branch run, when there was one
+    # @return [Hash] `wall`, `sequential`, `critical_path` (with `check`), `wall_net_of_waits`, `lock_waits`, `integration`
+    def self.lanes(rows, fork:, integration:, integrate_attempts: nil)
+      ran = rows.select { |row| row[:ran] && time(row[:started_at]) && time(row[:ended_at]) }
+      lane = ->(name) { ran.select { |row| row[:lane] == name }.sort_by { |row| time(row[:started_at]) } }
+      a = lane.call("A")
+      b = lane.call("B")
+      integration ||= {}
+      started = time(integration["started_at"])
+      ended = time(integration["ended_at"])
+      first = ran.map { |row| time(row[:started_at]) }.min
+      wall = (first && ended) ? ended - first : nil
+      walls = rows.select { |row| row[:ran] }.map { |row| row[:wall] }.grep(Numeric)
+      integration_wall = (started && ended) ? ended - started : nil
+      sequential = (walls.empty? || integration_wall.nil?) ? nil : walls.sum + integration_wall
+      path = critical_path(a, b, first, started, ended, fork && fork["goal"], wall, fork && time(fork["at"]))
+      {wall: wall, sequential: sequential, critical_path: path, wall_net_of_waits: net_of_waits(wall, a, b, path, fork && fork["goal"]),
+       lock_waits: lock_waits(ran), integration: {
+         wall: integration_wall, merge: integration["merge"], first_pass: integration["first_pass"], conflict: integration["conflict"],
+         integrate_attempts: integrate_attempts, integrate_passed: integration.dig("integrate_run", "passed")
+       }}
+    end
+
+    # @return [Hash, nil] `span`, `fork_latency`, `a_tail`, `b_tail`, `integration`, `slack`, `lane` (the longer one) and
+    #   `check` (`sum`, `delta`, `fork_ordered`, `ok`: the parts add up to wall within PATH_TOLERANCE, none is negative and the recorded fork time falls between the fork goal's end and lane B's first start); nil without both lanes and a fork goal
+    def self.critical_path(a, b, first, started, ended, fork_goal, wall, fork_at = nil)
+      fork_row = a.find { |row| row[:goal] == fork_goal }
+      return nil if fork_row.nil? || b.empty? || first.nil? || started.nil? || ended.nil?
+      fork_end = time(fork_row[:ended_at])
+      b_start = time(b.first[:started_at])
+      a_end = a.map { |row| time(row[:ended_at]) }.max
+      b_end = b.map { |row| time(row[:ended_at]) }.max
+      parts = {span: fork_end - first, fork_latency: b_start - fork_end, a_tail: a_end - b_start, b_tail: b_end - b_start, integration: ended - started}
+      longest = [parts[:a_tail], parts[:b_tail]].max
+      sum = parts[:span] + parts[:fork_latency] + longest + parts[:integration]
+      # Each part is read from its own timestamps and the integration from its own recorded start, so any gap between the later
+      # lane's end and the integration's start shows up as delta rather than being absorbed.
+      delta = (sum - wall).abs
+      # The one reading the parts do not share: the harness's own fork time must sit between the fork goal's end and lane B's first start.
+      ordered = fork_at.nil? || fork_at.between?(fork_end - PATH_TOLERANCE, b_start + PATH_TOLERANCE)
+      parts.merge(slack: (a_end - b_end).abs, lane: (a_end >= b_end) ? "A" : "B",
+        check: {sum: sum, delta: delta, fork_ordered: ordered, ok: delta <= PATH_TOLERANCE && ordered && [parts[:span], parts[:fork_latency], longest, parts[:integration]].all? { |v| v >= 0 }})
+    end
+
+    # Wall less the machine, redelivery and person waits of the items on the critical path: lane A through the fork goal,
+    # then the longer lane's.
+    def self.net_of_waits(wall, a, b, path, fork_goal)
+      return nil if wall.nil? || path.nil?
+      cut = a.index { |row| row[:goal] == fork_goal }
+      items = a.first(cut + 1) + ((path[:lane] == "A") ? a.drop(cut + 1) : b)
+      waited = items.sum { |row| [row[:machine_wait], row[:deliver_wait], row[:person_wait]].grep(Numeric).sum }
+      [wall - waited, 0].max
+    end
+
+    # @return [Hash{String => Hash}] per lane, the lock wait in seconds (`waiting_lock`) and whether it is nonzero (`flagged`)
+    def self.lock_waits(ran)
+      %w[A B].to_h do |name|
+        seconds = ran.select { |row| row[:lane] == name }.sum { |row| row[:lock_wait].to_f }
+        [name, {seconds: seconds, flagged: seconds > 0}]
+      end
+    end
+
+    # What a run's reviewers and verify step caught: failed attempts of the verify step, and rejecting verdicts the
+    # attempts kept.
+    #
+    # @param run [Hash] a stored run
+    # @return [Hash] `verify_fixes` and `review_rejections`
+    def self.catches(run)
+      verify = Array(run.dig("steps", "verify", "attempts"))
+      rejections = run.fetch("steps", {}).values.sum do |step|
+        Array(step["attempts"]).sum { |attempt| Array(attempt["reviews"]).grep(Hash).count { |review| review["verdict"] == "reject" } }
+      end
+      {verify_fixes: verify.count { |attempt| attempt["outcome"] == "failed" }, review_rejections: rejections}
+    end
+
+    # The lines a lanes eval prints under the item tables.
+    #
+    # @param lanes [Hash] see {.lanes}
+    # @param fork [Hash, nil]
+    # @return [Array<String>]
+    def self.lanes_lines(lanes, fork)
+      fmt = DemoCalculator::Fmt
+      duration = ->(value) {
+        if value.nil?
+          fmt::UNKNOWN
+        else
+          (value.negative? ? "-#{fmt.duration(-value)}" : fmt.duration(value))
+        end
+      }
+      path = lanes[:critical_path]
+      lines = ["wall: #{duration.call(lanes[:wall])}  sequential equivalent: #{duration.call(lanes[:sequential])}  wall net of waits: #{duration.call(lanes[:wall_net_of_waits])}"]
+      if path
+        lines << "critical path: 01-03 #{duration.call(path[:span])} + fork #{duration.call(path[:fork_latency])} + tail #{duration.call([path[:a_tail], path[:b_tail]].max)} " \
+          "(lane #{path[:lane]}; A #{duration.call(path[:a_tail])}, B #{duration.call(path[:b_tail])}) + integration #{duration.call(path[:integration])} = #{duration.call(path[:check][:sum])}; slack #{duration.call(path[:slack])}"
+        lines << "ERROR: the critical path differs from the wall by #{duration.call(path[:check][:delta])} or has a negative part, or the recorded fork time is outside the fork goal's end and lane B's start: the eval is wrong or the run record is incomplete" unless path[:check][:ok]
+      else
+        lines << "critical path: #{fmt::UNKNOWN}#{" (fork goal #{fork["goal"]})" if fork}"
+      end
+      locks = lanes[:lock_waits].map { |name, wait| "#{name} #{duration.call(wait[:seconds])}" }.join(", ")
+      lines << "lock waits: #{locks}#{" (nonzero: the test-db lock is back; check the definition's uses)" if lanes[:lock_waits].values.any? { |wait| wait[:flagged] }}"
+      integration = lanes[:integration]
+      yes_no = ->(value) {
+        if value.nil?
+          fmt::UNKNOWN
+        else
+          (value ? "yes" : "no")
+        end
+      }
+      lines << "integration: merge #{integration[:merge] || fmt::UNKNOWN}, first pass #{yes_no.call(integration[:first_pass])}, conflict #{yes_no.call(integration[:conflict])}, " \
+        "integrate run attempts #{integration[:integrate_attempts] || "-"}, took #{duration.call(integration[:wall])}"
+      lines
+    end
+
     LOOP_STEP = "implement".freeze
 
     # How the acceptance step went in one run, from its stored attempts.

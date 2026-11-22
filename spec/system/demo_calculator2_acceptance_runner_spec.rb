@@ -145,4 +145,74 @@ RSpec.describe "script/demo_calculator2/acceptance_runner", type: :system do
     expect(out.lines.size).to be < 40
     expect(out).not_to include("assert_value", "def test_", "Group1AddSubTest", "support.rb")
   end
+  describe "--dag" do
+    lanes_runner = File.join(PROJECT_ROOT, "script", "demo_calculator2", "acceptance_runner_lanes")
+
+    def build_groups_repo(dir, ref)
+      git(dir, "init", "-q")
+      git(dir, "config", "user.email", "t@example.com")
+      git(dir, "config", "user.name", "t")
+      FileUtils.mkdir_p(File.join(dir, "demo", "calculator2", "acceptance"))
+      (1..7).each do |n|
+        File.write(File.join(dir, "demo", "calculator2", "acceptance", "group_#{n}_x_test.rb"), "require \"minitest/autorun\"\nclass G#{n} < Minitest::Test\n  def test_ok = assert(true)\nend\n")
+      end
+      git(dir, "add", "-A")
+      git(dir, "commit", "-q", "-m", "base")
+      git(dir, "update-ref", ref, "HEAD")
+    end
+
+    def groups_run(out) = out.scan(/^group (\d): pass$/).flatten.map(&:to_i)
+
+    it "runs the groups a goal depends on: 06 skips 4 and 5, and 07 adds 7" do
+      build_groups_repo(dir, ref)
+      six, _, status = run_runner(runner, dir, "--dag", "demo/calculator2/goals/06-json.md")
+      expect(status.exitstatus).to eq(0)
+      expect(groups_run(six)).to eq([1, 2, 3, 6])
+      seven, _, = run_runner(runner, dir, "--dag", "demo/calculator2/goals/07-repl.md")
+      expect(groups_run(seven)).to eq([1, 2, 3, 6, 7])
+    end
+
+    it "keeps the table's groups for 01 to 05 equal to the default path" do
+      build_groups_repo(dir, ref)
+      (1..5).each do |n|
+        goal = "demo/calculator2/goals/0#{n}-x.md"
+        expect(groups_run(run_runner(runner, dir, "--dag", goal).first)).to eq(groups_run(run_runner(runner, dir, goal).first))
+      end
+    end
+
+    it "leaves the default path alone: 07 without the flag runs groups 1 to 7, and 06 runs 1 to 6" do
+      build_groups_repo(dir, ref)
+      expect(groups_run(run_runner(runner, dir, "demo/calculator2/goals/07-repl.md").first)).to eq([1, 2, 3, 4, 5, 6, 7])
+      expect(groups_run(run_runner(runner, dir, "demo/calculator2/goals/06-json.md").first)).to eq([1, 2, 3, 4, 5, 6])
+    end
+
+    it "refuses a goal that is not in the table, with a message and a non-zero exit" do
+      build_groups_repo(dir, ref)
+      out, err, status = run_runner(runner, dir, "--dag", "demo/calculator2/goals/08-x.md")
+      expect(status.exitstatus).to eq(2)
+      expect(err).to include("refused: goal 8 is not in the --dag table")
+      expect(out).to eq("")
+    end
+
+    it "still refuses a goal name that maps to no group, and reaches the groups through acceptance_runner_lanes" do
+      build_groups_repo(dir, ref)
+      _, err, status = run_runner(runner, dir, "--dag", "goals/notes.md")
+      expect(status.exitstatus).to eq(2)
+      expect(err).to include("0N-name.md")
+      out, _, status = run_runner(lanes_runner, dir, "demo/calculator2/goals/06-json.md")
+      expect(status.exitstatus).to eq(0)
+      expect(groups_run(out)).to eq([1, 2, 3, 6])
+    end
+
+    it "fails when a group the goal depends on fails, and names that group" do
+      build_groups_repo(dir, ref)
+      File.write(File.join(dir, "demo", "calculator2", "acceptance", "group_6_x_test.rb"), "require \"minitest/autorun\"\nclass G6 < Minitest::Test\n  def test_bad = flunk(\"no\")\nend\n")
+      git(dir, "add", "-A")
+      git(dir, "commit", "-q", "-m", "broken")
+      git(dir, "update-ref", ref, "HEAD")
+      out, _, status = run_runner(lanes_runner, dir, "demo/calculator2/goals/07-repl.md")
+      expect(status.exitstatus).to eq(1)
+      expect(out).to include("group 6: FAIL", "group 7: pass")
+    end
+  end
 end

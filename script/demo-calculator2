@@ -1,18 +1,22 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Runs the calculator2 demo: one `deliver-goal` workflow run per goal in demo/calculator2/goals, each ending in an
-# acceptance step the agents cannot read. `reset` puts demo/calculator2 back to its stub and clears the demo workspace's
-# queue; `run` does that on a fresh calc-demo/<stamp> branch, points refs/demo-calc2/acceptance-base at the run's base commit, installs
-# the workflow, queues the seven goals and writes a run record; `eval` scores a recorded run.
+# Runs the calculator2 demo: one workflow run per goal in demo/calculator2/goals (`deliver-goal` unless --workflow says
+# `deliver-goal-fast`), each ending in an acceptance step the agents cannot read. `reset` puts demo/calculator2 back to its stub and
+# clears the demo workspace's queue; `run` does that on a fresh calc-demo/<stamp> branch, points refs/demo-calc2/acceptance-base at the run's base commit, installs
+# the workflow, queues the seven goals and writes a run record; `run --lanes` splits the goals over two workspaces and merges them;
+# `integrate` merges and checks a lanes run's branches; `eval` scores a recorded run.
 # It shares its machinery with script/demo-calculator (script/demo_calculator/). See demo/calculator2/README.md.
 
 require "json"
+require "open3"
 require "optparse"
 
 require_relative "demo_calculator/demo"
 require_relative "demo_calculator2/config"
 require_relative "demo_calculator2/evaluation"
+require_relative "demo_calculator2/lanes"
+require_relative "demo_calculator2/lanes_evaluation"
 
 module DemoCalculator2
   # 0 unless `run --wait` stopped for any reason but a drained queue; then 3, with the reason and the item on err.
@@ -28,48 +32,100 @@ module DemoCalculator2
     args = {}
     args[:stub_ref] = options[:stub_ref] if options[:stub_ref]
     args[:goals] = pick_goals(options[:goals]) if options[:goals]
+    args[:workflow_id] = options[:workflow] if options[:workflow]
     config(**args)
+  end
+
+  def self.build_lanes(options, workspace:, root:, out:, err:)
+    raise DemoCalculator::Refused, "run --lanes needs --lane-b WORKSPACE" unless options[:lane_b]
+    args = {root: root, workspace: workspace, lane_b: options[:lane_b], name: options[:name], dry_run: options[:dry_run], wait: options[:wait],
+            base: options[:base], out_dir: options[:out_dir], out: out, err: err}
+    args[:workflow] = options[:workflow] if options[:workflow]
+    args[:stub_ref] = options[:stub_ref] if options[:stub_ref]
+    args[:goals] = pick_goals(options[:goals]) if options[:goals]
+    Lanes.new(**args)
+  end
+
+  # The directory of the newest run record, for `integrate` without --run.
+  def self.newest_run_dir(root)
+    newest = Dir.glob(File.join(root, config.runs_dir, "*", "run.json")).max
+    raise DemoCalculator::Refused, "no run record under #{config.runs_dir}: pass --run DIR" unless newest
+    File.dirname(newest)
+  end
+
+  # `integrate` merges into the checkout it runs in, so it refuses anything but lane A's run branch.
+  def self.guard_run_branch!(root)
+    out, status = Open3.capture2("git", "-C", root, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = out.strip
+    raise DemoCalculator::Refused, "integrate runs on lane A's run branch (#{DemoCalculator::RUN_BRANCH_PREFIX}<stamp>), not on #{branch}" unless status.success? && branch.start_with?(DemoCalculator::RUN_BRANCH_PREFIX)
   end
 
   def self.main(
     argv, out: $stdout, err: $stderr, root: File.expand_path("..", __dir__)
   )
-    options = {json: false, dry_run: false, name: nil, wait: false, run_dir: nil, base: nil, out_dir: nil, stub_ref: nil, goals: nil}
+    options = {json: false, dry_run: false, name: nil, wait: false, run_dir: nil, base: nil, out_dir: nil, stub_ref: nil, goals: nil, lanes: false, lane_b: nil, workflow: nil}
     parser = OptionParser.new do |o|
-      o.banner = "Usage: script/demo-calculator2 reset|run|eval [--name WORKSPACE] [--dry-run] [--wait]\n" \
-        "       run [--base REF] [--stub-ref REF] [--goals 01,02] [--out DIR] [--wait]\n" \
+      o.banner = "Usage: script/demo-calculator2 reset|run|eval|integrate [--name WORKSPACE] [--dry-run] [--wait]\n" \
+        "       run [--base REF] [--stub-ref REF] [--goals 01,02] [--workflow ID] [--out DIR] [--wait]\n" \
+        "       run --lanes --lane-b WORKSPACE [--workflow deliver-goal-fast] [--goals 01,06] [--wait]\n" \
         "       eval [--run DIR] [--json]\n" \
+        "       integrate [--run DIR]\n" \
         "  reset  put demo/calculator2 back to its stub and empty the workspace's work queue\n" \
         "  run    on a new calc-demo/<stamp> branch: point refs/demo-calc2/acceptance-base at the run's base commit, empty the queue,\n" \
         "         drop the acceptance tests and README, install the workflow, set commands.test and commands.lint,\n" \
-        "         queue the seven goals, start the first and write run.json; with --wait, watch the queue until it stops\n" \
+        "         queue the seven goals, start the first and write run.json; with --wait, watch the queue until it stops (exit 0 drained, 3 stopped)\n" \
+        "         with --lanes, goals 01-05 run here (lane A) and 06, 07 in the --lane-b workspace, which must be running and idle on main;\n" \
+        "         --wait forks lane B from the head goal 03 ends on, waits for both queues, merges lane B here and ends with one `LOOP DONE: ...` line\n" \
+        "         (`wall=... integration=clean|integrate first_pass=... items=N/7` and exit 0, or `stopped reason=timeout|paused|disabled|held|fork_check|integrate_failed|error` and exit 3;\n" \
+        "         a refusal before the queues start prints no LOOP DONE and exits 1)\n" \
+        "  integrate  merge lane B's branch into this branch for a recorded lanes run, check it, and queue integrate-branch when it needs repair; prints LOOP DONE too\n" \
         "  eval   score a recorded run: per goal attempts, review rounds, first-pass acceptance, acceptance loops,\n" \
-        "         time, tokens and cost, each step's wall time, lint and leaks; written to eval.json beside run.json\n" \
+        "         time, tokens and cost, each step's wall time, lint and leaks; written to eval.json beside run.json;\n" \
+        "         a lanes run reads both workspaces and adds the critical path and the integration\n" \
         "Run it from a clean worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
-      o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory)") { |v| options[:name] = v }
+      o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory); with --lanes, lane A") { |v| options[:name] = v }
       o.on("--base REF", "run: the ref to branch from (default HEAD)") { |v| options[:base] = v }
       o.on("--stub-ref REF", "run, reset: the ref that holds the stub (default main)") { |v|
         raise OptionParser::InvalidArgument, "needs a ref, not #{v}" if v.start_with?("-")
         options[:stub_ref] = v
       }
+      o.on("--lanes", "run: two lanes, A (goals 01-05, this workspace) and B (06, 07, the --lane-b workspace)") { options[:lanes] = true }
+      o.on("--lane-b WORKSPACE", "run --lanes: lane B's workspace, running and idle on main") { |v| options[:lane_b] = v }
+      o.on("--workflow ID", "run: the workflow each goal runs as (#{GOAL_WORKFLOW_IDS.join(", ")}; default #{WORKFLOW_ID})") { |v|
+        raise OptionParser::InvalidArgument, "needs one of #{GOAL_WORKFLOW_IDS.join(", ")}, not #{v}" unless GOAL_WORKFLOW_IDS.include?(v)
+        options[:workflow] = v
+      }
       o.on("--goals LIST", "run: queue only these goals, such as 01,03 (default all seven)") { |v| options[:goals] = v }
       o.on("--out DIR", "run: where to write run.json (default tmp/demo-calculator2/runs/<stamp>)") { |v| options[:out_dir] = v }
       o.on("--wait", "run: watch the queue until it is empty, paused, disabled, has a held item past 20m or 4h pass") { options[:wait] = true }
-      o.on("--run DIR", "eval: the directory holding run.json (default: the newest under tmp/demo-calculator2/runs)") { |v| options[:run_dir] = v }
+      o.on("--run DIR", "eval, integrate: the directory holding run.json (default: the newest under tmp/demo-calculator2/runs)") { |v| options[:run_dir] = v }
       o.on("--json", "eval: print the eval.json document instead of the table") { options[:json] = true }
       o.on("--dry-run", "Print the commands that change something instead of running them") { options[:dry_run] = true }
     end
     verb = parser.parse(argv).first
-    unless %w[reset run eval].include?(verb)
+    unless %w[reset run eval integrate].include?(verb)
       err.puts parser.help
       return 1
     end
     workspace = ENV["WORKSPACE_BIN"] || File.join(root, "bin", "workspace")
     if verb == "eval"
-      result = Evaluation.new(root: root, workspace: workspace, name: options[:name], run_dir: options[:run_dir],
-        pricing_path: File.join(root, "demo", "pricing.yml"), err: err).call
-      out.puts(options[:json] ? JSON.pretty_generate(result[:document]) : Evaluation.render(result))
+      args = {root: root, workspace: workspace, name: options[:name], run_dir: options[:run_dir], pricing_path: File.join(root, "demo", "pricing.yml"), err: err}
+      evaluation = Evaluation.new(**args)
+      evaluation = LanesEvaluation.new(**args) if evaluation.lanes?
+      result = evaluation.call
+      out.puts(options[:json] ? JSON.pretty_generate(result[:document]) : evaluation.class.render(result))
       return 0
+    end
+    if verb == "integrate"
+      raise DemoCalculator::Refused, "integrate changes the branch and the queue: it takes no --dry-run" if options[:dry_run]
+      guard_run_branch!(root)
+      dir = options[:run_dir] ? File.expand_path(options[:run_dir], root) : newest_run_dir(root)
+      record = Lanes.new(root: root, workspace: workspace, name: options[:name], out: out, err: err).integrate_run(File.join(dir, "run.json"))
+      return wait_exit(record, err)
+    end
+    if options[:lanes]
+      raise DemoCalculator::Refused, "--lanes is for `run`" unless verb == "run"
+      return wait_exit(build_lanes(options, workspace: workspace, root: root, out: out, err: err).run, err)
     end
     record = DemoCalculator::Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out, err: err,
       base: options[:base], out_dir: options[:out_dir], wait: options[:wait], config: build_config(options)).public_send(verb)

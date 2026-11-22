@@ -96,6 +96,13 @@ RSpec.describe DemoCalculator2::Checks do
       expect(checks.acceptance(base_sha: "aaa", head: "hhh", goal: "03-div-zero")).to eq(passed: ["03-div-zero"], failed: [], regressions: [])
       argv = calls.find { |a| a.first == "ruby" }
       expect(argv.last).to eq("demo/calculator2/goals/03-div-zero.md")
+      expect(argv).not_to include("--dag")
+    end
+
+    it "passes --dag to the runner for a lane that lacks some goals" do
+      checks.acceptance(base_sha: "aaa", head: "hhh", goal: "06-json", dag: true)
+      argv = calls.find { |a| a.first == "ruby" }
+      expect(argv[argv.index { |part| part.end_with?("acceptance_runner") } + 1]).to eq("--dag")
     end
   end
 end

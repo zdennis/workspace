@@ -1,12 +1,14 @@
 #!/usr/bin/env ruby
 # Runs the cumulative acceptance groups for one calculator2 goal against a checkout.
-# Usage: acceptance_runner [--root DIR] GOAL_PATH   (goal file named 0N-*.md runs groups 1..N)
+# Usage: acceptance_runner [--root DIR] [--dag] GOAL_PATH   (goal file named 0N-*.md runs groups 1..N;
+#   with --dag, the groups the goal depends on, see dag.rb: 06 runs 1, 2, 3 and 6, and 07 runs 1, 2, 3, 6 and 7)
 # Env: CALC2_ACCEPTANCE_REF (default refs/demo-calc2/acceptance-base)
 # Exit: 0 all pass, 1 a test failed, 2 usage or setup error.
 require "open3"
 require "optparse"
 require "rbconfig"
 require "tmpdir"
+require_relative "dag"
 
 def die(message)
   warn message
@@ -14,17 +16,23 @@ def die(message)
 end
 
 root = nil
-parser = OptionParser.new { |o| o.on("--root DIR") { |d| root = File.expand_path(d) } }
+dag = false
+parser = OptionParser.new do |o|
+  o.on("--root DIR") { |d| root = File.expand_path(d) }
+  o.on("--dag") { dag = true }
+end
 begin
   args = parser.parse(ARGV)
 rescue OptionParser::ParseError => e
   die e.message
 end
-die "usage: acceptance_runner [--root DIR] GOAL_PATH" unless args.size == 1
+die "usage: acceptance_runner [--root DIR] [--dag] GOAL_PATH" unless args.size == 1
 
-group = File.basename(args[0])[/\A0([1-7])-.*\.md\z/, 1]
+group = File.basename(args[0])[dag ? /\A0(\d)-.*\.md\z/ : /\A0([1-7])-.*\.md\z/, 1]
 die "goal file name must look like 0N-name.md with N in 1..7: #{File.basename(args[0])}" unless group
 group = group.to_i
+groups = dag ? DemoCalculator2::DAG[group] : (1..group).to_a
+die "refused: goal #{group} is not in the --dag table (goals #{DemoCalculator2::DAG.keys.join(", ")}): #{File.basename(args[0])}" unless groups
 if root.nil?
   top, _, st = Open3.capture3("git", "-C", Dir.pwd, "rev-parse", "--show-toplevel")
   die "not inside a git repository: #{Dir.pwd}" unless st.success?
@@ -51,7 +59,7 @@ Dir.mktmpdir("calc2-acceptance") do |tmp|
 
   env = {"CALC2_ROOT" => root, "RUBYOPT" => nil, "RUBYLIB" => nil, "BUNDLE_GEMFILE" => nil, "MT_NO_PLUGINS" => "1"}
   failures = []
-  summary = (1..group).map do |n|
+  summary = groups.map do |n|
     file = Dir.glob(File.join(tmp, "demo/calculator2/acceptance/group_#{n}_*_test.rb")).first
     die "group #{n} test file missing in #{ref}" unless file
     out, st = Open3.capture2e(env, RbConfig.ruby, file, "--seed", "0")

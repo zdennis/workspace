@@ -236,4 +236,152 @@ RSpec.describe "script/demo-calculator2" do
       expect(err.string).to include("names no goal")
     end
   end
+  describe "run --lanes" do
+    let(:lane_b_dir) { File.join(tmp, "lane-b") }
+    let(:snapshot) { File.join(tmp, "snapshot.json") }
+    let(:pane) { {"kind" => "claude", "state" => "idle"} }
+    let(:running) { true }
+    let(:fake_workspace) do
+      path = File.join(tmp, "fake-workspace")
+      File.write(path, <<~SH)
+        #!/bin/sh
+        echo "$@" >> #{log}
+        if [ "$1" = "snapshot" ]; then cat #{snapshot}; fi
+        if [ "$1 $2" = "work-queue list" ]; then echo '{"queues":[{"workspace":"x","state":"off","items":[]}]}'; fi
+        if [ "$1 $2" = "work-queue add" ]; then echo '{"results":[{"id":"item-'"$(echo "$@" | sed 's/.*calculator2-demo:([0-9]*).*/\1/')"'","outcome":"added"}]}'; fi
+        if [ "$1" = "capabilities" ]; then echo '{"version":"9.9.9","features":{"work_queue":2},"paths":{}}'; fi
+      SH
+      File.chmod(0o755, path)
+      path
+    end
+    let(:lane_args) { %w[run --lanes --lane-b ws-b --workflow deliver-goal-fast --name ws] }
+
+    def main(*argv) = DemoCalculator2.main(argv, out: out, err: err, root: work_dir)
+
+    def calls = File.exist?(log) ? File.read(log).lines.map(&:strip) : []
+
+    def info_attributes = File.join(git(work_dir, "rev-parse", "--git-common-dir").strip.then { |dir| File.expand_path(dir, work_dir) }, "info", "attributes")
+
+    def attributes_text = File.exist?(info_attributes) ? File.read(info_attributes) : ""
+
+    before do
+      git(main_dir, "worktree", "add", "-q", "-b", "lane-b", lane_b_dir, "main")
+      File.write(snapshot, JSON.generate("projects" => [{"members" => [{"workspace" => "ws-b", "running" => running, "path" => lane_b_dir, "panes" => [pane]}]}]))
+      ENV["WORKSPACE_BIN"] = fake_workspace
+    end
+
+    after { ENV.delete("WORKSPACE_BIN") }
+
+    it "prints a dry run with the group coverage check, the sources entry, the union line and the fork, and changes nothing" do
+      expect(main(*lane_args, "--goals", "01,06", "--dry-run")).to eq(0), err.string
+      expect(out.string).to include("group coverage of each item's own check (acceptance_runner_lanes):", "lane A: 01 groups 1", "lane B: 06 groups 1,2,3,6",
+        "covered only by the plain 07-repl run after the merge (groups 1..7): 4,5,7",
+        "+ workspace config set workflows.sources ", "calc_test.rb merge=union", "would wait for lane A's 01-add-sub, then in lane B: git checkout -B calc-demo/")
+      expect(out.string).to match(%r{ workspace work-queue add workflow deliver-goal-fast .*goals/01-add-sub\.md})
+      expect(out.string).not_to include("goals/06-json.md --")
+      expect(File.exist?(log)).to be(false)
+      expect(attributes_text).not_to include("merge=union")
+      expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("demo-branch")
+    end
+
+    it "covers every group by some item's own check when all seven goals run, so the integration-only list is none" do
+      expect(main(*lane_args, "--dry-run")).to eq(0), err.string
+      expect(out.string).to include("covered only by the plain 07-repl run after the merge (groups 1..7): none")
+    end
+
+    it "queues only 01-05 in lane A under the fast workflow and the lanes' runner, empties lane B's queue, adds the union line and records the lanes" do
+      expect(main(*lane_args)).to eq(0), err.string
+      adds = calls.grep(/\Awork-queue add workflow /)
+      expect(adds.map { |line| line[%r{goals/(0\d-[a-z-]+)\.md}, 1] }).to eq(DemoCalculator2::LANES[:a])
+      expect(adds).to all(include("deliver-goal-fast", "acceptance=script/demo_calculator2/acceptance_runner_lanes", "--name ws"))
+      expect(calls).to include("work-queue disable --name ws-b", "work-queue resume --name ws-b")
+      expect(calls.grep(/\Aconfig set workflows.sources /).size).to eq(1)
+      expect(File.read(info_attributes).lines.map(&:strip)).to include("demo/calculator2/test/calc_test.rb merge=union")
+      record = JSON.parse(File.read(Dir.glob(File.join(work_dir, "tmp/demo-calculator2/runs/*/run.json")).first))
+      branch = record["branch"]
+      expect(record["lanes"]).to include("workflow" => "deliver-goal-fast", "fork_after" => "03-div-zero")
+      expect(record["lanes"]["a"]).to eq("workspace" => "ws", "goals" => DemoCalculator2::LANES[:a])
+      expect(record["lanes"]["b"]).to include("workspace" => "ws-b", "path" => lane_b_dir, "branch" => "#{branch}-b", "goals" => %w[06-json 07-repl], "items" => [])
+      expect(record["goals"]).to eq(DemoCalculator2::LANES[:a])
+      expect(record["items"].map { |item| item["workflow"] }.uniq).to eq(["deliver-goal-fast"])
+      expect(record).not_to have_key("fork")
+      expect(git(lane_b_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("lane-b")
+    end
+
+    it "re-adds the workflows.sources entry on every run, so a removed entry comes back" do
+      main(*lane_args)
+      expect(calls.grep(/\Aconfig set workflows.sources /).first).to end_with("/demo/calculator2/workflows")
+    end
+
+    context "when lane B is not ready" do
+      def refused_before_anything_changes(message)
+        expect(main(*lane_args)).to eq(1)
+        expect(err.string).to include(message)
+        expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("demo-branch")
+        expect(calls.grep(/work-queue (add|enable|advance)/)).to be_empty
+        expect(attributes_text).not_to include("merge=union")
+      end
+
+      context "with a pane that is working" do
+        let(:pane) { {"kind" => "claude", "state" => "working"} }
+
+        it("refuses") { refused_before_anything_changes("has no idle Claude Code pane") }
+      end
+
+      context "with a workspace that is not running" do
+        let(:running) { false }
+
+        it("refuses") { refused_before_anything_changes("is not running") }
+      end
+
+      it "refuses a checkout with uncommitted changes" do
+        File.write(File.join(lane_b_dir, "stray.txt"), "x")
+        refused_before_anything_changes("uncommitted changes")
+      end
+
+      it "refuses a checkout that is past main" do
+        File.write(File.join(lane_b_dir, "extra.txt"), "x")
+        git(lane_b_dir, "add", "extra.txt")
+        git(lane_b_dir, "-c", "user.email=t@e.c", "-c", "user.name=T", "commit", "-q", "-m", "ahead of main")
+        refused_before_anything_changes("is not on main")
+      end
+    end
+
+    it "refuses --lanes without --lane-b, and a goal list with no lane A goal at or before 03 or no lane B goal" do
+      expect(main("run", "--lanes", "--name", "ws", "--dry-run")).to eq(1)
+      expect(err.string).to include("needs --lane-b")
+      err.truncate(0)
+      expect(main(*lane_args, "--goals", "05,06", "--dry-run")).to eq(1)
+      expect(err.string).to include("needs a lane A goal")
+      err.truncate(0)
+      expect(main(*lane_args, "--goals", "01,02", "--dry-run")).to eq(1)
+      expect(err.string).to include("a lane B goal")
+    end
+
+    it "refuses a workflow that is not one a goal runs as" do
+      expect(main("run", "--workflow", "integrate-branch", "--dry-run")).to eq(1)
+      expect(err.string).to include("needs one of deliver-goal, deliver-goal-fast")
+    end
+
+    it "refuses integrate under --dry-run, since it would merge and queue" do
+      expect(main("integrate", "--dry-run")).to eq(1)
+      expect(err.string).to include("takes no --dry-run")
+    end
+
+    it "refuses integrate off a run branch" do
+      expect(main("integrate")).to eq(1)
+      expect(err.string).to include("integrate runs on lane A's run branch")
+    end
+  end
+
+  describe "run with --workflow" do
+    it "queues every goal under the named workflow and records its definitions" do
+      DemoCalculator::Demo.new(root: work_dir, workspace: fake_workspace, name: "ws", out: out, err: err, clock: clock,
+        config: DemoCalculator2.config(workflow_id: "deliver-goal-fast")).run
+      adds = File.read(log).lines.grep(/\Awork-queue add workflow /)
+      expect(adds.size).to eq(7)
+      expect(adds).to all(start_with("work-queue add workflow deliver-goal-fast "))
+      expect(adds).to all(include("acceptance=script/demo_calculator2/acceptance_runner "))
+    end
+  end
 end

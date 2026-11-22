@@ -11,6 +11,9 @@ module DemoCalculator
 
   # One demo workspace: the checkout this script sits in, and the commands that drive it.
   class Demo
+    # @return [String, nil] where `run` wrote run.json; nil before it did, and under `dry_run`
+    attr_reader :record_path
+
     # @param root [String] the checkout the demo lives in
     # @param workspace [String] the `workspace` program
     # @param name [String, nil] the demo workspace's name; nil lets `workspace` detect it from the directory

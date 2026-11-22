@@ -265,3 +265,173 @@ RSpec.describe DemoCalculator2::Evaluation do
     end
   end
 end
+
+RSpec.describe DemoCalculator2::LanesEvaluation do
+  let(:tmp) { Dir.mktmpdir }
+  let(:state) { File.join(tmp, "state") }
+  let(:run_dir) { File.join(tmp, "rundir") }
+  let(:stubs) { File.join(tmp, "stubs") }
+  let(:fixture) { JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/demo_calculator/runs/plain_pass.json"))) }
+  let(:integration) do
+    {"branch" => "calc-demo/20261121T050000Z-b", "started_at" => "2026-11-21T05:20:00Z", "ended_at" => "2026-11-21T05:24:00Z", "merge" => "conflict", "conflict" => true,
+     "first_pass" => false, "head" => "i" * 40, "integrate_run" => {"item" => "qi", "outcome" => "succeeded", "run_id" => "wr_i", "passed" => true}}
+  end
+
+  after { FileUtils.rm_rf(tmp) }
+
+  def write_json(path, data)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, JSON.generate(data))
+  end
+
+  # A run of the plain-pass fixture that began and ended at the given times, plus one failed verify attempt and a rejecting review.
+  def archive(id, from, to, lock: 0)
+    run = Marshal.load(Marshal.dump(fixture["run"]))
+    run.merge!("id" => id, "started_at" => "2026-11-21T#{from}Z", "ended_at" => "2026-11-21T#{to}Z")
+    run["steps"].each_value { |step| step["attempts"].each { |attempt| attempt["started_at"] = "2026-11-21T#{from}Z" } }
+    run["steps"]["acceptance"] = {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed", "head" => {"before" => "h2"}, "started_at" => "2026-11-21T#{to}Z"}]}
+    run["steps"]["verify"] = {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "failed"}, {"n" => 2, "outcome" => "passed"}]}
+    run["steps"]["plan"]["attempts"].first["reviews"] = [{"reviewer" => "skeptic", "verdict" => "reject"}]
+    write_json(File.join(state, ".workflows", "archive", "#{id}.json"), run)
+    File.write(File.join(state, ".workflows", "archive", "#{id}.events.jsonl"), "")
+    write_json(File.join(stubs, "trace-#{id}.json"), {"totals" => fixture["totals"].merge("machine_waiting_seconds" => {"waiting_lock" => lock, "retry_backoff" => 0}), "spans" => [{"kind" => "attempt", "step" => "implement", "attempt" => 1, "started_at" => "2026-11-21T#{from}Z", "ended_at" => "2026-11-21T#{to}Z", "tokens" => {"total" => 100}}]})
+  end
+
+  let(:workspace) do
+    path = File.join(tmp, "fake-workspace")
+    File.write(path, <<~SH)
+      #!/bin/sh
+      case "$*" in
+        capabilities*) cat #{stubs}/caps.json ;;
+        "work-queue history list"*ws-b*) cat #{stubs}/history-b.json ;;
+        "work-queue history list"*) cat #{stubs}/history-a.json ;;
+        "work-queue list"*ws-b*) cat #{stubs}/queue.json ;;
+        "work-queue list"*) cat #{stubs}/queue.json ;;
+        "workflow trace"*) cat #{stubs}/trace-$3.json ;;
+        *) echo "unexpected: $@" >&2; exit 1 ;;
+      esac
+    SH
+    File.chmod(0o755, path)
+    path
+  end
+
+  let(:checks) do
+    Class.new do
+      attr_reader :acceptance_calls, :leak_args, :diff_args, :lint_head
+
+      def acceptance(base_sha:, head:, goal:, dag: false)
+        (@acceptance_calls ||= []) << {head: head, goal: goal, dag: dag}
+        {passed: [goal], failed: [], regressions: []}
+      end
+
+      def lint(head:, gemfile:)
+        @lint_head = head
+        0
+      end
+
+      def leak_check(hook_files:, transcripts:, from:, to: nil, head: nil, removal: nil)
+        @leak_args = {hook_files: hook_files.map { |path| File.basename(path) }, head: head}
+        {hook: 0, transcript: {}}
+      end
+
+      def diff_scan(base_sha:, head:, since:)
+        @diff_args = head
+        {paths: [], copied: []}
+      end
+    end.new
+  end
+
+  let(:record) do
+    {"stamp" => "20261121T050000Z", "branch" => "calc-demo/20261121T050000Z", "base_sha" => "b" * 40, "workspace" => {"sha" => "w" * 40, "version" => "1.0"},
+     "acceptance_ref" => {"name" => "refs/demo-calc2/acceptance-base", "sha" => "a" * 40, "removal_sha" => "r" * 40},
+     "goals" => %w[02-mul-div 03-div-zero], "items" => [{"workflow" => "deliver-goal-fast", "id" => "q1"}, {"workflow" => "deliver-goal-fast", "id" => "q2"}], "definitions" => {},
+     "fork" => {"at" => "2026-11-21T05:12:20Z", "sha" => "f" * 40, "acceptance_base" => "a" * 40, "goal" => "03-div-zero", "item" => "q2"},
+     "lanes" => {"workflow" => "deliver-goal-fast", "started_at" => "2026-11-21T05:00:00Z", "fork_after" => "03-div-zero", "a" => {"workspace" => "ws", "goals" => %w[02-mul-div 03-div-zero]},
+                 "b" => {"workspace" => "ws-b", "branch" => "calc-demo/20261121T050000Z-b", "goals" => %w[06-json],
+                         "items" => [{"workflow" => "deliver-goal-fast", "id" => "q3", "goal" => "06-json"}]}},
+     "integration" => integration}
+  end
+
+  before do
+    FileUtils.mkdir_p(stubs)
+    archive("wr_a1", "05:00:00", "05:06:00")
+    archive("wr_a2", "05:06:00", "05:12:00")
+    archive("wr_b1", "05:12:30", "05:20:00", lock: 12)
+    archive("wr_i", "05:21:00", "05:23:30")
+    write_json(File.join(stubs, "caps.json"), {"paths" => {"hook_events" => File.join(state, ".events")}})
+    write_json(File.join(stubs, "queue.json"), {"queues" => [{"workspace" => "ws", "items" => []}]})
+    write_json(File.join(stubs, "history-a.json"), {"entries" => [{"id" => "q1", "result" => {"run_id" => "wr_a1"}}, {"id" => "q2", "result" => {"run_id" => "wr_a2"}}, {"id" => "qi", "result" => {"run_id" => "wr_i"}}]})
+    write_json(File.join(stubs, "history-b.json"), {"entries" => [{"id" => "q3", "result" => {"run_id" => "wr_b1"}}]})
+    write_json(File.join(run_dir, "run.json"), record)
+  end
+
+  def build(**options)
+    described_class.new(root: PROJECT_ROOT, workspace: workspace, pricing_path: File.join(PROJECT_ROOT, "demo", "pricing.yml"), run_dir: run_dir, checks: checks, err: StringIO.new, **options)
+  end
+
+  let(:result) { build.call }
+
+  it "tells a lanes record from a plain one" do
+    expect(DemoCalculator2::Evaluation.new(root: PROJECT_ROOT, workspace: workspace, pricing_path: File.join(PROJECT_ROOT, "demo", "pricing.yml"), run_dir: run_dir, checks: checks, err: StringIO.new).lanes?).to be(true)
+    write_json(File.join(run_dir, "run.json"), record.except("lanes"))
+    expect(DemoCalculator2::Evaluation.new(root: PROJECT_ROOT, workspace: workspace, pricing_path: File.join(PROJECT_ROOT, "demo", "pricing.yml"), run_dir: run_dir, checks: checks, err: StringIO.new).lanes?).to be(false)
+  end
+
+  it "reads both workspaces' items as rows tagged with their lane, lane A first" do
+    expect(result[:rows].map { |row| row.values_at(:lane, :goal, :column, :item) }).to eq([["A", "02-mul-div", "A02", 1], ["A", "03-div-zero", "A03", 2], ["B", "06-json", "B06", 3]])
+    expect(result[:rows].map { |row| row[:started_at] }).to eq(%w[2026-11-21T05:00:00Z 2026-11-21T05:06:00Z 2026-11-21T05:12:30Z])
+  end
+
+  it "checks each item's acceptance on the groups it depends on, and the integrated head on the plain 07 run" do
+    result
+    items = checks.acceptance_calls.select { |call| call[:dag] }
+    expect(items.map { |call| call[:goal] }.uniq).to eq(%w[02-mul-div 03-div-zero 06-json])
+    expect(checks.acceptance_calls.last).to eq(head: "i" * 40, goal: "07-repl", dag: false)
+    expect(result[:lanes][:integration][:plain_acceptance]).to be(true)
+  end
+
+  it "lints, diff-scans and leak-scans the integrated branch, reading both workspaces' hook logs" do
+    result
+    expect(checks.lint_head).to eq("i" * 40)
+    expect(checks.diff_args).to eq("i" * 40)
+    expect(checks.leak_args).to eq(hook_files: %w[ws.jsonl ws.jsonl.1 ws-b.jsonl ws-b.jsonl.1], head: "i" * 40)
+  end
+
+  it "measures wall to the end of the integration and a critical path that adds up to it" do
+    lanes = result[:lanes]
+    expect(lanes[:wall]).to eq(24 * 60)
+    expect(lanes[:critical_path]).to include(span: 12 * 60, fork_latency: 30, b_tail: 450, integration: 240, lane: "B")
+    expect(lanes[:critical_path][:check]).to include(ok: true, delta: 0)
+    expect(lanes[:sequential]).to eq(result[:rows].sum { |row| row[:wall] } + 240)
+  end
+
+  it "shows lane B's lock wait and flags it" do
+    expect(result[:lanes][:lock_waits]).to eq("A" => {seconds: 0.0, flagged: false}, "B" => {seconds: 12.0, flagged: true})
+  end
+
+  it "reports the integration row: conflict, no first pass, and the integrate run's attempts" do
+    expect(result[:lanes][:integration]).to include(merge: "conflict", conflict: true, first_pass: false, integrate_passed: true, integrate_attempts: 5)
+  end
+
+  it "counts verify fixes and review rejections per lane" do
+    expect(result[:lanes][:catches]).to eq("A" => {verify_fixes: 2, review_rejections: 2}, "B" => {verify_fixes: 1, review_rejections: 1})
+  end
+
+  it "prints the lane-tagged table, the lane lines and the integrated lint, and writes the lanes into eval.json" do
+    text = described_class.render(result)
+    expect(text).to include("lanes: A ws, B ws-b, workflow deliver-goal-fast")
+    expect(text).to match(/^A 02-mul-div\s/)
+    expect(text).to match(/^B 06-json\s/)
+    expect(text).to match(/^step wall\s+A02\s+A03\s+B06/)
+    expect(text).to include("wall: 24m00s", "critical path: 01-03 12m00s + fork 30s + tail 7m30s (lane B;", "lock waits: A 0s, B 12s (nonzero", "integration: merge conflict, first pass no, conflict yes, integrate run attempts 5",
+      "catches: lane A verify fixes 2, review rejections 2; lane B verify fixes 1, review rejections 1", "(the integrated branch)")
+    expect(JSON.parse(File.read(File.join(run_dir, "eval.json"))).dig("lanes", "critical_path", "check", "ok")).to be(true)
+  end
+
+  it "reads a run with no fork yet and no integration without failing" do
+    write_json(File.join(run_dir, "run.json"), record.except("fork", "integration").merge("lanes" => record["lanes"].merge("b" => record["lanes"]["b"].merge("items" => []))))
+    expect(result[:rows].map { |row| row[:lane] }).to eq(%w[A A])
+    expect(result[:lanes]).to include(wall: nil, critical_path: nil)
+    expect(described_class.render(result)).to include("critical path: ?")
+  end
+end

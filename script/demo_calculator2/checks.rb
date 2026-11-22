@@ -16,12 +16,13 @@ module DemoCalculator2
     #
     # @param base_sha [String] the ref that holds the acceptance tests (the record's acceptance sha)
     # @param goal [String] one of GOALS, such as `03-div-zero`
+    # @param dag [Boolean] run only the groups the goal depends on (`acceptance_runner --dag`), for a lane that lacks some goals
     # @return [Hash] `{passed: [goal] | [], failed: [] | [goal], regressions: []}`
-    def acceptance(base_sha:, head:, goal:)
+    def acceptance(base_sha:, head:, goal:, dag: false)
       check_rev!(base_sha)
       position = DemoCalculator2::GOALS.index(goal) || raise(Error, "unknown goal #{goal}")
       with_worktree(head) do |dir|
-        _, ok = @runner.call([@ruby, File.join(@root, DemoCalculator2::ACCEPTANCE_RUNNER), "--root", dir, "#{DEMO_DIR}/goals/#{goal}.md"],
+        _, ok = @runner.call([@ruby, File.join(@root, DemoCalculator2::ACCEPTANCE_RUNNER), *("--dag" if dag), "--root", dir, "#{DEMO_DIR}/goals/#{goal}.md"],
           env: self.class.clean_ruby_env.merge("CALC2_ACCEPTANCE_REF" => base_sha), chdir: dir, timeout: @group_timeout * (position + 1))
         {passed: ok ? [goal] : [], failed: ok ? [] : [goal], regressions: []}
       end

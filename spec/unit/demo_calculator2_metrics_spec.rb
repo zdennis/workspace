@@ -201,4 +201,109 @@ RSpec.describe DemoCalculator2::Metrics do
       expect(described_class.possible_lines(nil)).to eq([])
     end
   end
+  describe ".lanes" do
+    def at(minutes, seconds = 0) = Time.utc(2026, 11, 21, 5, minutes, seconds).iso8601
+
+    def row(lane, goal, from, to, **extra)
+      {ran: true, lane: lane, goal: goal, started_at: at(*from), ended_at: at(*to), wall: Time.parse(at(*to)) - Time.parse(at(*from))}.merge(extra)
+    end
+
+    # 01-03 end at 05:12; lane B starts at 05:12:20 and ends 05:30; lane A ends 05:27; integration 05:30:10 to 05:31:00.
+    let(:rows) do
+      [row("A", "01-add-sub", [0, 5], [4]), row("A", "02-mul-div", [4], [8]), row("A", "03-div-zero", [8], [12]),
+        row("A", "04-precedence", [12, 5], [20]), row("A", "05-mod-pow", [20], [27]),
+        row("B", "06-json", [12, 20], [21]), row("B", "07-repl", [21], [30])]
+    end
+    let(:fork) { {"goal" => "03-div-zero"} }
+    let(:integration) { {"started_at" => at(30), "ended_at" => at(31), "merge" => "clean", "first_pass" => true, "conflict" => false} }
+
+    it "measures wall from the earliest item start to the end of the integration, and the sequential equivalent from the item walls plus the integration" do
+      lanes = described_class.lanes(rows, fork: fork, integration: integration)
+      expect(lanes[:wall]).to eq(31 * 60 - 5)
+      expect(lanes[:sequential]).to eq(rows.sum { |r| r[:wall] } + 60)
+    end
+
+    it "splits the critical path into the 01-03 span, fork latency, the longer tail, and the integration, and checks they add up to wall" do
+      path = described_class.lanes(rows, fork: fork, integration: integration)[:critical_path]
+      expect(path).to include(span: 12 * 60 - 5, fork_latency: 20, a_tail: 27 * 60 - (12 * 60 + 20), b_tail: 30 * 60 - (12 * 60 + 20), integration: 60, lane: "B", slack: 3 * 60)
+      expect(path[:check]).to include(ok: true, delta: 0)
+    end
+
+    it "flags a critical path that is negative, as when lane B started before the fork goal ended" do
+      early = rows.map { |r| (r[:goal] == "06-json") ? r.merge(started_at: at(11)) : r }
+      path = described_class.lanes(early, fork: fork, integration: integration)[:critical_path]
+      expect(path[:fork_latency]).to eq(-60)
+      expect(path[:check][:ok]).to be(false)
+    end
+
+    it "flags a recorded fork time outside the fork goal's end and lane B's first start, though the parts still add up" do
+      path = described_class.lanes(rows, fork: fork.merge("at" => at(31)), integration: integration)[:critical_path]
+      expect(path[:check]).to include(delta: 0, fork_ordered: false, ok: false)
+      expect(described_class.lanes(rows, fork: fork.merge("at" => at(12, 20)), integration: integration)[:critical_path][:check]).to include(fork_ordered: true, ok: true)
+    end
+
+    it "shows a gap between the later lane's end and the integration's start as a delta that fails the check" do
+      late = integration.merge("started_at" => at(30, 10))
+      path = described_class.lanes(rows, fork: fork, integration: late)[:critical_path]
+      expect(path[:check]).to include(delta: 10, ok: false)
+    end
+
+    it "gives no critical path without a lane B item or a fork goal row" do
+      expect(described_class.lanes(rows.reject { |r| r[:lane] == "B" }, fork: fork, integration: integration)[:critical_path]).to be_nil
+      expect(described_class.lanes(rows, fork: {"goal" => "09"}, integration: integration)[:critical_path]).to be_nil
+      expect(described_class.lanes(rows, fork: fork, integration: nil)).to include(wall: nil, sequential: nil, critical_path: nil)
+    end
+
+    it "takes the waits of the items on the critical path off the wall: lane A through 03 and then lane B" do
+      waited = rows.map do |r|
+        case r[:goal]
+        when "01-add-sub" then r.merge(machine_wait: 10, deliver_wait: 5, person_wait: nil)
+        when "04-precedence" then r.merge(machine_wait: 999)
+        when "07-repl" then r.merge(person_wait: 30)
+        else r
+        end
+      end
+      lanes = described_class.lanes(waited, fork: fork, integration: integration)
+      expect(lanes[:wall_net_of_waits]).to eq(31 * 60 - 5 - 15 - 30)
+    end
+
+    it "shows lock waits per lane and flags a nonzero one" do
+      locked = rows.map { |r| (r[:goal] == "06-json") ? r.merge(lock_wait: 42.0) : r }
+      expect(described_class.lanes(rows, fork: fork, integration: integration)[:lock_waits]).to eq("A" => {seconds: 0.0, flagged: false}, "B" => {seconds: 0.0, flagged: false})
+      expect(described_class.lanes(locked, fork: fork, integration: integration)[:lock_waits]["B"]).to eq(seconds: 42.0, flagged: true)
+    end
+
+    it "reports the integration's first pass, conflict and integrate attempts" do
+      repaired = integration.merge("merge" => "conflict", "conflict" => true, "first_pass" => false, "integrate_run" => {"passed" => true})
+      result = described_class.lanes(rows, fork: fork, integration: repaired, integrate_attempts: 3)[:integration]
+      expect(result).to include(merge: "conflict", conflict: true, first_pass: false, integrate_attempts: 3, integrate_passed: true, wall: 60)
+    end
+  end
+
+  describe ".catches" do
+    it "counts failed verify attempts and rejecting verdicts the attempts kept" do
+      run = {"steps" => {"verify" => {"attempts" => [{"outcome" => "failed"}, {"outcome" => "passed"}]},
+                         "plan" => {"attempts" => [{"reviews" => [{"verdict" => "reject"}, {"verdict" => "approve"}]}]}, "implement" => {"attempts" => [{"outcome" => "passed"}]}}}
+      expect(described_class.catches(run)).to eq(verify_fixes: 1, review_rejections: 1)
+      expect(described_class.catches({})).to eq(verify_fixes: 0, review_rejections: 0)
+    end
+  end
+
+  describe ".lanes_lines" do
+    it "prints the wall, the critical path, the lock waits and the integration, and says so when the path does not add up" do
+      rows = [{ran: true, lane: "A", goal: "01-add-sub", started_at: "2026-11-21T05:00:00Z", ended_at: "2026-11-21T05:04:00Z", wall: 240},
+        {ran: true, lane: "B", goal: "06-json", started_at: "2026-11-21T05:03:00Z", ended_at: "2026-11-21T05:08:00Z", wall: 300}]
+      lanes = described_class.lanes(rows, fork: {"goal" => "01-add-sub"}, integration: {"started_at" => "2026-11-21T05:08:30Z", "ended_at" => "2026-11-21T05:09:00Z", "merge" => "clean", "first_pass" => true, "conflict" => false})
+      lines = described_class.lanes_lines(lanes, {"goal" => "01-add-sub"})
+      expect(lines[0]).to start_with("wall: 9m00s  sequential equivalent: 9m30s")
+      expect(lines[1]).to include("critical path: 01-03 4m00s + fork -1m00s")
+      expect(lines.join("\n")).to include("ERROR: the critical path differs from the wall", "lock waits: A 0s, B 0s", "integration: merge clean, first pass yes, conflict no")
+    end
+
+    it "flags a nonzero lock wait" do
+      lanes = {wall: nil, sequential: nil, wall_net_of_waits: nil, critical_path: nil, lock_waits: {"A" => {seconds: 0.0, flagged: false}, "B" => {seconds: 90.0, flagged: true}}, integration: {}}
+      lines = described_class.lanes_lines(lanes, nil)
+      expect(lines).to include(a_string_matching(/lock waits: A 0s, B 1m30s \(nonzero/), "critical path: ?")
+    end
+  end
 end

@@ -13,6 +13,12 @@ module DemoCalculator2
             checks: checks || Checks.new(repo: File.expand_path(root)), config: DemoCalculator2.config)
     end
 
+    # @return [Boolean] whether the run record is a `run --lanes` record (it has a `lanes` block)
+    def lanes?
+      record = read_json(File.join(run_dir, "run.json"))
+      record.is_a?(Hash) && record["lanes"].is_a?(Hash)
+    end
+
     # Scores the run, writes eval.json and returns the document.
     #
     # @return [Hash] `{document, rows, totals, lint, leak, dir}`
@@ -27,27 +33,7 @@ module DemoCalculator2
       run_ids = run_ids(record, queue)
       goals = record_goals(record)
       loaded = record["items"].map { |item| load_run(run_ids[item["id"]], File.join(state_dir, ".workflows"), item["workflow"]) }
-      rows = DemoCalculator::EvalRows.rows(loaded.map { |l| l.slice(:workflow, :run, :events, :totals) }, asks: read_asks(state_dir, @name || queue["workspace"]))
-      rows.each_with_index do |row, index|
-        row[:item] = index + 1
-        row[:goal] = goals[index]
-        row[:state] = "run file missing" if loaded[index][:missing]
-        row.delete(:features)
-        unless row[:ran]
-          row.merge!(machine_wait: nil, review_wait: nil, wall_ex_wait: nil, active_ex_wait: nil, usage: nil, acceptance: nil, step_wall: nil, step_tokens: nil, review_unmatched: nil, review_wall: nil, review_tokens: nil, accept_first_pass: nil, accept_first_recorded: nil, accept_first_disagrees: nil, accept_loops: nil)
-          next
-        end
-        row.merge!(Metrics.machine_wait(row, loaded[index][:totals]))
-        row[:review_wait] = row[:machine_wait] && row[:review_deliver_wait].to_f
-        row[:usage] = reviewer_priced(DemoCalculator::EvalReport.usage(loaded[index][:run], pricing), loaded[index][:run], pricing)
-        row[:acceptance] = acceptance(record, row)
-        accepted = Metrics.acceptance(loaded[index][:run])
-        first = first_attempt(record, row, accepted[:first_head])
-        review = Metrics.review(loaded[index][:trace]) || {}
-        row.merge!(step_wall: Metrics.step_wall(loaded[index][:trace]), step_tokens: Metrics.step_tokens(loaded[index][:trace]), review_unmatched: Metrics.unmatched_rounds(loaded[index][:trace]), review_wall: review[:wall],
-          review_tokens: review[:tokens], accept_first_pass: first, accept_first_recorded: accepted[:first_recorded],
-          accept_first_disagrees: !first.nil? && !accepted[:first_recorded].nil? && first != accepted[:first_recorded], accept_loops: accepted[:loops])
-      end
+      rows = item_rows(record, loaded, goals, pricing, @name || queue["workspace"], state_dir)
       last = rows.reverse.find { |row| row[:ran] }
       lint = {head: last && real_head(last), offenses: nil}
       lint[:offenses] = lint(lint[:head]) if lint[:head]
@@ -112,7 +98,7 @@ module DemoCalculator2
       return "step wall time: #{DemoCalculator::Fmt::UNKNOWN}" if steps.empty?
       body = steps.map { |step| [step, *ran.map { |row| row[:step_wall][step] ? DemoCalculator::Fmt.duration(row[:step_wall][step]) : DemoCalculator::EvalReport::DASH }] }
       body << ["review", *ran.map { |row| row[:review_wall] ? DemoCalculator::Fmt.duration(row[:review_wall]) : DemoCalculator::EvalReport::DASH }]
-      grid([["step wall", *ran.map { |row| row[:goal][0, 2] }], *body])
+      grid([["step wall", *ran.map { |row| row[:column] || row[:goal][0, 2] }], *body])
     end
 
     # Tokens of each step (input + output + cache creation), one column per item, and the review rounds' on their own row.
@@ -122,7 +108,7 @@ module DemoCalculator2
       return "step tokens: #{DemoCalculator::Fmt::UNKNOWN}" if steps.empty?
       body = steps.map { |step| [step, *ran.map { |row| row[:step_tokens][step] ? DemoCalculator::Fmt.count(row[:step_tokens][step]) : DemoCalculator::EvalReport::DASH }] }
       body << ["review", *ran.map { |row| row[:review_tokens] ? DemoCalculator::Fmt.count(row[:review_tokens]) : DemoCalculator::EvalReport::DASH }]
-      lines = [grid([["step tokens", *ran.map { |row| row[:goal][0, 2] }], *body])]
+      lines = [grid([["step tokens", *ran.map { |row| row[:column] || row[:goal][0, 2] }], *body])]
       ran.select { |row| row[:review_unmatched].to_i > 0 }.each do |row|
         lines << "note: #{row[:goal]} has #{row[:review_unmatched]} review round(s) with no attempt of their own; the review row counts them and no step row does"
       end
@@ -205,6 +191,32 @@ module DemoCalculator2
 
     private
 
+    # The rows of one lane's items: v1's rows with calculator2's step times, tokens, review and acceptance numbers.
+    def item_rows(record, loaded, goals, pricing, workspace, state_dir)
+      rows = DemoCalculator::EvalRows.rows(loaded.map { |l| l.slice(:workflow, :run, :events, :totals) }, asks: read_asks(state_dir, workspace))
+      rows.each_with_index do |row, index|
+        row[:item] = index + 1
+        row[:goal] = goals[index]
+        row[:state] = "run file missing" if loaded[index][:missing]
+        row.delete(:features)
+        unless row[:ran]
+          row.merge!(machine_wait: nil, review_wait: nil, wall_ex_wait: nil, active_ex_wait: nil, usage: nil, acceptance: nil, step_wall: nil, step_tokens: nil, review_unmatched: nil, review_wall: nil, review_tokens: nil, accept_first_pass: nil, accept_first_recorded: nil, accept_first_disagrees: nil, accept_loops: nil)
+          next
+        end
+        row.merge!(Metrics.machine_wait(row, loaded[index][:totals]))
+        row[:review_wait] = row[:machine_wait] && row[:review_deliver_wait].to_f
+        row[:usage] = reviewer_priced(DemoCalculator::EvalReport.usage(loaded[index][:run], pricing), loaded[index][:run], pricing)
+        row[:acceptance] = acceptance(record, row)
+        accepted = Metrics.acceptance(loaded[index][:run])
+        first = first_attempt(record, row, accepted[:first_head])
+        review = Metrics.review(loaded[index][:trace]) || {}
+        row.merge!(step_wall: Metrics.step_wall(loaded[index][:trace]), step_tokens: Metrics.step_tokens(loaded[index][:trace]), review_unmatched: Metrics.unmatched_rounds(loaded[index][:trace]), review_wall: review[:wall],
+          review_tokens: review[:tokens], accept_first_pass: first, accept_first_recorded: accepted[:first_recorded],
+          accept_first_disagrees: !first.nil? && !accepted[:first_recorded].nil? && first != accepted[:first_recorded], accept_loops: accepted[:loops])
+      end
+      rows
+    end
+
     # @return [Hash, nil] {Metrics.usage_by_model} over the round's sub-agent transcripts; nil when they can't be read
     def round_models(round)
       path = round.dig("session", "transcript")
@@ -261,7 +273,7 @@ module DemoCalculator2
     # @return [Boolean, nil] nil when there is no such checkout or the check could not run
     def first_attempt(record, row, head)
       return nil unless head
-      result = @checks.acceptance(base_sha: record.dig("acceptance_ref", "sha") || record["base_sha"], head: head, goal: row[:goal])
+      result = @checks.acceptance(**acceptance_args(record, head, row[:goal]))
       result[:failed].empty? && !result[:passed].empty?
     rescue DemoCalculator::EvalChecks::Error => e
       @err.puts e.message
@@ -272,10 +284,16 @@ module DemoCalculator2
     def acceptance(record, row)
       head = real_head(row)
       return nil unless head
-      @checks.acceptance(base_sha: record.dig("acceptance_ref", "sha") || record["base_sha"], head: head, goal: row[:goal])
+      @checks.acceptance(**acceptance_args(record, head, row[:goal]))
     rescue DemoCalculator::EvalChecks::Error => e
       @err.puts e.message
       nil
+    end
+
+    # The checks' keywords for one acceptance run; a lanes eval adds `dag: true`, so a goal is checked on the groups it depends on.
+    def acceptance_args(record, head, goal)
+      args = {base_sha: record.dig("acceptance_ref", "sha") || record["base_sha"], head: head, goal: goal}
+      @dag ? args.merge(dag: true) : args
     end
 
     def diff_scan(record, head)

@@ -171,12 +171,12 @@ module DemoCalculator
       nil
     end
 
-    def leak(caps, queue, loaded, head, removal)
+    def leak(caps, queue, loaded, head, removal, workspaces: nil)
       runs = loaded.filter_map { |l| l[:run] }
       return nil if runs.empty?
       dir = caps.dig("paths", "hook_events")
-      workspace = @name || queue["workspace"]
-      hook_files = (dir && workspace) ? ["#{workspace}.jsonl", "#{workspace}.jsonl.1"].map { |f| File.join(dir, f) } : []
+      names = (workspaces || [@name || queue["workspace"]]).compact
+      hook_files = dir ? names.flat_map { |workspace| ["#{workspace}.jsonl", "#{workspace}.jsonl.1"].map { |f| File.join(dir, f) } } : []
       attempts = runs.flat_map { |run| EvalRows.attempts(run) }
       sessions = attempts.map { |a| a["session"] } + attempts.flat_map { |a| Array(a["rounds"]).map { |round| round["session"] } }
       transcripts = sessions.filter_map { |session| session&.dig("transcript") }
