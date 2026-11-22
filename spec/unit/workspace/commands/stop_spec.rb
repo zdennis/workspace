@@ -197,50 +197,6 @@ RSpec.describe Workspace::Commands::Stop do
       end
     end
 
-    context "when iTerm2 does not answer" do
-      before do
-        state["api"] = {"unique_id" => "uid1"}
-        state["notes"] = {"headless" => true}
-        state.save
-        allow(iterm).to receive(:find_existing_sessions).and_return({})
-        allow(iterm).to receive(:last_call_timed_out?).and_return(true)
-        allow(tmux).to receive(:session_name_for) { |p| p }
-        allow(tmux).to receive(:sessions).and_return(%w[api notes])
-        allow(tmux).to receive(:kill_session)
-      end
-
-      it "still removes and saves the entries, kills the sessions and leaves the window open" do
-        allow(window_manager).to receive(:close_window)
-
-        result = command.call(%w[api notes])
-
-        reloaded = Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config))
-        reloaded.load
-        expect(result).to eq(%w[api notes])
-        expect(reloaded.keys).to eq([])
-        expect(tmux).to have_received(:kill_session).twice
-        expect(window_manager).not_to have_received(:close_window)
-      end
-
-      it "warns once per project that has a window, in #warnings and on the error stream" do
-        command.call(%w[api notes])
-
-        message = "iTerm did not answer in 5s; the window for api was left open."
-        expect(command.warnings).to eq([message])
-        expect(error_output.string).to include("Warning: #{message}")
-      end
-
-      it "clears the warnings on the next call" do
-        command.call(%w[api])
-        allow(iterm).to receive(:last_call_timed_out?).and_return(false)
-        state["api"] = {"unique_id" => "uid1"}
-
-        command.call(%w[api])
-
-        expect(command.warnings).to eq([])
-      end
-    end
-
     context "with a project on a custom tmux socket" do
       it "kills its session on that socket though the default socket does not list it" do
         state["proj1"] = {"unique_id" => "uid1"}
@@ -257,56 +213,109 @@ RSpec.describe Workspace::Commands::Stop do
       end
     end
 
-    context "when iTerm2 answers but cannot close the window" do
-      it "warns that the window was left open" do
-        state["proj1"] = {"unique_id" => "uid1"}
-        state.save
-        allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid1"})
-        allow(iterm).to receive(:session_map).and_return({"uid1" => "win-100"})
-        allow(window_manager).to receive(:close_window).and_return(false)
-        allow(tmux).to receive(:session_name_for).and_return("proj1")
-        allow(tmux).to receive(:sessions).and_return([])
+    context "closing windows through the gateway closer" do
+      let(:closer) { double("gateway_closer", close: []) }
+      let(:launch_mode) { double("launch_mode") }
 
-        command.call(["proj1"])
-
-        expect(command.warnings).to eq(["iTerm did not close launcher window win-100; it was left open."])
+      subject(:command) do
+        described_class.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
+          gateway_closer: closer, launch_mode: launch_mode, output: output, error_output: error_output)
       end
-    end
 
-    context "launcher window cleanup" do
       before do
+        allow(tmux).to receive(:session_name_for) { |p| "s-#{p}" }
+        allow(tmux).to receive(:sessions).and_return([])
+        allow(tmux).to receive(:kill_session)
+      end
+
+      it "calls the closer after the kill, with the pre-removal snapshot, windowed targets and session names" do
         state["proj1"] = {"unique_id" => "uid1"}
         state["proj2"] = {"unique_id" => "uid2"}
+        state["notes"] = {"headless" => true}
         state.save
+        allow(tmux).to receive(:sessions).and_return(["named"])
+        killed = false
+        killed_at_close = nil
+        allow(tmux).to receive(:kill_session) { killed = true }
+        allow(closer).to receive(:close) {
+          killed_at_close = killed
+          []
+        }
+
+        command.call(%w[proj1 notes], session_names: {"proj1" => "named"})
+
+        expect(closer).to have_received(:close).with(
+          targets: {"proj1" => "uid1"},
+          state_snapshot: {"proj1" => {"unique_id" => "uid1"}, "proj2" => {"unique_id" => "uid2"}, "notes" => {"headless" => true}},
+          session_names: {"proj1" => "named"},
+          output: output
+        )
+        expect(killed_at_close).to be(true)
       end
 
-      it "preserves launcher window when other projects still use it" do
-        live_sessions = {"uid1" => "win-100", "uid2" => "win-100"}
-        allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid1", "proj2" => "uid2"})
-        allow(iterm).to receive(:session_map).and_return(live_sessions)
-        allow(window_manager).to receive(:close_window)
-        allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
-        allow(tmux).to receive(:sessions).and_return(["proj1"])
-        allow(tmux).to receive(:kill_session)
+      it "never calls the closer or iTerm for a headless-only stop" do
+        state["notes"] = {"headless" => true}
+        state.save
+
+        expect(command.call(["notes"])).to eq(["notes"])
+
+        expect(closer).not_to have_received(:close)
+        expect(iterm).not_to receive(:session_map)
+        expect(launch_mode).not_to receive(:resolve)
+      end
+
+      it "passes an entry with no uid as nil when launch mode is not headless" do
+        state["proj1"] = {}
+        state.save
+        allow(launch_mode).to receive(:resolve).and_return(double(headless?: false))
 
         command.call(["proj1"])
 
-        # Should NOT close the window because proj2 is still in it
-        expect(window_manager).not_to have_received(:close_window)
+        expect(closer).to have_received(:close).with(hash_including(targets: {"proj1" => nil}, session_names: {"proj1" => "s-proj1"}))
       end
 
-      it "closes launcher window when all its projects are killed" do
-        live_sessions = {"uid1" => "win-100", "uid2" => "win-100"}
-        allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid1", "proj2" => "uid2"})
-        allow(iterm).to receive(:session_map).and_return(live_sessions)
-        allow(window_manager).to receive(:close_window)
-        allow(tmux).to receive(:session_name_for).and_return("proj1", "proj2")
-        allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
-        allow(tmux).to receive(:kill_session)
+      it "skips an entry with no uid when launch mode is headless, resolving once" do
+        state["a"] = {}
+        state["b"] = {}
+        state.save
+        allow(launch_mode).to receive(:resolve).and_return(double(headless?: true))
 
-        command.call(["proj1", "proj2"])
+        command.call
 
-        expect(window_manager).to have_received(:close_window).with("win-100")
+        expect(closer).not_to have_received(:close)
+        expect(launch_mode).to have_received(:resolve).once
+      end
+
+      it "records the closer's warnings and prints them, still returning the stopped names" do
+        state["proj1"] = {"unique_id" => "uid1"}
+        state.save
+        allow(closer).to receive(:close).and_return(["window left open"])
+
+        expect(command.call(["proj1"])).to eq(["proj1"])
+
+        expect(command.warnings).to eq(["window left open"])
+        expect(error_output.string).to include("Warning: window left open")
+      end
+
+      it "clears the warnings on the next call" do
+        state["proj1"] = {"unique_id" => "uid1"}
+        state.save
+        allow(closer).to receive(:close).and_return(["x"], [])
+        command.call(["proj1"])
+        state["proj1"] = {"unique_id" => "uid1"}
+
+        command.call(["proj1"])
+
+        expect(command.warnings).to eq([])
+      end
+
+      it "passes a non-stdout output when quiet" do
+        state["proj1"] = {"unique_id" => "uid1"}
+        state.save
+
+        command.call(["proj1"], quiet: true)
+
+        expect(closer).to have_received(:close).with(hash_including(output: satisfy { |o| !o.equal?(output) }))
       end
     end
   end
