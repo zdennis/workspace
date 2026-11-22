@@ -551,7 +551,7 @@ init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, 
 ## Dependency Injection
 
 - All collaborators are injected via keyword arguments in `initialize`
-- `Workspace.build_cli` is the sole composition root — all object construction happens there
+- `Workspace.build_cli` is the sole composition root — all object construction happens there. The one exception is the fast `session-event` path (`CLI::SessionEventEntry`), which builds its own few collaborators and shares the guard construction with `build_cli` through `CLI::SessionEventWiring.build`; nothing else may add a root
 - Command objects are pre-built in `build_cli` and passed to CLI; CLI never constructs commands
 - IO streams (`output:`, `error_output:`, `input:`) are injectable on every class that produces output
 - `exit_handler:` is injectable on CLI (defaults to `Kernel`, tests use `FakeExitHandler`)
