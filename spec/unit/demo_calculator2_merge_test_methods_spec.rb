@@ -53,6 +53,23 @@ RSpec.describe MergeTestMethods do
     expect { described_class.merge(ancestor, ancestor, file(smoke, test_method("test_a"), test_method("test_a"))) }.to raise_error(described_class::Conflict, /twice/)
   end
 
+  it "conflicts when ours defines the same name twice" do
+    ours = file(smoke, test_method("test_a"), test_method("test_a", "assert 1"))
+    expect { described_class.merge(ancestor, ours, file(smoke, test_method("test_b"))) }.to raise_error(described_class::Conflict, /ours defines test_a twice/)
+  end
+
+  describe ".duplicate_names" do
+    it "returns a duplicate in a file that passes ruby -c" do
+      text = file(smoke, test_method("test_a"), test_method("test_a", "assert 1"))
+      expect { RubyVM::InstructionSequence.compile(text) }.not_to raise_error
+      expect(described_class.duplicate_names(text)).to eq(["test_a"])
+    end
+
+    it "returns nothing when every name is unique" do
+      expect(described_class.duplicate_names(file(smoke, test_method("test_a")))).to eq([])
+    end
+  end
+
   it "conflicts when theirs removes a method of the ancestor" do
     expect { described_class.merge(ancestor, ancestor, file) }.to raise_error(described_class::Conflict, /removed or changed/)
   end

@@ -5,11 +5,12 @@
 # before the test class's final `end`. It writes the result to %A and exits 0, or exits 1 and leaves %A alone when it cannot
 # do that safely: theirs changed or removed something the ancestor had, a method name is in both sides with different bodies,
 # theirs added anything outside a test method, or the result does not parse. Git then reports a conflict.
+require_relative "test_names"
+
 module MergeTestMethods
   Conflict = Class.new(StandardError)
   Block = Struct.new(:name, :lines)
 
-  METHOD_START = /\A  def (test_\w+)/
   METHOD_END = /\A  end\s*\z/
 
   # @return [Array(Array<Block>, Array<String>)] the test method blocks of a file, and its other non-blank lines
@@ -39,6 +40,8 @@ module MergeTestMethods
     raise Conflict, "theirs changed lines outside the test methods" unless their_rest == base_rest
     twice = their_blocks.map(&:name).tally.find { |_, count| count > 1 }
     raise Conflict, "theirs defines #{twice[0]} twice" if twice
+    ours_twice = our_blocks.map(&:name).tally.find { |_, count| count > 1 }
+    raise Conflict, "ours defines #{ours_twice[0]} twice" if ours_twice
     theirs_by_name = their_blocks.to_h { |block| [block.name, block] }
     base_blocks.each do |block|
       same = theirs_by_name[block.name]
