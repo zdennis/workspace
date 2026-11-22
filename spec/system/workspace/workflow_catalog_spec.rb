@@ -423,7 +423,7 @@ RSpec.describe Workspace::WorkflowCatalog do
       expect(definition.source).to eq("builtin")
       expect(definition.to_h["inputs"].transform_values { |input| input["required"] }).to eq("task" => true, "spec" => false)
       expect(steps.map { |step| step["id"] }).to eq(%w[research plan implement verify])
-      expect(steps.map { |step| step["produces"] }).to eq([["research.md"], ["plan.md"], ["implement.md"], ["verify.md"]])
+      expect(steps.map { |step| step["produces"] }).to eq([%w[research.md requirements.md], ["plan.md"], ["implement.md"], ["verify.md"]])
       expect(steps[1]["gate"]).to eq("approve")
       # Room for four steps, one rejected plan and all three trips back from verify.
       expect(definition.to_h["max_attempts"]).to be >= 4 + 1 + 2 * steps[3]["on_fail"]["max"] - 1
@@ -451,7 +451,7 @@ RSpec.describe Workspace::WorkflowCatalog do
           File.chmod(0o755, File.join(bin, "workspace"))
           allow(config).to receive(:workflows_dir).and_return(global_dir)
           command = catalog.find("rpiv").steps.find { |step| step["id"] == "plan" }["status"]["run"]
-          _out, status = Open3.capture2e({"PATH" => "#{bin}:#{ENV["PATH"]}"}, "sh", "-c", command)
+          _out, status = Open3.capture2e({"PATH" => "#{bin}:#{ENV["PATH"]}", "WORKSPACE_RUN_ARTIFACTS" => bin}, "sh", "-c", command)
           status.exitstatus
         end
       end

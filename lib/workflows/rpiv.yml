@@ -31,7 +31,11 @@ steps:
       related docs. Don't change code or commit.
       Write {{artifacts}}/research.md with: what exists (file:line), what has to change,
       constraints, open questions, risks.
-    produces: [research.md]
+      Write {{artifacts}}/requirements.md: one line per requirement of the task, each line
+      starting with its number and a space (`R1 `, `R2 `, ...). Then, for each part the task
+      leaves open, the reading you chose, the readings you rejected and why; if nothing is
+      open, write "No ambiguity."
+    produces: [research.md, requirements.md]
     guard: unchanged
     timeout: 45m
 
@@ -43,7 +47,9 @@ steps:
       IMPLEMENTATION_PLAN.md that `workspace plan path` names (run `workspace plan init --title "<title>"` first if it does not exist), in the syntax the
       implementation-plan instructions give, so `workspace plan status` shows it.
       One task per commit, in order, with the files touched, tests to add and how you'll
-      know it works under that task in Task details. Call out anything that needs the
+      know it works under that task in Task details, and the R-numbers from
+      {{artifacts}}/requirements.md it covers: every R needs a task, and the run checks it.
+      Call out anything that needs the
       dev environment or the test database. Set `status: active` and leave every task `[ ]`.
       You only write the plan here; do not start any task, and do not set `status: done`.
       Then write {{artifacts}}/plan.md for the approval gate: the approach, the risks, and
@@ -52,10 +58,11 @@ steps:
       Don't change code.
     produces: [plan.md]
     guard: config
-    # Done only when the workspace plan exists and has at least one task.
+    # Done only when the workspace plan exists, has at least one task, and names in its Task
+    # details every R-number requirements.md starts a line with (when that file exists).
     status:
       run: |
-        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit(plan && plan["exists"] && plan["counts"]["total"].to_i > 0 ? 0 : 1)'
+        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit 1 unless plan && plan["exists"] && plan["counts"]["total"].to_i > 0; req = File.join(ENV.fetch("WORKSPACE_RUN_ARTIFACTS"), "requirements.md"); exit 0 unless File.file?(req); details = File.read(plan["path"])[/^## Task details\r?$(.*?)(?=^## |\z)/m, 1].to_s; missing = File.read(req).scan(/^R\d+\b/).uniq - details.scan(/\bR\d+\b/); abort "In no task of ## Task details: #{missing.join(" ")}" if missing.any?'
     gate: approve
     timeout: 45m
 
@@ -85,7 +92,10 @@ steps:
       files the change touched, their obvious neighbors, and the tests the change obviously
       impacts — not the whole suite (it runs on CI). Run the linter (the project's lint
       command, when it has one, must pass: the run checks it), then review the branch's diff against its base.
-      Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
+      Check each R in {{artifacts}}/requirements.md against evidence: a test name, command
+      output or file:line.
+      Write {{artifacts}}/verify.md: test results, each R with its evidence, review findings,
+      and what you fixed.
       If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
       and end your turn.
     produces: [verify.md]

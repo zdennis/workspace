@@ -52,9 +52,9 @@ reviewers:
     model: sonnet
     prompt: |
       You review {{review.subject}}. No person will look at it. Assume it is wrong and try
-      to prove it: missing cases, wrong order, steps that can't be undone, requirements of
-      the task it doesn't meet. Approve only if you can't find a blocking problem. Do not edit
-      the plan.
+      to prove it: missing cases, wrong order, steps that can't be undone, any R in
+      {{artifacts}}/requirements.md with no task, and any reading chosen there that the brief
+      does not support. Approve only if you can't find a blocking problem. Do not edit the plan.
       If {{review.previous}} is set, read your earlier write-up there first and say whether
       each objection in it was answered.
 

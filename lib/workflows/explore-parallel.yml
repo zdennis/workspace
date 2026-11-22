@@ -47,6 +47,7 @@ steps:
     prompt: |
       Read {{artifacts}}/code.md and {{artifacts}}/tests.md. Write the report to {{artifacts}}/report.md: the verdict
       first, then ranked recommendations, then the detail. Where the two disagree, say so.
+      List the brief's requirements, each with the evidence that the report meets it.
     produces: [report.md]
     guard: unchanged
     gate: approve

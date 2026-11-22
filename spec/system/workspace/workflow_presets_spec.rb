@@ -181,8 +181,8 @@ RSpec.describe "the shipped workflow presets" do
 
     it "pins the sha256 of rpiv.yml and rpiv-auto-approve.yml, so an edit to either is made on purpose" do
       sha = ->(id) { Digest::SHA256.file(File.join(config.builtin_workflows_dir, "#{id}.yml")).hexdigest }
-      expect(sha.call("rpiv")).to eq("60ee2ce6b1e43c19d12a96547ac96665bfbd47a8226b3ce2523db2ee3abda31e")
-      expect(sha.call("rpiv-auto-approve")).to eq("9241915faaa3cf9ad11b3a01ac2224502ff953e8343229e1bbfabf25450af48f")
+      expect(sha.call("rpiv")).to eq("c10ac03eac61667fa4c76e2451d3519acd32321c3cbb9f64d3d13cfd1f0398d0")
+      expect(sha.call("rpiv-auto-approve")).to eq("3ad9ce9fd76f46e2a0d5472797a599e959f85130edb07d025a2bc2fc702e12f8")
     end
   end
 

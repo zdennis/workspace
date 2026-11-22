@@ -46,8 +46,11 @@ steps:
       On a rerun (after a rejected gate or a resume), delete or replace the test files an earlier
       attempt wrote. Always, on the first attempt too, exactly one new test file is untracked when
       your turn ends.
-      Write {{artifacts}}/repro.md: the steps to reproduce, expected and actual behavior, the new
-      test file's path, and the command that runs it.
+      Write {{artifacts}}/repro.md: the steps to reproduce, the actual behavior, the new test
+      file's path, the command that runs it, and an `## Expected behaviour` section with one line
+      per requirement of the fix, each starting with its number and a space (`R1 `, `R2 `, ...),
+      then for each part the task leaves open the reading you chose, the readings you rejected
+      and why (or "No ambiguity.").
       Write {{artifacts}}/failure.txt: one line, a short fragment of the failure text the test
       prints that only this bug produces (an assertion message, not a load error). Copy it from a
       plain run with output piped to a file or `cat`, not a terminal, so it holds no color codes.
@@ -91,13 +94,14 @@ steps:
     title: Verify
     include: [review]
     prompt: |
-      Verify the fix against {{artifacts}}/repro.md. Check the reproduction test at the final path
-      {{artifacts}}/fix.md names is still as strict as repro.md describes. Run the tests for the
-      files the change touched, their obvious neighbors, and the tests the change obviously
-      impacts. When your turn ends the run checks this step by running the project's
-      commands.test with no files, the whole suite, which must pass. Run the linter (the project's
-      lint command, when it has one, must pass: the run checks it), then review the branch's diff
-      against its base.
+      Verify the fix against {{artifacts}}/repro.md: check each R under its `## Expected behaviour`
+      against evidence (a test name, command output or file:line) and list it in verify.md. Check
+      the reproduction test at the final path {{artifacts}}/fix.md names is still as strict as
+      repro.md describes. Run the tests for the files the change touched, their obvious
+      neighbors, and the tests the change obviously impacts. When your turn ends the run checks
+      this step by running the project's commands.test with no files, the whole suite, which must
+      pass. Run the linter (the project's lint command, when it has one, must pass: the run checks
+      it), then review the branch's diff against its base.
       Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
       If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
       and end your turn.
