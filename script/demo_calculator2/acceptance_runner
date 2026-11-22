@@ -2,7 +2,8 @@
 # Runs the cumulative acceptance groups for one calculator2 goal against a checkout.
 # Usage: acceptance_runner [--root DIR] [--dag] GOAL_PATH   (goal file named 0N-*.md runs groups 1..N;
 #   with --dag, the groups the goal depends on, see dag.rb: 06 runs 1, 2, 3 and 6, and 07 runs 1, 2, 3, 6 and 7)
-# Env: CALC2_ACCEPTANCE_REF (default refs/demo-calc2/acceptance-base)
+# Acceptance ref, first that applies: env CALC2_ACCEPTANCE_REF; refs/demo-calc2/acceptance/ID when the checked-out branch is
+#   calc-demo/<stamp>-ID or calc-demo/<stamp>-ID-b and that ref exists; else refs/demo-calc2/acceptance-base.
 # Exit: 0 all pass, 1 a test failed, 2 usage or setup error.
 require "open3"
 require "optparse"
@@ -40,7 +41,17 @@ if root.nil?
 end
 die "no such directory: #{root}" unless File.directory?(root)
 
-ref = ENV.fetch("CALC2_ACCEPTANCE_REF", "refs/demo-calc2/acceptance-base")
+ref = ENV["CALC2_ACCEPTANCE_REF"]
+if ref.nil? || ref.empty?
+  ref = "refs/demo-calc2/acceptance-base"
+  head, _, st = Open3.capture3("git", "-C", root, "rev-parse", "--abbrev-ref", "HEAD")
+  id = head.strip[%r{\Acalc-demo/\d{8}T\d{6}Z-([a-z][a-z0-9]*?)(?:-b)?\z}, 1] if st.success?
+  if id && id != "b"
+    per_id = "refs/demo-calc2/acceptance/#{id}"
+    _, _, found = Open3.capture3("git", "-C", root, "rev-parse", "--verify", "--quiet", "#{per_id}^{commit}")
+    ref = per_id if found.success?
+  end
+end
 _, _, check = Open3.capture3("git", "-C", root, "rev-parse", "--verify", "--quiet", "#{ref}^{commit}")
 die "acceptance ref is missing: #{ref} (in #{root})" unless check.success?
 

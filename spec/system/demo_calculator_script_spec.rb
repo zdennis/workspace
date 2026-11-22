@@ -240,32 +240,47 @@ RSpec.describe DemoCalculator::Demo do
     context "with workflows.sources already set" do
       let(:own) { File.join(work_dir, "demo/calculator/workflows") }
       let(:stale) { "/gone/other-demo/demo/calculator/workflows" }
+      let(:err) { StringIO.new }
       let(:sets) { File.read(log).lines.map(&:strip).grep(/\Aconfig set workflows.sources /) }
 
-      context "with another checkout's entry among unrelated ones" do
+      context "with another checkout's entry that is gone" do
         let(:sources) { "/a/team,#{stale},/b/mine" }
 
-        it "replaces the stale entry with its own and keeps the rest in order" do
+        it "keeps every entry and appends its own at the end, with no warning" do
           demo.run
-          expect(sets).to eq(["config set workflows.sources /a/team,/b/mine,#{own}"])
+          expect(sets).to eq(["config set workflows.sources /a/team,#{stale},/b/mine,#{own}"])
+          expect(err.string).not_to include("Warning")
         end
       end
 
       context "with its own entry after a stale one" do
         let(:sources) { "#{stale},/a/team,#{own}" }
 
-        it "drops the stale entry and writes the remaining list" do
+        it "writes nothing" do
           demo.run
-          expect(sets).to eq(["config set workflows.sources /a/team,#{own}"])
+          expect(sets).to be_empty
         end
       end
 
-      context "with a trailing slash and a near-miss path" do
-        let(:sources) { "/a/other-demo/calculator/workflows,#{stale}/" }
+      context "with another checkout's entry that exists ahead of its own" do
+        let(:other) { File.join(tmp, "other/demo/calculator/workflows").tap { |dir| FileUtils.mkdir_p(dir) } }
+        let(:sources) { "/a/team,#{other}" }
 
-        it "replaces only the real demo entry" do
-          demo.run
-          expect(sets).to eq(["config set workflows.sources /a/other-demo/calculator/workflows,#{own}"])
+        it "appends its own once and warns that the other entry shadows it" do
+          demo(err: err).run
+          expect(sets).to eq(["config set workflows.sources /a/team,#{other},#{own}"])
+          expect(err.string).to include("Warning", other, own)
+        end
+      end
+
+      context "with its own entry ahead of another checkout's" do
+        let(:other) { File.join(tmp, "other/demo/calculator/workflows").tap { |dir| FileUtils.mkdir_p(dir) } }
+        let(:sources) { "#{own}/,#{other}" }
+
+        it "neither writes nor warns" do
+          demo(err: err).run
+          expect(sets).to be_empty
+          expect(err.string).not_to include("Warning")
         end
       end
 

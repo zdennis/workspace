@@ -46,6 +46,9 @@ module DemoCalculator
 
   # One demo workspace: the checkout this script sits in, and the commands that drive it.
   class Demo
+    # A sources entry that is some checkout's copy of a calculator demo's workflow definitions.
+    DEMO_WORKFLOWS_ENTRY = %r{/demo/calculator\d*/workflows\z}
+
     # @return [String, nil] where `run` wrote run.json; nil before it did, and under `dry_run`
     attr_reader :record_path
 
@@ -64,9 +67,11 @@ module DemoCalculator
     # @param poll [Numeric] seconds between polls
     # @param sleeper [#call] sleeps for the given seconds
     # @param config [Config] which demo this is
+    # @param id [String, nil] when set, the run branch is calc-demo/<stamp>-<id>
     def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout, err: $stderr, base: nil, out_dir: nil, clock: -> { Time.now },
-      wait: false, held_limit: 1200, timeout: 14_400, poll: 15, sleeper: ->(seconds) { sleep(seconds) }, config: Config.v1)
+      wait: false, held_limit: 1200, timeout: 14_400, poll: 15, sleeper: ->(seconds) { sleep(seconds) }, config: Config.v1, id: nil)
       @config = config
+      @id = id
       @root = File.expand_path(root)
       @workspace = workspace
       @name = name
@@ -121,11 +126,12 @@ module DemoCalculator
     # Moves to a fresh calc-demo/<stamp> branch, empties the queue, drops the acceptance tests and resets the stub
     # there, installs the workflows, queues all seven, runs the first pass and writes the run record.
     #
+    # @param before_start [#call, nil] called with no arguments after the record is written and before the queue is enabled
     # @return [Hash, nil] the record; nil under `dry_run`
-    def run
+    def run(before_start: nil)
       guard!
       stamp = @clock.call.utc.strftime("%Y%m%dT%H%M%SZ")
-      branch = "#{RUN_BRANCH_PREFIX}#{stamp}"
+      branch = "#{RUN_BRANCH_PREFIX}#{stamp}#{"-#{@id}" if @id}"
       base = @base || "HEAD"
       preflight(branch)
       check_stub!
@@ -140,6 +146,7 @@ module DemoCalculator
         configure
         items = queue_items
         record = write_record(stamp, branch, base_sha, workspace_sha, items, acceptance_sha, removal_sha)
+        before_start&.call
         self.class.starting(name_args: name_args).each { |argv| workspace(*argv) }
       rescue Refused
         @err.puts "#{@config.program}: run stopped after switching to #{branch}; `git switch -` returns to the previous branch (#{branch} is left partial)" unless @dry_run
@@ -388,9 +395,10 @@ module DemoCalculator
       source = File.join(@root, @config.workflows_dir)
       current = @dry_run ? "" : capture(@workspace, "config", "get", "workflows.sources", chdir: @root)
       listed = current.split(/[,\n]/).map(&:strip).reject(&:empty?)
-      suffix = @config.workflows_suffix
-      merged = listed.map { |entry| entry.sub(%r{/+\z}, "") }.reject { |entry| entry != source && entry.end_with?(suffix) } | [source]
-      workspace("config", "set", "workflows.sources", merged.join(",")) unless merged == listed
+      ahead = listed.map { |entry| entry.sub(%r{/+\z}, "") }.take_while { |entry| entry != source }
+      shadows = ahead.select { |entry| entry.match?(DEMO_WORKFLOWS_ENTRY) && File.directory?(entry) }
+      @err.puts "Warning: workflows.sources lists #{shadows.join(", ")} ahead of #{source}; the first source wins, so that checkout's definitions shadow this one's. Reorder workflows.sources to fix it." unless shadows.empty?
+      workspace("config", "set", "workflows.sources", (listed + [source]).join(",")) unless listed.any? { |entry| entry.sub(%r{/+\z}, "") == source }
       workspace("workflow", "install")
       workspace("config", "set", "--scope", "workspace", *name_args, "commands.test", @config.test_command)
       workspace("config", "set", "--scope", "workspace", *name_args, "commands.lint", @config.lint_command) if @config.lint_command
