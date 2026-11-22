@@ -149,7 +149,10 @@ module DemoCalculator2
     #
     # Wall runs from the earliest item start in either lane to the end of the integration. The critical path is the
     # 01-03 span (to the end of the fork goal), fork latency (to lane B's first start), the longer lane's tail from that start and
-    # the integration (its recorded start to its end). A gap between the later lane's end and the integration's start is the delta.
+    # the integration (its recorded start to its end). Both tails are measured from lane B's first start, so fork latency plus a
+    # tail is the tail from the fork goal's end. The harness lag (the later lane's end to the integration's start) absorbs any gap, so
+    # the parts telescope to the wall; `check` therefore tests only that the harness and the run files agree on the first item's start
+    # (when `first_item_at` is given) and that the parts are ordered and non-negative, not that every part is right.
     #
     # @param rows [Array<Hash>] both lanes' item rows
     # @param fork [Hash, nil] run.json's `fork` block (`goal`)
@@ -181,9 +184,12 @@ module DemoCalculator2
     end
 
     # @return [Hash, nil] `span`, `fork_latency`, `a_tail`, `b_tail`, `integration`, `slack`, `lane` (the longer one) and
-    #   `harness_lag` (integration start less the later lane's end; `harness_lag_flagged` above HARNESS_LAG_LIMIT) and
-    #   `check` (`sum`, `delta` against the harness's wall (nil without it), `fork_ordered`, `ok`: the parts add up to it within PATH_TOLERANCE, none is negative and the recorded fork time falls between the fork goal's end and lane B's first start); nil without both lanes and a fork goal
-    def self.critical_path(a, b, first, started, ended, fork_goal, wall, fork_at = nil)
+    #   `harness_lag` (integration start less the later lane's end; `harness_lag_flagged` above HARNESS_LAG_LIMIT, which does not
+    #   affect `ok`) and `check` (`sum`, `delta` = harness wall less the path, nil without `first_item_at`; it detects only a
+    #   disagreement on the first item's start, because the harness lag absorbs any other gap; `fork_ordered`; `ok`: delta within
+    #   PATH_TOLERANCE when there is one, none of the parts on the path (span, fork latency, longer tail, lag, integration) negative and the recorded fork time between the fork goal's end and lane B's first
+    #   start); nil without both lanes and a fork goal
+    def self.critical_path(a, b, first, started, ended, fork_goal, harness_wall, fork_at = nil)
       fork_row = a.find { |row| row[:goal] == fork_goal }
       return nil if fork_row.nil? || b.empty? || first.nil? || started.nil? || ended.nil?
       fork_end = time(fork_row[:ended_at])
@@ -193,9 +199,10 @@ module DemoCalculator2
       parts = {span: fork_end - first, fork_latency: b_start - fork_end, a_tail: a_end - b_start, b_tail: b_end - b_start, integration: ended - started, harness_lag: started - [a_end, b_end].max}
       longest = [parts[:a_tail], parts[:b_tail]].max
       sum = parts[:span] + parts[:fork_latency] + longest + parts[:harness_lag] + parts[:integration]
-      # The parts come from the run files' timestamps; `wall` here is the harness's own (first item seen to integration end), so a
-      # part that is wrong or missing shows as delta. Without the harness's start there is no delta and ok is an ordering check only.
-      delta = wall && (sum - wall).abs
+      # The parts and the harness wall share the integration's end, and the harness lag absorbs any gap, so delta can only differ
+      # by the first item's start (run files vs the harness's own sighting). Without the harness's start there is no delta and ok
+      # is an ordering check only.
+      delta = harness_wall && (sum - harness_wall).abs
       # The one reading the parts do not share: the harness's own fork time must sit between the fork goal's end and lane B's first start.
       ordered = fork_at.nil? || fork_at.between?(fork_end - PATH_TOLERANCE, b_start + PATH_TOLERANCE)
       parts.merge(slack: (a_end - b_end).abs, lane: (a_end >= b_end) ? "A" : "B",
@@ -251,10 +258,11 @@ module DemoCalculator2
       path = lanes[:critical_path]
       lines = ["wall: #{duration.call(lanes[:wall])}  sequential equivalent: #{duration.call(lanes[:sequential])}  wall net of waits: #{duration.call(lanes[:wall_net_of_waits])}"]
       if path
-        lines << "critical path: 01-03 #{duration.call(path[:span])} + fork #{duration.call(path[:fork_latency])} + tail #{duration.call([path[:a_tail], path[:b_tail]].max)} + harness lag #{duration.call(path[:harness_lag])} " \
+        lines << "critical path: 01-03 #{duration.call(path[:span])} + fork #{duration.call(path[:fork_latency])} + tail from lane B's first start #{duration.call([path[:a_tail], path[:b_tail]].max)} + harness lag #{duration.call(path[:harness_lag])} " \
           "(lane #{path[:lane]}; A #{duration.call(path[:a_tail])}, B #{duration.call(path[:b_tail])}) + integration #{duration.call(path[:integration])} = #{duration.call(path[:check][:sum])}; slack #{duration.call(path[:slack])}"
         lines << "WARNING: the harness took #{duration.call(path[:harness_lag])} to start the integration after the later lane ended (more than #{HARNESS_LAG_LIMIT}s)" if path[:harness_lag_flagged]
-        lines << "ERROR: the critical path differs from the harness's wall by #{duration.call(path[:check][:delta])} or has a negative part, or the recorded fork time is outside the fork goal's end and lane B's start: the eval is wrong or the run record is incomplete" unless path[:check][:ok]
+        lines << "critical path check: #{path[:check][:delta] ? "start agrees with the harness's within #{PATH_TOLERANCE}s, parts ordered" : "(ordering only)"}" if path[:check][:ok]
+        lines << "ERROR: the critical path check failed: the first item's start differs from the harness's by #{duration.call(path[:check][:delta])} (when known), a part is negative, or the recorded fork time is outside the fork goal's end and lane B's start: the run record is incomplete or the eval is wrong" unless path[:check][:ok]
       else
         lines << "critical path: #{fmt::UNKNOWN}#{" (fork goal #{fork["goal"]})" if fork}"
       end

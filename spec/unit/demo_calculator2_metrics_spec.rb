@@ -246,7 +246,16 @@ RSpec.describe DemoCalculator2::Metrics do
       lag = ->(seconds) { described_class.lanes(rows, fork: fork, integration: integration.merge("started_at" => at(30, seconds)), first_item_at: at(0, 5))[:critical_path] }
       expect(lag.call(10)).to include(harness_lag: 10, harness_lag_flagged: false)
       expect(lag.call(10)[:check]).to include(ok: true)
+      expect(lag.call(20)).to include(harness_lag: 20, harness_lag_flagged: false)
+      expect(lag.call(21)).to include(harness_lag: 21, harness_lag_flagged: true)
       expect(lag.call(25)).to include(harness_lag: 25, harness_lag_flagged: true)
+      expect(lag.call(25)[:check]).to include(ok: true, delta: 0)
+      expect(lag.call(10)[:check]).to include(delta: 0)
+    end
+
+    it "checks ordering only, with ok true and no delta, when the harness's first item start is missing" do
+      path = described_class.lanes(rows, fork: fork, integration: integration)[:critical_path]
+      expect(path[:check]).to include(ok: true, delta: nil)
     end
 
     it "fails the check when the parts, read from the run files, do not add up to the harness's own wall" do
@@ -303,7 +312,7 @@ RSpec.describe DemoCalculator2::Metrics do
       lines = described_class.lanes_lines(lanes, {"goal" => "01-add-sub"})
       expect(lines[0]).to start_with("wall: 9m00s  sequential equivalent: 9m30s")
       expect(lines[1]).to include("critical path: 01-03 4m00s + fork -1m00s")
-      expect(lines.join("\n")).to include("ERROR: the critical path differs from the harness's wall", "lock waits: A 0s, B 0s", "integration: merge clean, first pass yes, conflict no")
+      expect(lines.join("\n")).to include("ERROR: the critical path check failed", "lock waits: A 0s, B 0s", "integration: merge clean, first pass yes, conflict no")
     end
 
     it "flags a nonzero lock wait" do

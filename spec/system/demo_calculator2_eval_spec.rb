@@ -405,6 +405,14 @@ RSpec.describe DemoCalculator2::LanesEvaluation do
     expect(lanes[:sequential]).to eq(result[:rows].sum { |row| row[:wall] } + 240)
   end
 
+  it "shows a nonzero harness lag end to end without failing the check" do
+    write_json(File.join(run_dir, "run.json"), record.merge("integration" => integration.merge("started_at" => "2026-11-21T05:20:10Z")))
+    output = build.call
+    expect(output[:lanes][:critical_path]).to include(harness_lag: 10, harness_lag_flagged: false, integration: 230)
+    expect(output[:lanes][:critical_path][:check]).to include(ok: true, delta: 0)
+    expect(described_class.render(output)).to include("harness lag 10s")
+  end
+
   it "shows lane B's lock wait and flags it" do
     expect(result[:lanes][:lock_waits]).to eq("A" => {seconds: 0.0, flagged: false}, "B" => {seconds: 12.0, flagged: true})
   end
@@ -423,7 +431,7 @@ RSpec.describe DemoCalculator2::LanesEvaluation do
     expect(text).to match(/^A 02-mul-div\s/)
     expect(text).to match(/^B 06-json\s/)
     expect(text).to match(/^step wall\s+A02\s+A03\s+B06/)
-    expect(text).to include("wall: 24m00s", "critical path: 01-03 12m00s + fork 30s + tail 7m30s + harness lag 0s (lane B;", "lock waits: A 0s, B 12s (nonzero", "integration: merge conflict, first pass no, conflict yes, integrate run attempts 5",
+    expect(text).to include("wall: 24m00s", "critical path: 01-03 12m00s + fork 30s + tail from lane B's first start 7m30s + harness lag 0s (lane B;", "lock waits: A 0s, B 12s (nonzero", "integration: merge conflict, first pass no, conflict yes, integrate run attempts 5",
       "catches: lane A verify fixes 2, review rejections 2; lane B verify fixes 1, review rejections 1", "(the integrated branch)")
     expect(JSON.parse(File.read(File.join(run_dir, "eval.json"))).dig("lanes", "critical_path", "check", "ok")).to be(true)
   end

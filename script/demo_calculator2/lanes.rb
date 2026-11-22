@@ -309,7 +309,7 @@ module DemoCalculator2
       wall = Time.parse(integration["ended_at"].to_s) - (first_start || Time.parse(record.dig("lanes", "started_at").to_s))
       done, total = items_delivered(record)
       line = "#{DRIVER_LINE}: wall=#{self.class.duration(wall)} integration=#{repair ? "integrate" : "clean"} first_pass=#{integration["first_pass"]} items=#{done}/#{total}"
-      record["lanes"]["first_item_at"] = first_start&.utc&.iso8601
+      record["lanes"]["first_item_at"] = first_start&.utc&.iso8601 if record["lanes"]
       record["wait"] = {"reason" => "empty", "item" => nil, "stopped_at" => @clock.call.utc.iso8601, "failed_item" => nil}
       save(record)
       say line

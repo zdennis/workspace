@@ -3,7 +3,8 @@ require_relative "evaluation"
 module DemoCalculator2
   # `eval` for a `run --lanes` record: both workspaces' items as rows tagged with their lane, the fork, the integration
   # and the numbers across them (wall, critical path, waits). Every item's own acceptance runs under `--dag`, and the
-  # integrated branch gets the plain 07 run, the lint and the diff scan; the leak scans read both workspaces.
+  # integrated branch gets the plain 07 run, the lint and the diff scan; the leak scans read both workspaces. The critical path's
+  # check is a start-agreement check against the harness's wall plus an ordering check, not proof that each part is right.
   class LanesEvaluation < Evaluation
     def initialize(**options)
       super
