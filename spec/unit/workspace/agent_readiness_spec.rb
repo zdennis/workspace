@@ -17,16 +17,22 @@ RSpec.describe Workspace::AgentReadiness do
       poll_interval: 0.5, quiet_for: 2.0)
   end
 
+  def capture(screen, history_rows = 0)
+    return nil if screen.nil?
+
+    Workspace::Tmux::StyledCapture.new(screen, history_rows).freeze
+  end
+
   before do
     allow(tmux).to receive(:pane_details) { panes }
-    allow(tmux).to receive(:capture_screen) { (screens.size > 1) ? screens.shift : screens.first }
+    allow(tmux).to receive(:capture_screen_scrollback) { capture((screens.size > 1) ? screens.shift : screens.first) }
     allow(process_tree).to receive(:snapshot) { Workspace::ProcessTree::Snapshot.new(processes) }
   end
 
   describe "#agent_running?" do
     it "is true when a coding agent runs in any pane, without looking at its screen" do
       expect(readiness.agent_running?("proj")).to be(true)
-      expect(tmux).not_to have_received(:capture_screen)
+      expect(tmux).not_to have_received(:capture_screen_scrollback)
     end
 
     it "counts a pane running an aliased command only when given the alias" do
@@ -53,7 +59,7 @@ RSpec.describe Workspace::AgentReadiness do
     expect(result.pane_id).to eq("%2")
     expect(result.label).to eq("Claude Code")
     expect(now[0]).to eq(2.0)
-    expect(tmux).to have_received(:capture_screen).with("%2").at_least(:once)
+    expect(tmux).to have_received(:capture_screen_scrollback).with("%2").at_least(:once)
   end
 
   it "waits on the one pane named by only_pane, not the session's preferred agent pane" do
@@ -64,7 +70,7 @@ RSpec.describe Workspace::AgentReadiness do
 
     expect(result).to be_ready
     expect(result.pane_id).to eq("%9")
-    expect(tmux).not_to have_received(:capture_screen).with("%2")
+    expect(tmux).not_to have_received(:capture_screen_scrollback).with("%2")
   end
 
   it "is not ready, saying so, when only_pane is not in the session" do
@@ -126,7 +132,7 @@ RSpec.describe Workspace::AgentReadiness do
 
   it "gives up at the deadline when the agent never settles" do
     counter = [0]
-    allow(tmux).to receive(:capture_screen) { "frame #{counter[0] += 1}" }
+    allow(tmux).to receive(:capture_screen_scrollback) { capture("frame #{counter[0] += 1}") }
 
     result = readiness.wait("proj", deadline: readiness.deadline_in(5))
 
@@ -152,7 +158,7 @@ RSpec.describe Workspace::AgentReadiness do
   end
 
   it "does not count a static trust dialog as ready, even once the screen is quiet" do
-    allow(tmux).to receive(:capture_screen) { "Do you trust the files in this folder?\n╭──────────╮\n│ ❯ 1. Yes │\n│   2. No  │\n╰──────────╯" }
+    allow(tmux).to receive(:capture_screen_scrollback) { capture("Do you trust the files in this folder?\n╭──────────╮\n│ ❯ 1. Yes │\n│   2. No  │\n╰──────────╯") }
 
     result = readiness.wait("proj", deadline: readiness.deadline_in(5))
 
@@ -166,6 +172,29 @@ RSpec.describe Workspace::AgentReadiness do
     result = readiness.wait("proj", deadline: readiness.deadline_in(60))
 
     expect(result).to be_ready
+  end
+
+  it "is ready on a short pane whose input box rule has scrolled into history" do
+    allow(tmux).to receive(:capture_screen_scrollback) { capture("Welcome to Claude Code\n" + ("─" * 20) + "\n❯ \n" + ("─" * 20), 2) }
+
+    expect(readiness.wait("proj", deadline: readiness.deadline_in(60))).to be_ready
+  end
+
+  it "does not count a prompt that is only in scrollback history" do
+    allow(tmux).to receive(:capture_screen_scrollback) { capture("❯ old prompt\nsome output\nrunning a command", 1) }
+
+    result = readiness.wait("proj", deadline: readiness.deadline_in(5))
+
+    expect(result).not_to be_ready
+    expect(result.reason).to eq("Claude Code (pane 0.1) agent prompt never appeared")
+  end
+
+  it "reads a failed capture as not drawn yet" do
+    allow(tmux).to receive(:capture_screen_scrollback).and_return(nil)
+
+    result = readiness.wait("proj", deadline: readiness.deadline_in(1))
+
+    expect(result.reason).to eq("Claude Code (pane 0.1) has not drawn its screen yet")
   end
 
   it "reports a process table that can't be read" do

@@ -4,7 +4,8 @@ module Workspace
   # Ready means: a known agent (see {AgentProvider}) is running in one of the
   # session's panes, that pane has drawn something and then stopped changing
   # for a moment, and — for a provider that declares a `ready_pattern` — the
-  # settled screen actually shows that agent's input prompt. An agent
+  # settled screen actually shows that agent's input prompt on a visible row
+  # (a match that has scrolled into history does not count). An agent
   # redraws its screen while it starts up and then sits still once ready, so
   # a quiet screen is most of the signal, and works for every agent with or
   # without a pattern. But quiet alone can also mean the agent is sitting on
@@ -92,7 +93,8 @@ module Workspace
             pane_id = found[:id]
             screen = quiet_since = nil
           end
-          current = @tmux.capture_screen(pane_id)
+          styled = StyledScreen.parse(@tmux.capture_screen_scrollback(pane_id))
+          current = styled&.text
           now = @clock.call
           found[:reason] = "#{found[:label]} (pane #{found[:target]}) is still starting up"
           if current.nil? || current.strip.empty?
@@ -103,7 +105,7 @@ module Workspace
             quiet_since = now
           elsif now - quiet_since >= @quiet_for
             pattern = found[:provider]&.ready_pattern
-            if pattern.nil? || pattern.match?(current)
+            if pattern.nil? || styled.input_box(pattern)
               @logger.debug { "agent readiness: #{found[:label]} ready in #{session_name}:#{found[:target]}" }
               return Result.new(ready: true, pane: found[:target], pane_id: found[:id], label: found[:label])
             end
