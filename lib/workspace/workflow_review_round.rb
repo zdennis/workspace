@@ -239,6 +239,7 @@ module Workspace
         direct = WorkflowDefinition.direct_review?(run.definition, step)
         agent = review_agent(run, step)
         window = review_window(run, pending, agent, model)
+        window = warm_or_cold(run, pending, window, agent) if window.is_a?(Hash) && window[:warm]
         return current(run) if window == :left
         return failed(run, pending, nil, "window_not_opened", "tmux could not open the review window") unless window
         # A window an earlier round left is cleared (`/clear`, as a `context: fresh` step is) as the line is typed.
@@ -255,8 +256,9 @@ module Workspace
         return recorded[:run] unless recorded[:wanted]
         # The reviewers start fresh, each told of its own earlier write-up by `review.previous`.
         kicked = true
+        # A window opened ahead of the round (warm) has been in the daemon's rows for minutes: no wait for its row.
         kick = @panes.kick(workspace: workspace, pane: window[:pane], text: format(WorkflowDispatch::KICK, written["path"]), fresh: window[:fresh], run_id: run.id,
-          opened: !(window[:reused] || window[:carried]))
+          opened: !(window[:reused] || window[:carried] || window[:warm]))
         # A window being cleared that refused the line (a person's turn running, no quiet in time) holds no reviewer of
         # this round: kept, still to be cleared, for the round's next delivery. A failure that does not prove the line
         # never went out (the daemon gave no answer) may have reviewers at work: typed.
@@ -310,8 +312,29 @@ module Workspace
     # window kept for the person ({#failed} +close+ false). A busy agent there is not typed into twice; whether such
     # a round is delivered again at all is T32's.
     def present_window(run, pending, window, agent)
+      return nil if window[:ready]
       spawned = @readiness.await_ready(run.workspace, window[:pane], AGENT_KIND, window: window[:window], keep: window[:reused])
       spawned.ready? ? nil : not_ready(run, pending, window, spawned, agent)
+    end
+
+    # A warm window whose Claude Code is not ready (an update or sign-in screen, an agent that exited) is closed, and the
+    # round goes on in one new window as a cold round does, so only that window's own readiness can fail the round. A wait
+    # that raises counts as not ready. The wait closes nothing (`keep`): a round another process took over meanwhile
+    # answers :left, its window left alone, and only a round still this delivery's has the window closed here.
+    #
+    # @return [Hash, Symbol, nil] the warm window, marked :ready (not waited on again); else the new window; :left; nil when tmux opened none
+    def warm_or_cold(run, pending, window, agent)
+      spawned = begin
+        @readiness.await_ready(run.workspace, window[:pane], AGENT_KIND, window: window[:window], keep: true)
+      rescue Workspace::Error, Timeout::Error
+        nil
+      end
+      return window.merge(ready: true) if spawned&.ready?
+      return :left unless still_wanted?(run.id, pending)
+      # A window already gone is no failure: tmux's kill answers false.
+      @tmux.kill_window(window[:window], timeout: WorkflowPanes::TMUX_READ_TIMEOUT)
+      opened = open_review_window(@tmux.session_name_for(run.workspace), run, pending["step"], pending["round"], agent)
+      opened && {pane: opened[:pane], window: opened[:window], reused: false, carried: false}
     end
 
     def not_ready(run, pending, window, spawned, agent)
@@ -340,32 +363,52 @@ module Workspace
       program.include?("/") ? File.executable?(program) : !@which.call(program).nil?
     end
 
-    # The window marked for this round (left by a delivery of it that died), else the window an earlier round of the
+    # The step's warm window, opened ahead of this round ({#prewarm}) and still what it was opened as; else the window
+    # marked for this round (left by a delivery of it that died), else the window an earlier round of the
     # same step left (a rejected or stopped round keeps its window for the next one): marked for this round and
     # carried over, its conversation cleared when the line is typed; else a new one. Windows marked for another round
     # of the run hold a reviewer of that round, and are closed (their reviewer unbound) only while this delivery still
     # owns the round: one taken over meanwhile answers :left and touches nothing.
     #
-    # @return [Hash, Symbol, nil] :pane, :window, :reused and :carried; :left; nil when tmux opened nothing
+    # The warm case decides before the windows marked for this round are taken as `reused`: while the step holds a warm
+    # slot for this round, or no delivery of the round has been made, a window with this round's mark is a warm one (its
+    # slot maybe not yet written). One not adopted is closed, never reused: no line was ever typed into it.
+    #
+    # @return [Hash, Symbol, nil] :pane, :window, :reused, :carried and :warm (with :opened_at); :left; nil when tmux opened nothing
     def review_window(run, pending, agent, model = nil)
       session = @tmux.session_name_for(run.workspace)
       mark = WorkflowPanes.review_mark(run.id, pending["step"], pending["round"])
+      listed = @tmux.review_windows(session, timeout: WorkflowPanes::TMUX_READ_TIMEOUT).select do |window|
+        WorkflowPanes.parse_review_mark(window[:review])&.first == run.id
+      end
+      marked = listed.select { |window| window[:review] == mark }
+      state = run.steps[pending["step"]]&.to_h || {}
+      warm = stale = nil
+      if warm_decides?(state, pending)
+        warm = warm_window(run, state, pending, marked, model)
+        stale = marked - [warm]
+      end
       kept = nil
       others = []
-      @tmux.review_windows(session, timeout: WorkflowPanes::TMUX_READ_TIMEOUT).each do |window|
-        next unless WorkflowPanes.parse_review_mark(window[:review])&.first == run.id
+      (listed - Array(stale) - [warm]).each do |window|
         (window[:review] == mark && kept.nil?) ? kept = window : others << window
       end
-      return :left if others.any? && !still_wanted?(run.id, pending)
-      carried = kept ? nil : earlier_window(others, pending)
+      return :left if (others.any? || stale&.any?) && !still_wanted?(run.id, pending)
+      # Never bound, so nothing to unbind.
+      Array(stale).each { |window| @tmux.kill_window(window[:window], timeout: WorkflowPanes::TMUX_READ_TIMEOUT) }
+      carried = (kept || warm) ? nil : earlier_window(others, pending)
       # A window started on another model is not carried over: the round's reviewers must run the model it names.
-      carried = nil if carried && run.steps[pending["step"]]&.to_h&.dig("review_model") != model
+      carried = nil if carried && state["review_model"] != model
       # One that can't be marked for this round is closed with the rest.
       carried = nil if carried && !@tmux.mark_review_window(carried[:window], mark)
       others.delete(carried) if carried
       others.each do |window|
         @tmux.kill_window(window[:window], timeout: WorkflowPanes::TMUX_READ_TIMEOUT)
         @panes.unbind(run.id, role: "reviewer", pane: window[:pane]) if window[:pane]
+      end
+      if warm
+        opened_at = parse_time(state.dig("review_window", "opened_at"))
+        return {pane: warm[:pane], window: warm[:window], reused: false, carried: false, warm: true, opened_at: opened_at || true}
       end
       # This round's own window that an earlier delivery carried over and never cleared holds no reviewer of the round:
       # it is carried again, not reused.
@@ -381,9 +424,11 @@ module Workspace
     end
 
     # What the prompt is told of a window whose process started before it: a Time it started no later than, or true when
-    # the run file gives none; nil for a window opened for this delivery. A window an earlier round left (carried) takes
-    # {#carried_start}; one this round's earlier delivery left (reused) takes {#reused_start}.
+    # the run file gives none; nil for a window opened for this delivery. A warm window takes its slot's `opened_at`, the
+    # time it opened; a window an earlier round left (carried) takes {#carried_start}; one this round's earlier delivery
+    # left (reused) takes {#reused_start}.
     def early_start(run, pending, window)
+      return window[:opened_at] if window[:warm]
       return carried_start(run, pending["step"], window[:window]) if window[:carried]
       reused_start(run, pending, window[:window]) if window[:reused]
     end
@@ -416,6 +461,33 @@ module Workspace
       Time.iso8601(value.to_s)
     rescue ArgumentError
       nil
+    end
+
+    # Whether the warm case decides this round's marked windows: the step's `review_window` is a warm slot for this round,
+    # or no delivery of the round was made (none recorded a window, pane or record of it, nor delivered it again), so a
+    # window with its mark can only be one {#prewarm} opened, its slot not yet written.
+    def warm_decides?(state, pending)
+      return true if warm_slot(state, pending)
+      round = state["review"]
+      return false unless round.is_a?(Hash) && round["redeliveries"].to_i.zero?
+      return false if round.key?("window") || round.key?("pane") || Array(round["panes"]).any?
+      Array(state["attempts"]).flat_map { |attempt| Array(attempt.is_a?(Hash) ? attempt["rounds"] : nil) }
+        .none? { |row| row.is_a?(Hash) && row["round"] == pending["round"] }
+    end
+
+    def warm_slot(state, pending)
+      slot = state["review_window"]
+      slot if slot.is_a?(Hash) && slot["warm"] == true && slot["round"] == pending["round"]
+    end
+
+    # The marked window the step's warm slot names, if it is still what it was opened as: the same pane, the round's model
+    # and the same start-up files ({#memory_digest}). Never bound or cleared, since only a delivery binds.
+    def warm_window(run, state, pending, marked, model)
+      slot = warm_slot(state, pending)
+      return nil unless slot
+      window = marked.find { |each| each[:window] == slot["window"] && each[:pane] && each[:pane] == slot["pane"] }
+      return nil unless window && state["review_model"] == model
+      window if slot["memory"] == memory_digest(run.worktree)
     end
 
     # The window of the newest earlier round of the same step, with a pane to type into.
@@ -490,7 +562,8 @@ module Workspace
         round["cleared_at"] = kick[:cleared_at] if window[:fresh] && kick[:cleared_at].is_a?(String)
         @change.event(hash, "review_delivered", pending.slice("step", "attempt", "round").merge("pane" => window[:pane], "window" => window[:window], "reused" => window[:reused])
           .merge(window[:fresh] ? {"cleared" => true} : {})
-          .merge(window[:carried] ? {"carried" => true} : {}))
+          .merge(window[:carried] ? {"carried" => true} : {})
+          .merge(window[:warm] ? {"warm" => true} : {}))
         WorkflowRun.from_h(hash)
       end
       abandon(run, window) if moved

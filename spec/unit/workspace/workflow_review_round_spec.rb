@@ -96,6 +96,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
     end
 
     it "reuses the window already marked for the round, and closes one a round before it left" do
+      store.runs["wr_1"] = run_hash(review: {"redeliveries" => 1})
       tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70},
         {window: "@6", name: "review-plan", review: "wr_1:plan:0", pane: "%60", pid: 60},
         {window: "@5", name: "review-x", review: "wr_2:x:1", pane: "%50", pid: 50}]
@@ -315,7 +316,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
         runner.call("wr_1", pending_one)
         expect(prompt.calls.last.last[:early_start]).to eq(Time.utc(2026, 11, 14, 11, 35, 0))
 
-        store.runs["wr_1"] = run_hash
+        store.runs["wr_1"] = run_hash(review: {"redeliveries" => 1})
         runner.call("wr_1", pending_one)
         expect(prompt.calls.last.last[:early_start]).to be(true)
       end
@@ -518,6 +519,8 @@ RSpec.describe Workspace::WorkflowReviewRound do
 
       it "waits without closing it, keeps it on the failed round and leaves its binding" do
         tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        # A redelivery of the round: an earlier delivery may have typed its line there.
+        store.runs["wr_1"] = run_hash(review: {"redeliveries" => 1})
 
         runner.call("wr_1", pending)
 
@@ -545,6 +548,8 @@ RSpec.describe Workspace::WorkflowReviewRound do
 
       it "keeps the window, its id on the failed round, and its binding" do
         tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        # A redelivery of the round: an earlier delivery may have typed its line there.
+        store.runs["wr_1"] = run_hash(review: {"redeliveries" => 1})
 
         runner.call("wr_1", pending)
 
@@ -678,6 +683,8 @@ RSpec.describe Workspace::WorkflowReviewRound do
 
       it "leaves the window it reused alone and records no failure" do
         tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        # A redelivery of the round: an earlier delivery may have typed its line there.
+        store.runs["wr_1"] = run_hash(review: {"redeliveries" => 1})
 
         runner.call("wr_1", pending)
 

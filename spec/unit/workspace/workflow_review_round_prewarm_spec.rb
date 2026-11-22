@@ -267,3 +267,273 @@ RSpec.describe Workspace::WorkflowReviewRound, "#prewarm" do
     end
   end
 end
+
+RSpec.describe Workspace::WorkflowReviewRound, "#call into a warm window" do
+  around do |example|
+    Dir.mktmpdir("wf-review-warm") do |dir|
+      @dir = dir
+      example.run
+    end
+  end
+
+  # Answers each wait in turn from +answers+ ([ready, waiting screen], or an error to raise), and calls +on_wait+ first.
+  let(:readiness_class) do
+    Class.new(RecordingPaneReadiness) do
+      def initialize(answers:, tmux:, on_wait: nil)
+        super(tmux: tmux)
+        @answers = answers
+        @on_wait = on_wait
+      end
+
+      def await_ready(name, pane, kind, window: nil, keep: false)
+        answer = @answers.shift || [true, nil]
+        @on_wait&.call
+        if answer.is_a?(Exception)
+          @calls << [:await_ready, name, pane, kind, keep ? {window: window, keep: true} : {window: window}]
+          raise answer
+        end
+        @ready, @waiting = answer
+        super
+      end
+    end
+  end
+
+  let(:now) { Time.utc(2026, 11, 14, 12, 0, 0) }
+  let(:store) { RecordingRunStore.new }
+  let(:change) { RecordingRunChange.new(store.runs) }
+  let(:tmux) { FakeTmux.new(session_name: "app") }
+  let(:panes) { RecordingWorkflowPanes.new }
+  let(:answers) { [] }
+  let(:on_wait) { nil }
+  let(:readiness) { readiness_class.new(answers: answers, tmux: tmux, on_wait: on_wait) }
+  let(:prompt) { RecordingWorkflowPrompt.new }
+  let(:config_path) { File.join(@dir, "app.yml") }
+  let(:project_config) do
+    instance_double(Workspace::ProjectConfig, config_path_for: config_path, agent_pane_command: nil).tap do |config|
+      allow(config).to receive(:with_configured_program) { |command, _kind, _workspace| command }
+    end
+  end
+  let(:worktree) { File.join(@dir, "checkout") }
+  let(:home) { File.join(@dir, "home") }
+  let(:holder) { {"pid" => 4321, "started" => "Sat Nov 14 11:59:00 2026"} }
+  let(:pending) { {"step" => "plan", "attempt" => 1, "round" => 1} }
+  let(:warm) { {window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70} }
+
+  let(:runner) do
+    described_class.new(store: store, change: change, tmux: tmux, panes: panes, readiness: readiness,
+      main_agent: Workspace::MainAgent.new(project_config: project_config), revision: RecordingReviewRevision.new({revision: "rev1", problem: nil}),
+      prompt: prompt, round_dirs: RecordingReviewTally.new, holder: -> { holder }, shell: "/bin/zsh", which: ->(_program) { "/usr/local/bin/claude" },
+      error_output: StringIO.new, clock: -> { now }, home: home)
+  end
+
+  before do
+    FileUtils.mkdir_p([worktree, home])
+    File.write(config_path, YAML.dump("name" => "app", "windows" => [{"main" => {"panes" => ["codex --full-auto"]}}]))
+    store.runs["wr_1"] = {"id" => "wr_1", "workflow" => "flow", "workspace" => "app", "project" => "app", "worktree" => worktree,
+                          "artifacts_dir" => File.join(worktree, ".workflow", "wr_1"), "state" => "running", "current" => "plan", "pane" => "%3", "reason" => nil,
+                          "definition" => {"id" => "flow", "steps" => [{"id" => "plan", "produces" => ["plan.md"], "review" => {"from" => %w[skeptic], "need" => 1}}]},
+                          "steps" => {"plan" => {"state" => "reviewing", "review_rounds" => 1,
+                                                 "review" => {"round" => 1, "delivery" => "delivering", "started_at" => "2026-11-14T11:59:00.000Z",
+                                                              "pending" => %w[skeptic], "redeliveries" => 0, "holder" => holder},
+                                                 "review_window" => {"round" => 1, "window" => "@7", "pane" => "%70", "warm" => true,
+                                                                     "memory" => runner.memory_digest(worktree), "opened_at" => "2026-11-14T11:50:00.000Z"},
+                                                 "attempts" => [{"n" => 1, "outcome" => "checks_passed"}]}}}
+    tmux.review_window_list = [warm]
+  end
+
+  def step = store.runs["wr_1"]["steps"]["plan"]
+
+  def round = step["review"]
+
+  def kick = panes.calls.find { |call| call.first == :kick }&.last
+
+  def delivered = change.events.find { |event| event[1] == "review_delivered" }&.last
+
+  it "adopts the warm window: no new window, no /clear, no wait for the daemon's row, and review_delivered says warm" do
+    runner.call("wr_1", pending)
+
+    expect(tmux.opened_windows).to be_empty
+    expect(tmux.killed_windows).to be_empty
+    expect(tmux.marked_windows).to be_empty
+    expect(readiness.calls).to eq([[:await_ready, "app", "%70", "claude", {window: "@7", keep: true}]])
+    expect(kick).to include(pane: "%70", fresh: false, opened: false)
+    expect(round).to include("pane" => "%70", "window" => "@7", "delivery" => nil)
+    expect(round).not_to have_key("clear_from")
+    expect(round).not_to have_key("cleared_at")
+    expect(delivered).to eq({"step" => "plan", "attempt" => 1, "round" => 1, "pane" => "%70", "window" => "@7", "reused" => false, "warm" => true})
+  end
+
+  context "while Claude Code in it is waited on" do
+    let(:seen) { {} }
+    let(:on_wait) { -> { seen.merge!(slot: step["review_window"], calls: panes.calls.map(&:first)) } }
+
+    it "binds and records the pane only at delivery, after the wait" do
+      runner.call("wr_1", pending)
+
+      expect(seen[:slot]).to include("window" => "@7", "warm" => true)
+      expect(seen[:calls]).not_to include(:bind)
+      expect(panes.calls.map(&:first)).to eq(%i[require_daemon bind kick])
+      expect(step).not_to have_key("review_window")
+    end
+  end
+
+  it "tells the adopted round's prompt the slot's opened_at as the time its process started" do
+    runner.call("wr_1", pending)
+
+    expect(prompt.calls.last.last[:early_start]).to eq(Time.utc(2026, 11, 14, 11, 50, 0))
+  end
+
+  shared_examples "a new window in its place" do |killed|
+    it "delivers into a new window, never the warm one" do
+      runner.call("wr_1", pending)
+
+      expect(tmux.opened_windows.size).to eq(1)
+      expect(tmux.killed_windows).to eq(killed)
+      expect(round).to include("window" => "@100", "pane" => "%100", "delivery" => nil)
+      expect(kick).to include(pane: "%100", fresh: false, opened: true)
+      expect(delivered).to include("reused" => false)
+      expect(delivered).not_to have_key("warm")
+      expect(prompt.calls.last.last).not_to have_key(:early_start)
+    end
+  end
+
+  context "when the round now names another model" do
+    before do
+      store.runs["wr_1"]["definition"]["reviewers"] = {"skeptic" => {"model" => "opus"}}
+      step["review_model"] = "sonnet"
+    end
+
+    include_examples "a new window in its place", ["@7"]
+  end
+
+  context "when a start-up file changed since the window opened" do
+    before { File.write(File.join(worktree, "CLAUDE.md"), "edited during the author's turn") }
+
+    include_examples "a new window in its place", ["@7"]
+  end
+
+  context "when the warm window is gone from tmux" do
+    before { tmux.review_window_list = [] }
+
+    include_examples "a new window in its place", []
+  end
+
+  # The warm case decides before the scan, which would take a window with this round's mark as `reused`.
+  context "when a window has this round's mark but no slot (its slot not yet written)" do
+    before { step.delete("review_window") }
+
+    include_examples "a new window in its place", ["@7"]
+  end
+
+  context "when a window has this round's mark and a slot whose digest differs" do
+    before { step["review_window"]["memory"] = "0" * 64 }
+
+    include_examples "a new window in its place", ["@7"]
+  end
+
+  context "when Claude Code in the warm window is not ready" do
+    let(:answers) { [[false, nil], [true, nil]] }
+
+    it "closes it and delivers the round into one new window" do
+      runner.call("wr_1", pending)
+
+      expect(tmux.killed_windows).to eq(["@7"])
+      expect(readiness.calls).to eq([[:await_ready, "app", "%70", "claude", {window: "@7", keep: true}], [:await_ready, "app", "%100", "claude", {window: "@100"}]])
+      expect(round).to include("window" => "@100", "delivery" => nil)
+      expect(delivered).not_to have_key("warm")
+      expect(prompt.calls.last.last).not_to have_key(:early_start)
+    end
+  end
+
+  {"a Workspace::Error" => Workspace::Error.new("no daemon", code: "agent_not_ready"), "a Timeout::Error" => Timeout::Error.new("slow")}.each do |label, error|
+    context "when the wait for the warm window raises #{label}" do
+      let(:answers) { [error, [true, nil]] }
+
+      it "takes it as not ready: closes it and delivers into one new window, the round not failed" do
+        runner.call("wr_1", pending)
+
+        expect(tmux.killed_windows).to eq(["@7"])
+        expect(tmux.opened_windows.size).to eq(1)
+        expect(round).to include("window" => "@100", "delivery" => nil)
+        expect(round).not_to have_key("failure")
+      end
+    end
+  end
+
+  context "when another process takes the round over while the warm window is waited on" do
+    let(:answers) { [[false, nil]] }
+    let(:on_wait) { -> { round["holder"] = {"pid" => 999, "started" => "later"} } }
+
+    it "leaves the window to that delivery: closes, opens and records nothing" do
+      runner.call("wr_1", pending)
+
+      expect(tmux.killed_windows).to be_empty
+      expect(tmux.opened_windows).to be_empty
+      expect(round).not_to have_key("failure")
+      expect(panes.calls.map(&:first)).not_to include(:bind, :kick)
+    end
+  end
+
+  context "when the window with the slot's id and this round's mark has another pane" do
+    before { tmux.review_window_list = [warm.merge(pane: "%71")] }
+
+    include_examples "a new window in its place", ["@7"]
+  end
+
+  context "when Claude Code in the warm window waits at an update screen" do
+    let(:answers) { [[false, "update"], [true, nil]] }
+
+    it "closes it, not keeps it, and delivers the round into one new window" do
+      runner.call("wr_1", pending)
+
+      expect(tmux.killed_windows).to eq(["@7"])
+      expect(tmux.opened_windows.size).to eq(1)
+      expect(round).to include("window" => "@100", "delivery" => nil)
+    end
+  end
+
+  context "when neither the warm window nor the new one is ready" do
+    let(:answers) { [[false, nil], [false, nil]] }
+
+    it "fails the round as agent_not_ready, on the new window's own readiness" do
+      runner.call("wr_1", pending)
+
+      expect(tmux.opened_windows.size).to eq(1)
+      expect(tmux.killed_windows).to eq(["@7", "@100"])
+      expect(round).to include("delivery" => "failed", "failure" => include("code" => "agent_not_ready", "message" => /review window @100/))
+    end
+  end
+
+  context "when the line is refused in the warm window" do
+    let(:panes) { RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "busy"}) }
+
+    it "closes the window as a new one's would be, not keeps it as a reused one" do
+      runner.call("wr_1", pending)
+
+      expect(tmux.killed_windows).to eq(["@7"])
+      expect(panes.calls).to include([:unbind, "wr_1", {role: "reviewer", pane: "%70"}])
+      expect(round).to include("delivery" => "failed", "failure" => include("code" => "pane_busy"))
+      expect(round).not_to have_key("window")
+    end
+  end
+
+  context "in a later round whose warm window is gone" do
+    let(:pending) { {"step" => "plan", "attempt" => 2, "round" => 2} }
+
+    before do
+      step.merge!("review_rounds" => 2, "attempts" => [{"n" => 1, "outcome" => "failed"}, {"n" => 2, "outcome" => "checks_passed"}])
+      step["review"]["round"] = 2
+      step["review_window"]["round"] = 2
+      tmux.review_window_list = [{window: "@6", name: "review-plan", review: "wr_1:plan:1", pane: "%60", pid: 60}]
+    end
+
+    it "still carries the earlier round's window over and clears it" do
+      runner.call("wr_1", pending)
+
+      expect(tmux.marked_windows).to eq([["@6", "wr_1:plan:2"]])
+      expect(kick).to include(pane: "%60", fresh: true, opened: false)
+      expect(delivered).to include("cleared" => true, "carried" => true)
+      expect(delivered).not_to have_key("warm")
+    end
+  end
+end
