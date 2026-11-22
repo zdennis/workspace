@@ -75,14 +75,24 @@ RSpec.describe Workspace::WorkflowEngine, "warm review window" do
   let(:guard) { instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}, head: "1" * 40, round_snapshot: {"head" => "1" * 40, "tree_sha256" => "t" * 64}, round_check: nil) }
   let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => File.join(@dir, "notes")}) }
 
-  def build_engine(prewarm: true, review_runner: true)
-    Workspace.build_workflow_engine(store: store, resources: resources, composer: FakeStepComposer.new, panes: panes, checker: ->(**) { {exit_code: 0, timed_out: false} },
+  # One revision for the round (at delivery) and the engine (at the round's end), moved by the spec; each ask is recorded.
+  let(:revision_now) { ["revA"] }
+  let(:revision_calls) { [] }
+  let(:revision_source) do
+    lambda do |run:, step:, stop_when: nil|
+      revision_calls << [Workspace::WorkflowRun.from_h(run).id, step["id"], revision_now.first]
+      {revision: revision_now.first, problem: nil}
+    end
+  end
+
+  def build_engine(prewarm: true, review_runner: true, review_revision: nil)
+    Workspace.build_workflow_engine(review_revision: review_revision, store: store, resources: resources, composer: FakeStepComposer.new, panes: panes, checker: ->(**) { {exit_code: 0, timed_out: false} },
       commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git),
       gate_note: Workspace::WorkflowGateNote.new(notes: notes), env_stopper: ->(**) {}, workspace_known: ->(_) { false }, event_log: instance_double(Workspace::EventLog, record: nil),
       task_store: instance_double(Workspace::TaskStore, active_for: {"id" => "t1"}), review_tally: tally, round_holder: -> { holder }, prewarm: prewarm,
       review_runner: review_runner && ->(change:, store:, prompt:) do
         Workspace::WorkflowReviewRound.new(store: store, change: change, tmux: tmux, panes: review_panes, readiness: RecordingPaneReadiness.new(tmux: tmux),
-          main_agent: Workspace::MainAgent.new(project_config: project_config), revision: RecordingReviewRevision.new({revision: "rev1", problem: nil}),
+          main_agent: Workspace::MainAgent.new(project_config: project_config), revision: review_revision || RecordingReviewRevision.new({revision: "rev1", problem: nil}),
           prompt: prompt, round_dirs: tally, holder: -> { holder }, shell: "/bin/zsh", which: ->(_) { "/usr/local/bin/claude" },
           error_output: StringIO.new, clock: -> { now.first }, home: home)
       end,
@@ -194,6 +204,79 @@ RSpec.describe Workspace::WorkflowEngine, "warm review window" do
       expect(tmux.opened_windows.size).to eq(1)
       expect(lines("review_delivered").last).to include("round" => 2, "window" => "@100", "carried" => true, "cleared" => true)
       expect(lines("review_delivered").last).not_to have_key("warm")
+    end
+  end
+
+  describe "with the round's revision recomputed when it ends" do
+    let(:engine) { build_engine(review_revision: revision_source) }
+
+    it "refuses a round delivered into the warm window as stale when the checkout moves before its turn ends, and took its revision at delivery" do
+      start
+      # The warm window is open; nothing has been judged yet, so no revision has been computed at prewarm time.
+      expect(slot).to include("warm" => true)
+      expect(revision_calls).to be_empty
+
+      # The author's work changes after the window opened and before the line is delivered.
+      revision_now[0] = "revB"
+      author_done
+      expect(lines("review_delivered").last).to include("window" => "@100", "warm" => true)
+      expect(run["steps"]["plan"]["review"]).to include("revision" => "revB", "window" => "@100")
+      expect(revision_calls).to eq([["wr_1", "plan", "revB"]])
+
+      # The checkout moves while the reviewer works; the round's end recomputes a different revision.
+      revision_now[0] = "revC"
+      now[0] += 60
+      engine.turn_ended("wr_1", actor: "agent", pane: "%100")
+
+      expect(revision_calls.last).to eq(["wr_1", "plan", "revC"])
+      expect(lines("review_ended").map { |each| each["outcome"] }).to eq(["stale"])
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "review_stale")
+      expect(run["reason"]["details"]).to include("revision" => "revB", "revision_now" => "revC")
+      expect(lines("review_retry")).to be_empty
+      expect(tally.calls.map(&:first)).not_to include(:call)
+    end
+
+    it "judges the round as for a cold one when the revision is unchanged at its end" do
+      start
+      author_done
+      now[0] += 60
+      engine.turn_ended("wr_1", actor: "agent", pane: "%100")
+
+      expect(lines("review_ended").map { |each| each["outcome"] }).to eq(["approved"])
+      expect(tally.calls.map(&:first)).to include(:call)
+    end
+
+    describe "a rejected round whose retry changed nothing" do
+      let(:tally) { RecordingReviewTally.new(outcome: :rejected, reviews: [{"reviewer" => "skeptic", "verdict" => "rejected"}]) }
+      let(:review_panes) { closing_panes.new(quiet: ["%100"]).tap { |panes| panes.fake_tmux = tmux } }
+
+      def marked = tmux.review_windows("app").map { |each| each[:window] }
+
+      it "stops review_no_change as for a cold window, with no round spent, and leaves no warm window once the run is cancelled" do
+        start
+        author_done
+        now[0] += 60
+        engine.turn_ended("wr_1", actor: "agent", pane: "%100")
+        expect(run["steps"]["plan"]["attempts"].last).to include("n" => 2, "retry_of" => 1)
+        # Round 2's warm window replaced the kept one at the retry's dispatch.
+        expect(slot).to include("round" => 2, "window" => "@101", "warm" => true)
+
+        # The retry rewrites its file but the revision it judges is the one the rejection judged.
+        now[0] += 60
+        author_done
+
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]).to include("code" => "review_no_change")
+        expect(lines("review_no_change").last).to include("round" => 2, "rejected_round" => 1, "rejected_attempt" => 1)
+        expect(lines("review_delivered").map { |each| each["round"] }).to eq([1])
+
+        engine.cancel("wr_1", actor: "person")
+
+        expect(run["state"]).to eq("cancelled")
+        expect(marked).to be_empty
+        expect(slot).to be_nil
+      end
     end
   end
 
