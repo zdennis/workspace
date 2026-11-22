@@ -1,0 +1,12 @@
+# Plays only against deliver-goal-fast with a `require: - exec:` proof added to plan (the spec builds that variant):
+# the first require failure retries plan itself, and research runs once.
+inputs:
+  task: "Deliver the goal in goals/01.md"
+  goal: goals/01.md
+  acceptance: script/acceptance_runner
+steps:
+  plan:
+    - {require: {exec: fail}, log: "In no task of ## Task details: R2 R3 R4"}
+    - reviews: {skeptical: approve}
+  acceptance:
+    - {}
