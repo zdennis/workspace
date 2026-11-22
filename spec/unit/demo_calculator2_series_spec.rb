@@ -5,6 +5,7 @@ require "stringio"
 require "tmpdir"
 
 require File.join(PROJECT_ROOT, "script", "demo_calculator2", "series")
+require File.join(PROJECT_ROOT, "script", "demo_calculator2", "lanes")
 
 # An exec that answers by the longest argv prefix registered with `on`, and records every call.
 class SeriesExecFake
@@ -65,6 +66,10 @@ RSpec.describe DemoCalculator2::Series do
       read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) })
   end
 
+  let(:dry_series) do
+    described_class.new(root: root, options: described_class.parse(["--id", id, "--base", base, "--dry-run"]), exec: exec, registry: registry, out: out, err: err,
+      read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) })
+  end
   after { FileUtils.remove_entry(dir) }
 
   def absolute_driver(path) = "ruby #{path}/script/demo_calculator2/merge_test_methods %O %A %B"
@@ -304,9 +309,29 @@ RSpec.describe DemoCalculator2::Series do
     end
   end
 
+  describe "#preflight with another checkout's sources entry" do
+    let(:theirs) { "/other/demo/calculator2/workflows" }
+    let(:existing) { ["/live", theirs] }
+
+    before { exec.on(%w[workspace config show], {"keys" => [{"key" => "workflows.sources", "effective" => [theirs]}]}.to_json) }
+
+    it "names that entry's checkout in the refusal" do
+      expect(refusal).to include("workflows.sources:/repo/demo/calculator2/workflows is already #{theirs.inspect}", "belongs to the checkout /other")
+    end
+
+    context "with --take-over and a going run in that checkout" do
+      let(:take_over) { true }
+      let(:runs) { [{"id" => "r1", "state" => "going", "workspace" => "other-ws", "worktree" => "/other"}] }
+
+      it "refuses naming the run and the workspace" do
+        expect(refusal).to match(/belongs to \/other, whose workspace other-ws has a going run \(r1\)/)
+      end
+    end
+  end
+
   describe "#call" do
-    it "prints the report and returns 0 on a clean preflight" do
-      expect(series.call).to eq(0)
+    it "prints the report and returns 0 on a clean dry run" do
+      expect(dry_series.call).to eq(0)
       expect(out.string).to include("preflight ok", "would add git-config:merge.calc-demo-tests.driver", "exclude:/runs/s1/")
     end
 
@@ -365,6 +390,356 @@ RSpec.describe DemoCalculator2::Series do
         expect { guarded.call(argv, chdir: "/") }.to raise_error(DemoCalculator2::Series::DryRunWrite)
         expect(inner.calls).to be_empty
       end
+    end
+  end
+
+  describe "a full run (steps 2 to 6)" do
+    let(:live_registry) { DemoCalculator2::SeriesRegistry.new(registry_dir, alive: ->(*) { true }) }
+    let(:written) { {} }
+    let(:sleeps) { [] }
+    let(:now) { [0] }
+    let(:options) { described_class.parse(["--id", id, "--base", base, *("--take-over" if take_over), *extra_args]) }
+    let(:extra_args) { [] }
+    let(:snapshot_states) { [] }
+    let(:run_output) { ["LOOP DONE: wall=1m integration=clean first_pass=true items=7/7\n", 0] }
+    let(:tmux_command) { "claude-sonnet --dangerously-skip-permissions --continue || claude-sonnet --dangerously-skip-permissions" }
+    let(:lane_a) { "workspace.worktree-calc2-demo-s1" }
+    let(:lane_b) { "workspace.worktree-calc2-demo-s1-b" }
+    let(:sources) { File.join(root, "demo/calculator2/workflows") }
+    let(:started) { [] }
+    let(:runs) { [] }
+    let(:run_logged) do
+      lambda do |argv, chdir:, log:|
+        runs << {argv: argv, chdir: chdir, log: log}
+        exec.calls << ["run", *argv]
+        files[log] = run_output[0]
+        run_output[1]
+      end
+    end
+    let(:full) do
+      described_class.new(root: root, options: options, exec: exec, registry: live_registry, out: out, err: err,
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) },
+        write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, clock: -> { now[0] }, sleeper: ->(s) {
+          sleeps << s
+          now[0] += s
+        })
+    end
+
+    def start_doc(name, path) = {"workspace" => "workspace.worktree-#{name}", "path" => path, "branch" => name}.to_json
+
+    before do
+      exec
+        .on(%w[workspace start calc2-demo-s1], -> {
+          started << live_registry.entries.dig("s1", "workspaces").dup
+          start_doc("calc2-demo-s1", "/wt/a")
+        })
+        .on(%w[workspace start calc2-demo-s1-b], -> {
+          started << live_registry.entries.dig("s1", "workspaces").dup
+          start_doc("calc2-demo-s1-b", "/wt/b")
+        })
+        .on(%w[git rev-parse HEAD], "aaa\n")
+        .on(%w[git config --local], "")
+        .on(%w[workspace config set], "")
+        .on(%w[workspace template apply], "")
+        .on(%w[workspace tmux show], -> { {"windows" => [{"panes" => [{"kind" => "banner", "command" => "echo"}, {"kind" => "claude", "command" => tmux_command}]}]}.to_json })
+        .on(%w[workspace snapshot], -> { snapshot })
+    end
+
+    def snapshot
+      state = snapshot_states.shift || "idle"
+      members = [lane_a, lane_b].map { |name| {"workspace" => name, "running" => true, "panes" => [{"kind" => "claude", "state" => state}]} }
+      {"projects" => [{"members" => members}]}.to_json
+    end
+
+    def config_writes = calls("git", "config", "--local").reject { |argv| argv[3] == "--get" }
+
+    def calls(*prefix) = exec.calls.select { |argv| argv.first(prefix.size) == prefix }
+
+    it "starts both lanes, each recorded before the next command, then checks heads, waits, writes and runs, in that order" do
+      expect(full.call).to eq(0)
+      expect(started).to eq([[], [lane_a]])
+      expect(live_registry.entries["s1"]["workspaces"]).to eq([lane_a, lane_b])
+      kinds = exec.calls.filter_map do |argv|
+        if argv.first(2) == %w[workspace start] then "start #{argv[2]}"
+        elsif argv.first(3) == %w[git rev-parse HEAD] then "head"
+        elsif argv.first(2) == %w[workspace snapshot] then "snapshot"
+        elsif argv.first(3) == %w[git config --local] && argv[3] != "--get" then "git config"
+        elsif argv.first(3) == %w[workspace config set] then "config set"
+        elsif argv.first == "run" then "run"
+        end
+      end.chunk_while { |a, b| a == b }.map(&:first)
+      expect(kinds).to eq(["start calc2-demo-s1", "start calc2-demo-s1-b", "head", "snapshot", "config set", "git config", "run"])
+      expect(calls("workspace", "start", "calc2-demo-s1").first).to eq(%w[workspace start calc2-demo-s1 --base main --headless --yes --json])
+    end
+
+    it "stops when a lane is not at the base sha" do
+      exec.on(%w[git rev-parse HEAD], "bbb\n")
+      expect(full.call).to eq(3)
+      expect(err.string).to match(/is at bbb, not main \(aaa\)/)
+      expect(calls("workspace", "snapshot")).to be_empty
+    end
+
+    it "stops when the second start fails, after recording what the first made" do
+      exec.on(%w[workspace start calc2-demo-s1-b], "", false)
+      expect(full.call).to eq(3)
+      expect(live_registry.entries["s1"]["workspaces"]).to eq([lane_a])
+      expect(calls("workspace", "snapshot")).to be_empty
+    end
+
+    it "runs the finish hook after a stop" do
+      exec.on(%w[git rev-parse HEAD], "bbb\n")
+      expect(full).to receive(:finish)
+      full.call
+    end
+
+    it "stops with 3, prints the message and still runs the finish hook when a write fails in step 5" do
+      failing = described_class.new(root: root, options: options, exec: exec, registry: live_registry, out: out, err: err,
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, run_logged: run_logged,
+        write_file: ->(*) { raise Errno::EACCES, "info/attributes" }, sleeper: ->(_) {})
+      expect(failing).to receive(:finish)
+      expect(failing.call).to eq(3)
+      expect(err.string).to include("series s1 stopped:", "info/attributes", "Errno::EACCES")
+      expect(runs).to be_empty
+    end
+
+    it "does not run the finish hook when preflight refuses" do
+      exec.on(%w[gh run list], "[]")
+      expect(full).not_to receive(:finish)
+      expect(full.call).to eq(1)
+      expect(calls("workspace", "start")).to be_empty
+    end
+
+    context "with --sonnet" do
+      let(:extra_args) { ["--sonnet"] }
+
+      it "sets the launcher per lane, applies the template with a relaunch and reads the pane command back" do
+        expect(full.call).to eq(0)
+        expect(calls("workspace", "config", "set", "--scope")).to eq([lane_a, lane_b].map { |name| %W[workspace config set --scope workspace --name #{name} agent.commands.claude claude-sonnet] })
+        expect(calls("workspace", "template", "apply")).to eq([lane_a, lane_b].map { |name| ["workspace", "template", "apply", name, "--relaunch"] })
+        expect(calls("workspace", "tmux", "show").first).to eq(["workspace", "tmux", "show", "--name", lane_a, "--json"])
+      end
+
+      it "stops when the pane still runs another command" do
+        exec.on(%w[workspace tmux show], {"windows" => [{"panes" => [{"kind" => "claude", "command" => "claude-dev --continue"}]}]}.to_json)
+        expect(full.call).to eq(3)
+        expect(err.string).to match(/does not run claude-sonnet/)
+        expect(calls("workspace", "snapshot")).to be_empty
+      end
+
+      it "sets nothing without the flag" do
+        plain = described_class.new(root: root, options: described_class.parse(%w[--id s1]), exec: exec, registry: live_registry, out: out, err: err,
+          read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, sleeper: ->(_) {})
+        plain.call
+        expect(calls("workspace", "config", "set", "--scope")).to be_empty
+        expect(calls("workspace", "template")).to be_empty
+      end
+    end
+
+    describe "the idle wait" do
+      it "polls every 5s until both lanes have an idle Claude pane" do
+        snapshot_states.concat(%w[working working])
+        expect(full.call).to eq(0)
+        expect(sleeps).to eq([5])
+      end
+
+      it "stops after 300s, before any shared value is written or the run starts" do
+        snapshot_states.concat(["working"] * 1000)
+        expect(full.call).to eq(3)
+        expect(sleeps.sum).to be_between(295, 300)
+        expect(err.string).to match(/no idle Claude Code pane in .* after 300s/)
+        expect(config_writes).to be_empty
+        expect(runs).to be_empty
+        expect(written).to be_empty
+      end
+    end
+
+    describe "the shared values" do
+      it "registers and writes each absent value: config, attributes line, exclude line and the sources entry" do
+        expect(full.call).to eq(0)
+        expect(calls("git", "config", "--local", "merge.calc-demo-tests.driver")).to eq([%W[git config --local merge.calc-demo-tests.driver #{wanted_driver}]])
+        expect(calls("git", "config", "--local", "merge.calc-demo-tests.name").size).to eq(1)
+        expect(calls("workspace", "config", "set", "workflows.sources")).to eq([["workspace", "config", "set", "workflows.sources", sources]])
+        expect(written["/repo/.git/info/attributes"]).to eq("#{described_class::ATTRIBUTES_LINE}\n")
+        expect(written["/repo/.git/info/exclude"]).to eq("/runs/s1/\n")
+        expect(live_registry.shared.keys).to include("exclude:/runs/s1/", "attributes:#{described_class::ATTRIBUTES_LINE}", DemoCalculator2::SharedValues::DRIVER_KEY, "workflows.sources:#{sources}")
+        expect(live_registry.shared.values.map { |entry| entry["added_by"] }.uniq).to eq(["s1"])
+      end
+
+      it "writes the sources entry before the other values" do
+        full.call
+        writes = exec.calls.select { |argv| argv.first(3) == %w[workspace config set] && argv[3] == "workflows.sources" || argv.first(3) == %w[git config --local] && argv[3] != "--get" }
+        expect(writes.first[3]).to eq("workflows.sources")
+      end
+
+      context "when every value is already equal" do
+        before do
+          exec.on(%w[git config --local --get merge.calc-demo-tests.driver], wanted_driver)
+          exec.on(%w[git config --local --get merge.calc-demo-tests.name], described_class::NAME_VALUE)
+          exec.on(%w[workspace config show], {"keys" => [{"key" => "workflows.sources", "effective" => [sources]}]}.to_json)
+          files["/repo/.git/info/attributes"] = "#{described_class::ATTRIBUTES_LINE}\n"
+          files["/repo/.git/info/exclude"] = "/runs/s1/\n"
+        end
+
+        it "writes nothing and records each as preexisting" do
+          expect(full.call).to eq(0)
+          expect(config_writes).to be_empty
+          expect(calls("workspace", "config", "set", "workflows.sources")).to be_empty
+          expect(written).to be_empty
+          expect(live_registry.shared.values.map { |entry| entry["added_by"] }.uniq).to eq(["preexisting"])
+        end
+      end
+
+      context "when the driver is dangling" do
+        let(:old) { absolute_driver("/gone") }
+
+        before { exec.on(%w[git config --local --get merge.calc-demo-tests.driver], old) }
+
+        it "replaces it and records the old value" do
+          expect(full.call).to eq(0)
+          expect(calls("git", "config", "--local", "merge.calc-demo-tests.driver")).to eq([%W[git config --local merge.calc-demo-tests.driver #{wanted_driver}]])
+          expect(live_registry.shared[DemoCalculator2::SharedValues::DRIVER_KEY]["replaced"]).to eq("value" => old, "owner_path" => "/gone")
+        end
+      end
+
+      context "when another checkout's sources entry is live and --take-over is given" do
+        let(:take_over) { true }
+        let(:theirs) { "/other/demo/calculator2/workflows" }
+        let(:existing) { ["/live", theirs] }
+
+        before { exec.on(%w[workspace config show], {"keys" => [{"key" => "workflows.sources", "effective" => [theirs]}]}.to_json) }
+
+        it "writes our entry first and keeps theirs" do
+          expect(full.call).to eq(0)
+          expect(calls("workspace", "config", "set", "workflows.sources")).to eq([["workspace", "config", "set", "workflows.sources", "#{sources},#{theirs}"]])
+        end
+      end
+
+      context "when a value became foreign_live after preflight" do
+        it "stops with no run and keeps the workspaces recorded" do
+          reads = 0
+          exec.on(%w[git config --local --get merge.calc-demo-tests.driver], -> { ((reads += 1) == 1) ? "" : "ruby /live/script/demo_calculator2/merge_test_methods %O %A %B" })
+          expect(full.call).to eq(3)
+          expect(err.string).to match(%r{already .*belongs to the checkout /live})
+          expect(runs).to be_empty
+          expect(config_writes).to be_empty
+          expect(live_registry.entries["s1"]["workspaces"]).to eq([lane_a, lane_b])
+        end
+      end
+    end
+
+    describe "the run" do
+      it "gives the run's log to the runner, which appends to it as the run goes, instead of capturing the output" do
+        full.call
+        expect(calls(*runs.first[:argv].first(1))).to be_empty
+      end
+
+      it "runs lane A's script from its worktree with the lane, id, out and wait arguments, and keeps the log" do
+        full.call
+        run = runs.first
+        expect(run[:chdir]).to eq("/wt/a")
+        expect(run[:log]).to eq("/wt/a/runs/s1/driver.log")
+        expect(run[:argv]).to eq(["/wt/a/script/demo-calculator2", "run", "--lanes", "--lane-b", lane_b, "--id", "s1", "--wait", "--out", "runs/s1", "--workflow", "deliver-goal-fast"])
+        expect(files["/wt/a/runs/s1/driver.log"]).to include("LOOP DONE")
+      end
+
+      it "leaves --workflow out for the script's own default" do
+        series = described_class.new(root: root, options: described_class.parse(%w[--id s1 --workflow deliver-goal]), exec: exec, registry: live_registry, out: out, err: err,
+          read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, sleeper: ->(_) {})
+        series.call
+        expect(runs.first[:argv]).not_to include("--workflow")
+      end
+
+      context "when the run stops" do
+        let(:run_output) { ["LOOP DONE: stopped reason=timeout\n", 3] }
+
+        it "returns 3, names the line and still writes driver.log" do
+          expect(full.call).to eq(3)
+          expect(err.string).to include("stopped reason=timeout")
+          expect(files["/wt/a/runs/s1/driver.log"]).to include("stopped reason=timeout")
+        end
+      end
+
+      context "when the run exits non-zero although its log says 7/7" do
+        let(:run_output) { ["LOOP DONE: wall=1m integration=clean first_pass=true items=7/7\n", 1] }
+
+        it "returns 3" do
+          expect(full.call).to eq(3)
+        end
+      end
+
+      context "when the run ends without all seven items" do
+        let(:run_output) { ["LOOP DONE: wall=1m integration=clean first_pass=true items=6/7\n", 0] }
+
+        it "returns 3" do
+          expect(full.call).to eq(3)
+        end
+      end
+    end
+    describe "the values it writes, against Lanes" do
+      let(:root) { dir }
+      let(:common) { File.join(dir, ".git") }
+      let(:store_class) do
+        Class.new do
+          attr_reader :writes
+
+          def initialize(inner)
+            @inner = inner
+            @live = {}
+            @writes = []
+          end
+
+          def call(argv, **opts)
+            return @inner.call(argv, **opts) unless argv.first(3) == %w[git config --local]
+            if argv[3] == "--get"
+              value = @live[argv[4]]
+              [value ? "#{value}\n" : "", !value.nil?]
+            else
+              @writes << argv
+              @live[argv[3]] = argv[4]
+              ["", true]
+            end
+          end
+        end
+      end
+
+      it "leaves a later Lanes#write_attributes and #write_out_exclude nothing to write" do
+        exec.on(%w[git rev-parse --git-common-dir], "#{common}\n")
+        store = store_class.new(exec)
+        series = described_class.new(root: dir, options: options, exec: store, registry: live_registry, out: out, err: err,
+          run_logged: run_logged, sleeper: ->(_) {}, read_file: ->(path) { files[path] || (File.file?(path) ? File.read(path) : nil) })
+        expect(series.call).to eq(0)
+        after_series = %w[attributes exclude].to_h { |name| [name, File.read(File.join(common, "info", name))] }
+        written_config = store.writes.dup
+        expect(written_config.map { |argv| argv[3] }).to contain_exactly("merge.calc-demo-tests.name", "merge.calc-demo-tests.driver")
+
+        lanes = DemoCalculator2::Lanes.new(root: dir, workspace: "ws", lane_b: "ws-b", name: "ws", out_dir: "runs/s1", exec: store, out: StringIO.new, err: StringIO.new)
+        lanes.write_attributes
+        lanes.write_out_exclude(nil)
+
+        expect(store.writes).to eq(written_config)
+        expect(%w[attributes exclude].to_h { |name| [name, File.read(File.join(common, "info", name))] }).to eq(after_series)
+      end
+
+      it "uses the one constant for each value" do
+        expect(described_class::ATTRIBUTES_LINE).to equal(DemoCalculator2::SharedValues::ATTRIBUTES_LINE)
+        expect(DemoCalculator2::Lanes::ATTRIBUTES_LINE).to equal(DemoCalculator2::SharedValues::ATTRIBUTES_LINE)
+        expect(described_class::NAME_VALUE).to equal(DemoCalculator2::SharedValues::NAME_VALUE)
+      end
+    end
+  end
+
+  describe DemoCalculator2::Series::RealExec do
+    it "answers stdout and success, keeping stderr apart" do
+      exec = described_class.new
+      allow(Open3).to receive(:capture3).with("workspace", "x", chdir: "/r").and_return(["{}", "a note", instance_double(Process::Status, success?: true)])
+      expect(exec.call(%w[workspace x], chdir: "/r")).to eq(["{}", true])
+      expect(exec.last_stderr).to eq("a note")
+    end
+
+    it "answers a failure for a program that cannot start" do
+      exec = described_class.new
+      allow(Open3).to receive(:capture3).and_raise(Errno::ENOENT)
+      expect(exec.call(%w[nope], chdir: "/r")).to eq(["", false])
     end
   end
 end

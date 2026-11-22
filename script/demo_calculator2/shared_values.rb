@@ -1,10 +1,16 @@
 require "shellwords"
 
+require_relative "config"
+
 module DemoCalculator2
   # What a shared value (the merge driver config, the attributes line, the `workflows.sources` list) is right now, against the
   # value this checkout wants. Pure: the caller reads the live value and answers the questions about the filesystem, so the same
   # rule serves `Lanes#write_attributes` and the series registry and preflight.
   module SharedValues
+    MERGE_DRIVER = "calc-demo-tests".freeze
+    ATTRIBUTES_LINE = "#{DEMO_DIR}/test/calc_test.rb merge=#{MERGE_DRIVER}".freeze
+    NAME_KEY = "git-config:merge.#{MERGE_DRIVER}.name".freeze
+    NAME_VALUE = "calc_test.rb: keep both lanes' added test methods".freeze
     DRIVER_KEY = "git-config:merge.calc-demo-tests.driver".freeze
     DRIVER_COMMAND = 'ruby "$(git rev-parse --show-toplevel)/script/demo_calculator2/merge_test_methods" %O %A %B'.freeze
     SOURCES_PREFIX = "workflows.sources:".freeze
@@ -28,6 +34,10 @@ module DemoCalculator2
       return :foreign_live if path.nil?
       path_exists.call(path) ? :foreign_live : :dangling
     end
+
+    # @param rel [String] a directory path from the checkout root, such as `runs/w01`
+    # @return [String] the anchored `info/exclude` line for it
+    def self.exclude_line(rel) = "/#{rel}/"
 
     # @param value [String] a merge driver command
     # @return [String, nil] the checkout path in `ruby <path>/script/demo_calculator2/merge_test_methods %O %A %B`; nil for the path-agnostic form and for any other command

@@ -1,5 +1,7 @@
 require "digest"
+require "fileutils"
 require "json"
+require "open3"
 require "optparse"
 
 require_relative "../demo_calculator/demo"
@@ -13,18 +15,54 @@ module DemoCalculator2
   # never writes.
   class Series
     ID_PATTERN = /\A[a-z][a-z0-9]*\z/
-    MERGE_DRIVER = "calc-demo-tests".freeze
-    ATTRIBUTES_LINE = "#{DEMO_DIR}/test/calc_test.rb merge=#{MERGE_DRIVER}".freeze
-    NAME_KEY = "git-config:merge.#{MERGE_DRIVER}.name".freeze
-    NAME_VALUE = "calc_test.rb: keep both lanes' added test methods".freeze
+    MERGE_DRIVER = SharedValues::MERGE_DRIVER
+    ATTRIBUTES_LINE = SharedValues::ATTRIBUTES_LINE
+    NAME_KEY = SharedValues::NAME_KEY
+    NAME_VALUE = SharedValues::NAME_VALUE
     SOURCES_KEY = "workflows.sources".freeze
     # `workflow status --all --json` does not say which locks a run uses, so a run of these workflows counts as holding `test-db`.
     TEST_DB_WORKFLOWS = [INTEGRATE_WORKFLOW_ID].freeze
     DEFAULT_WORKFLOW = "deliver-goal-fast".freeze
     FINISHED_STATES = %w[completed cancelled failed].freeze
+    # The launcher `--sonnet` sets as `agent.commands.claude` (see `workspace agent executables --kind claude`).
+    SONNET_COMMAND = "claude-sonnet".freeze
+    IDLE_WAIT = 300
+    IDLE_POLL = 5
+    IDLE_STATES = %w[idle done].freeze
+    LOOP_DONE = "LOOP DONE".freeze
 
     # A refusal before anything started: exit 1, nothing to clean.
     class Refused < DemoCalculator::Refused; end
+
+    # A stop after step 2 began: exit 3, and the cleanup of T14 runs for what exists.
+    class Stopped < StandardError; end
+
+    # The default exec: runs argv, answers `[stdout, success]` and keeps stderr apart in {#last_stderr}, so a note on stderr can
+    # never break a JSON read.
+    class RealExec
+      attr_reader :last_stderr
+
+      # @return [Array(String, Boolean)]
+      def call(argv, chdir:)
+        out, @last_stderr, status = Open3.capture3(*argv, chdir: chdir)
+        [out, status.success?]
+      rescue SystemCallError => e
+        @last_stderr = e.message
+        ["", false]
+      end
+    end
+
+    # The default run: spawns argv with stdout and stderr appended to `log`, waits and answers the exit status (nil when the
+    # program could not start).
+    RUN_LOGGED = lambda do |argv, chdir:, log:|
+      FileUtils.mkdir_p(File.dirname(log))
+      pid = Process.spawn(*argv, :chdir => chdir, [:out, :err] => [log, "a"])
+      Process.wait(pid)
+      $?.exitstatus
+    rescue SystemCallError => e
+      File.write(log, "#{e.message}\n", mode: "a")
+      nil
+    end
 
     # A `--dry-run` exec was asked for a command that could write.
     class DryRunWrite < StandardError; end
@@ -108,8 +146,21 @@ module DemoCalculator2
     # @param workspace [String] the workspace program
     # @param read_file [#call] `call(path)` answering the text, or nil when there is no such file
     # @param path_exists [#call] `call(path)` says whether a checkout or directory exists
+    # @param write_file [#call] `call(path, text)` writes a file, making its directory
+    # @param run_logged [#call] `call(argv, chdir:, log:)` runs the run with its output appended to `log` and answers the exit status
+    # @param clock [#call] seconds, for the idle wait's cap
+    # @param sleeper [#call] `call(seconds)`
     def initialize(root:, options:, exec:, registry:, out: $stdout, err: $stderr, workspace: "workspace",
-      read_file: ->(path) { File.file?(path) ? File.read(path) : nil }, path_exists: ->(path) { File.directory?(path) })
+      read_file: ->(path) { File.file?(path) ? File.read(path) : nil }, path_exists: ->(path) { File.directory?(path) },
+      write_file: ->(path, text) { FileUtils.mkdir_p(File.dirname(path)) && File.write(path, text) }, run_logged: RUN_LOGGED,
+      clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) },
+      idle_wait: IDLE_WAIT, idle_poll: IDLE_POLL)
+      @write_file = write_file
+      @run_logged = run_logged
+      @clock = clock
+      @sleeper = sleeper
+      @idle_wait = idle_wait
+      @idle_poll = idle_poll
       @root = root
       @options = options
       @exec = (options.dry_run && !exec.is_a?(ReadOnlyExec)) ? ReadOnlyExec.new(exec) : exec
@@ -122,11 +173,13 @@ module DemoCalculator2
       @path_exists = path_exists
     end
 
-    # @return [Integer] 0 when preflight passes (a dry run ends here; the later steps are T13), 1 on a refusal
+    # @return [Integer] 0 when the run ends on `items=7/7`, 3 on a stop after step 2 began, 1 on a refusal before it. A dry run ends
+    #   after preflight with 0.
     def call
       report = preflight
       say_report(report)
-      0
+      return 0 if @options.dry_run
+      run_steps
     rescue Refused, SeriesRegistry::Corrupt => e
       @err.puts "demo-calculator2: series refused: #{e.message}"
       1
@@ -149,6 +202,145 @@ module DemoCalculator2
     private
 
     def id = @options.id
+
+    # Steps 2 to 6. Once step 2 registered the id, any stop is exit 3 and {#finish} runs for what exists.
+    def run_steps
+      @started = false
+      @lanes = []
+      begin
+        start_lanes
+        check_heads
+        use_sonnet if @options.sonnet
+        wait_for_idle_lanes
+        write_shared_state
+        run_lanes
+      rescue => e
+        raise unless @started
+        @err.puts "demo-calculator2: series #{id} stopped: #{e.message}#{" (#{e.class})" unless e.is_a?(Stopped) || e.is_a?(Refused)}"
+        3
+      ensure
+        finish if @started
+      end
+    end
+
+    # The hook for steps 7 to 9 (evidence, pin, cleanup, report), which run for whatever step 2 created, however the steps ended.
+    def finish
+    end
+
+    # Step 2. The id is registered before the first start and each workspace is recorded as soon as its start answers, before the
+    # next command runs.
+    def start_lanes
+      @registry.register(id)
+      @started = true
+      [id, "#{id}-b"].each do |name|
+        out, ok = @exec.call([@workspace, "start", "calc2-demo-#{name}", "--base", @options.base, "--headless", "--yes", "--json"], chdir: @root)
+        doc = parse(out)
+        doc = {} unless doc.is_a?(Hash)
+        @registry.record(id, workspaces: [doc["workspace"]]) if doc["workspace"]
+        raise Stopped, "`workspace start calc2-demo-#{name}` failed" unless ok && doc["workspace"] && doc["path"]
+        @lanes << {workspace: doc["workspace"], path: doc["path"]}
+      end
+    end
+
+    def check_heads
+      base = stop_unless_ok(@root, "git", "rev-parse", @options.base).strip
+      @lanes.each do |lane|
+        head = stop_unless_ok(lane[:path], "git", "rev-parse", "HEAD").strip
+        raise Stopped, "#{lane[:workspace]} is at #{head[0, 12]}, not #{@options.base} (#{base[0, 12]})" unless head == base
+      end
+    end
+
+    # Step 3. The pane command is read back from the tmuxinator file: `sessions --json` carries no command field.
+    def use_sonnet
+      @lanes.each do |lane|
+        name = lane[:workspace]
+        stop_unless_ok(@root, @workspace, "config", "set", "--scope", "workspace", "--name", name, "agent.commands.claude", SONNET_COMMAND)
+        stop_unless_ok(@root, @workspace, "template", "apply", name, "--relaunch")
+        doc = parse(stop_unless_ok(@root, @workspace, "tmux", "show", "--name", name, "--json"))
+        panes = doc.is_a?(Hash) ? Array(doc["windows"]).flat_map { |window| Array(window["panes"]) } : []
+        pane = panes.find { |each| each["kind"] == "claude" }
+        raise Stopped, "#{name}'s Claude Code pane does not run #{SONNET_COMMAND} (#{pane ? pane["command"].inspect : "no such pane"})" unless pane && pane["command"].to_s.start_with?("#{SONNET_COMMAND} ")
+      end
+    end
+
+    # Step 4. Both lanes need an idle Claude Code pane, polled every `idle_poll` seconds for at most `idle_wait`.
+    def wait_for_idle_lanes
+      deadline = @clock.call + @idle_wait
+      loop do
+        waiting = @lanes.reject { |lane| idle_pane?(lane[:workspace]) }
+        return if waiting.empty?
+        raise Stopped, "no idle Claude Code pane in #{waiting.map { |lane| lane[:workspace] }.join(", ")} after #{@idle_wait}s" if @clock.call + @idle_poll > deadline
+        @sleeper.call(@idle_poll)
+      end
+    end
+
+    def idle_pane?(name)
+      doc = json_object(@workspace, "snapshot", "--json", "--name", name)
+      member = Array(doc["projects"]).flat_map { |project| Array(project["members"]) }.find { |each| each["workspace"] == name }
+      !!member && member["running"] && Array(member["panes"]).any? { |pane| pane["kind"] == "claude" && IDLE_STATES.include?(pane["state"]) }
+    end
+
+    # Step 5. Classifies the shared values again (one may have changed since preflight; a new `foreign_live` refuses and nothing
+    # runs), then, for each, records it in the registry before writing it. `equal` writes nothing; the sources entry goes first.
+    def write_shared_state
+      @going_runs = nil
+      rows = check_shared_values.sort_by { |row| row.key.start_with?(SharedValues::SOURCES_PREFIX) ? 0 : 1 }
+      rows.each do |row|
+        @registry.add(id, row.key, row.wanted, state: row.state, take_over: @options.take_over, live: foreign_value(row))
+        write_shared(row) unless row.state == :equal
+      end
+    end
+
+    # The one value a row is about: the live value, or for a sources row the entry that differs from ours, a live one first.
+    def foreign_value(row)
+      return row.live unless row.key.start_with?(SharedValues::SOURCES_PREFIX)
+      others = Array(row.live).select { |entry| entry != row.wanted && entry.end_with?(SharedValues::SOURCES_SUFFIX) }
+      others.find { |entry| @path_exists.call(entry) } || others.first
+    end
+
+    def write_shared(row)
+      case row.key
+      when /\Aworkflows\.sources:/ then write_sources(row)
+      when /\Agit-config:(.+)\z/ then stop_unless_ok(@root, "git", "config", "--local", $1, row.wanted)
+      when /\Aattributes:/ then append_info_line("attributes", row.wanted)
+      when /\Aexclude:/ then append_info_line("exclude", row.wanted)
+      end
+    end
+
+    # Adds our entry after the others, or in front of them on a take-over, so the other checkout's entry is never removed.
+    def write_sources(row)
+      others = Array(row.live).reject { |entry| entry == row.wanted }
+      list = (row.state == :foreign_live) ? [row.wanted, *others] : [*others, row.wanted]
+      stop_unless_ok(@root, @workspace, "config", "set", SOURCES_KEY, list.join(","))
+    end
+
+    def append_info_line(file, line)
+      path = File.join(File.expand_path(must_read("git", "rev-parse", "--git-common-dir").strip, @root), "info", file)
+      existing = @read_file.call(path).to_s
+      return if existing.lines.map(&:strip).include?(line)
+      @write_file.call(path, existing + ((existing.empty? || existing.end_with?("\n")) ? "" : "\n") + line + "\n")
+    end
+
+    # Step 6. Runs lane A's own copy of the script from its worktree, its stdout and stderr appended to `runs/<id>/driver.log` as it
+    # goes (so `tail -f` works), then reads the log for the closing line.
+    # @return [Integer] 0 on a `LOOP DONE` line that ends `items=7/7` and exit status 0, else 3
+    def run_lanes
+      lane_a, lane_b = @lanes
+      argv = [File.join(lane_a[:path], "script", "demo-calculator2"), "run", "--lanes", "--lane-b", lane_b[:workspace], "--id", id, "--wait", "--out", File.join("runs", id)]
+      argv += ["--workflow", @options.workflow] unless @options.workflow == WORKFLOW_ID
+      log = File.join(lane_a[:path], "runs", id, "driver.log")
+      status = @run_logged.call(argv, chdir: lane_a[:path], log: log)
+      done = @read_file.call(log).to_s.lines.reverse.find { |line| line.include?(LOOP_DONE) }
+      return 0 if status == 0 && done&.match?(/items=7\/7/)
+      @err.puts "demo-calculator2: series #{id}: the run stopped (#{done ? done.strip : "no LOOP DONE line"}); see runs/#{id}/driver.log"
+      3
+    end
+
+    def stop_unless_ok(chdir, *argv)
+      out, ok = @exec.call(argv, chdir: chdir)
+      raise Stopped, "`#{argv.join(" ")}` failed" unless ok
+      out
+    end
 
     def check_id
       return if id.to_s.match?(ID_PATTERN) && id != "b"
@@ -220,9 +412,10 @@ module DemoCalculator2
     end
 
     def refuse_foreign(row)
-      owner = SharedValues.owner_path(row.key, row.live)
-      raise Refused, SharedValues.refusal(row.key, row.live, owner) unless @options.take_over
-      raise Refused, "#{row.key} is #{row.live.inspect}, whose owning checkout is unknown, so --take-over cannot tell whether it has a going run; remove the value by hand" if owner.nil? || owner.empty? || owner == "unknown"
+      live = foreign_value(row)
+      owner = SharedValues.owner_path(row.key, live)
+      raise Refused, SharedValues.refusal(row.key, live, owner) unless @options.take_over
+      raise Refused, "#{row.key} is #{live.inspect}, whose owning checkout is unknown, so --take-over cannot tell whether it has a going run; remove the value by hand" if owner.nil? || owner.empty? || owner == "unknown"
       going = going_runs.find { |run| run["worktree"] && same_path?(run["worktree"].to_s, owner) }
       raise Refused, "#{row.key} belongs to #{owner}, whose workspace #{going["workspace"]} has a going run (#{going["id"]}); wait for it before --take-over" if going
     end
@@ -242,9 +435,11 @@ module DemoCalculator2
         [NAME_KEY, name, NAME_VALUE, {}],
         ["attributes:#{ATTRIBUTES_LINE}", live_info_line("attributes") { |line| line.start_with?("#{DEMO_DIR}/test/calc_test.rb ") }, ATTRIBUTES_LINE, {}],
         ["#{SharedValues::SOURCES_PREFIX}#{sources}", live_sources, sources, {same_definitions: same}],
-        ["exclude:/runs/#{id}/", live_info_line("exclude") { |line| line == "/runs/#{id}/" }, "/runs/#{id}/", {}]
+        ["exclude:#{exclude_line}", live_info_line("exclude") { |line| line == exclude_line }, exclude_line, {}]
       ]
     end
+
+    def exclude_line = SharedValues.exclude_line(File.join("runs", id))
 
     def live_git_config(key)
       out, ok = read("git", "config", "--local", "--get", key)

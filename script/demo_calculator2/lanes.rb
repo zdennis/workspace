@@ -22,8 +22,8 @@ module DemoCalculator2
   # Every command goes through the injected `exec`, so the fork and the integrate decision run in specs without git
   # or `workspace`.
   class Lanes
-    MERGE_DRIVER = "calc-demo-tests".freeze
-    ATTRIBUTES_LINE = "#{DEMO_DIR}/test/calc_test.rb merge=#{MERGE_DRIVER}".freeze
+    MERGE_DRIVER = SharedValues::MERGE_DRIVER
+    ATTRIBUTES_LINE = SharedValues::ATTRIBUTES_LINE
     # Queue outcomes that count as a goal delivered.
     SUCCESS = %w[succeeded completed].freeze
     # What joins a project name to a worktree suffix in a workspace name (Workspace::WorkspaceName::SEPARATOR).
@@ -194,7 +194,7 @@ module DemoCalculator2
     # @return [void]
     # @raise [DemoCalculator::Refused] when the driver config names another live checkout
     def write_attributes(record_path = nil)
-      config = {"merge.#{MERGE_DRIVER}.name" => "calc_test.rb: keep both lanes' added test methods", "merge.#{MERGE_DRIVER}.driver" => SharedValues::DRIVER_COMMAND}
+      config = {"merge.#{MERGE_DRIVER}.name" => SharedValues::NAME_VALUE, "merge.#{MERGE_DRIVER}.driver" => SharedValues::DRIVER_COMMAND}
       live = config.keys.to_h { |key| [key, live_config(key)] }
       states = config.to_h { |key, value| [key, shared_state("git-config:#{key}", live[key], value)] }
       driver_key = "merge.#{MERGE_DRIVER}.driver"
@@ -229,7 +229,7 @@ module DemoCalculator2
       dir = record_path ? File.dirname(record_path) : @out_dir && File.expand_path(@out_dir, @root)
       rel = DemoCalculator.out_dir_relative(@root, dir)
       return unless rel
-      line = "/#{rel}/"
+      line = SharedValues.exclude_line(rel)
       path = append_info_line("exclude", line)
       return if @dry_run || record_path.nil?
       @record_path = record_path
