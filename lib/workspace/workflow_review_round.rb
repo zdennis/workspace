@@ -103,7 +103,8 @@ module Workspace
     # with, and records it as the step's `review_window` (`round`, `window`, `pane`, `warm: true`, `memory`, `opened_at`)
     # and `review_model`. Types nothing, binds nothing and waits for nothing. Opens nothing for a step with no `review:`,
     # one in a `fan_out` group, a workspace on its own tmux socket, a step whose rounds are spent, or one whose
-    # `review_window` is a window tmux still has. A run that left the step or attempt by the time the slot is written
+    # `review_window` is a window tmux still has, unless that is a window a rejected round kept whose reviewer is between
+    # turns: that one is replaced ({#replace_kept}). A run that left the step or attempt by the time the slot is written
     # (or has its step reviewing, or a round started) records nothing and has the window it opened closed, by its id.
     #
     # @param run [WorkflowRun, Hash] the run as read
@@ -122,7 +123,9 @@ module Workspace
       if kept
         # A window tmux can't be read about is not known to be gone: nothing is opened.
         listed = @tmux.review_windows(session, timeout: WorkflowPanes::TMUX_READ_TIMEOUT, strict: true)
-        return nil if listed.nil? || listed.any? { |each| each[:window] == (kept.is_a?(Hash) ? kept["window"] : nil) }
+        return nil if listed.nil?
+        open = listed.any? { |each| each[:window] == (kept.is_a?(Hash) ? kept["window"] : nil) }
+        return nil if open && !replace_kept(run, step_id, kept)
       end
       round = run.steps[step_id]&.to_h&.dig("review_rounds").to_i + 1
       memory = memory_digest(run.worktree)
@@ -183,6 +186,21 @@ module Workspace
     def prewarm_wanted?(hash, state, step_id, attempt, round)
       return false unless state.is_a?(Hash) && hash["current"] == step_id && state["state"] != "reviewing"
       Array(state["attempts"]).last&.dig("n") == attempt && state["review_rounds"].to_i + 1 == round
+    end
+
+    # A window a rejected or stopped round kept (`review_window` with no `warm`) whose reviewer the daemon shows between
+    # turns ({WorkflowPanes#quiet?}) is killed and its pane's reviewer unbound, so a warm window takes its place; true
+    # then. A warm slot, a step reviewing or a slot changed when the run is read again just before the kill, a kept window with no pane, a reviewer at work or waiting, a daemon that can't say, or a kill
+    # tmux refuses leaves the window to the next round's carried path: false.
+    def replace_kept(run, step_id, kept)
+      return false unless kept.is_a?(Hash) && kept["warm"] != true && kept["window"].is_a?(String) && kept["pane"].is_a?(String)
+      return false unless @panes.quiet?(run.workspace, kept["pane"])
+      # Read again just before the kill: a round may have started in the window, or the slot moved, since dispatch.
+      now = @store.run(run.id).steps[step_id]&.to_h || {}
+      return false if now["state"] == "reviewing" || now["review_window"] != kept
+      return false unless @tmux.kill_window(kept["window"], timeout: WorkflowPanes::TMUX_READ_TIMEOUT)
+      @panes.unbind(run.id, role: "reviewer", pane: kept["pane"])
+      true
     end
 
     # SHA-256 over the Claude Code start-up files a review process reads when it starts: `CLAUDE.md` and `CLAUDE.local.md`

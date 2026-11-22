@@ -146,6 +146,57 @@ RSpec.describe Workspace::WorkflowEngine, "warm review window" do
     expect(lines("review_delivered").last).not_to have_key("cleared")
   end
 
+  describe "a round that rejects" do
+    let(:tally) { RecordingReviewTally.new(outcome: :rejected, reviews: [{"reviewer" => "skeptic", "verdict" => "rejected"}]) }
+
+    def reject_round_1
+      start
+      author_done
+      now[0] += 60
+      engine.turn_ended("wr_1", actor: "agent", pane: "%100")
+      expect(run["steps"]["plan"]["attempts"].last).to include("n" => 2, "retry_of" => 1)
+    end
+
+    def author_done_again
+      now[0] += 60
+      author_done
+    end
+
+    context "with its reviewer between turns" do
+      let(:review_panes) { closing_panes.new(quiet: ["%100"]).tap { |panes| panes.fake_tmux = tmux } }
+
+      it "has the kept window replaced by a warm one at the retry's dispatch, and round 2 delivered warm with no /clear" do
+        reject_round_1
+
+        expect(tmux.killed_windows).to eq(["@100"])
+        expect(review_panes.calls).to include([:unbind, "wr_1", {role: "reviewer", pane: "%100"}])
+        expect(slot).to include("round" => 2, "window" => "@101", "pane" => "%101", "warm" => true)
+
+        author_done_again
+
+        expect(tmux.opened_windows.map { |each| each[:option] }).to eq(%w[wr_1:plan:1 wr_1:plan:2])
+        expect(run["steps"]["plan"]["review"]).to include("round" => 2, "window" => "@101", "delivery" => nil)
+        expect(lines("review_delivered").last).to include("round" => 2, "window" => "@101", "warm" => true, "reused" => false)
+        expect(lines("review_delivered").last).not_to have_key("cleared")
+        expect(review_panes.calls.select { |call| call.first == :kick }.map { |call| call.last.slice(:pane, :fresh) }).to eq([{pane: "%100", fresh: false}, {pane: "%101", fresh: false}])
+      end
+    end
+
+    it "keeps the window for round 2's carried path, with a /clear, when its reviewer is not between turns" do
+      reject_round_1
+
+      expect(tmux.killed_windows).to be_empty
+      expect(slot).to include("round" => 1, "window" => "@100")
+      expect(slot).not_to have_key("warm")
+
+      author_done_again
+
+      expect(tmux.opened_windows.size).to eq(1)
+      expect(lines("review_delivered").last).to include("round" => 2, "window" => "@100", "carried" => true, "cleared" => true)
+      expect(lines("review_delivered").last).not_to have_key("warm")
+    end
+  end
+
   it "opens none when the author's line was not typed" do
     panes.kick_result = {ok: false, code: "pane_busy", message: "busy"}
     start

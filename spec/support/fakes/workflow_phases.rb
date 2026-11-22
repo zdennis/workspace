@@ -379,7 +379,9 @@ class RecordingWorkflowPanes
   # @param idle [Array<String>] the panes whose agent the daemon says has ended its turn
   # @param pids [Hash{String=>Integer}] the process tmux started in each pane; nil for one it does not list
   # @param spawned [Array<Hash>] what each +spawn_author+ answers, in order
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {}, idle: [], pids: {}, spawned: [])
+  # @param quiet [Array<String>] the panes whose agent the daemon shows between turns
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {}, idle: [], pids: {}, spawned: [], quiet: [])
+    @quiet = quiet
     @spawned = spawned.dup
     @pids = pids
     @idle = idle
@@ -428,6 +430,12 @@ class RecordingWorkflowPanes
 
   # Whether the daemon says +pane+'s agent ended its turn: listed in +idle+.
   def idle?(_workspace, pane) = @idle.include?(pane)
+
+  # Whether the daemon shows +pane+'s agent between turns: listed in +quiet+, recorded in +calls+.
+  def quiet?(workspace, pane)
+    @calls << [:quiet?, workspace, pane]
+    @quiet.include?(pane)
+  end
 
   # Whether +pane+'s turn is proven over: listed in +turn_over+.
   def main_turn_over?(_workspace, pane) = @turn_over.include?(pane)

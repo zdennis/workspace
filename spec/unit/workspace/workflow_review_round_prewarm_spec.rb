@@ -35,8 +35,9 @@ RSpec.describe Workspace::WorkflowReviewRound, "#prewarm" do
   let(:step_hash) { {"state" => "running", "review_rounds" => 0, "attempts" => [{"n" => 1}]} }
   let(:steps) { [{"id" => "plan", "produces" => ["plan.md"], "review" => review}] }
 
+  let(:panes) { RecordingWorkflowPanes.new }
   let(:runner) do
-    described_class.new(store: store, change: change, tmux: tmux, panes: RecordingWorkflowPanes.new, readiness: RecordingPaneReadiness.new(tmux: tmux),
+    described_class.new(store: store, change: change, tmux: tmux, panes: panes, readiness: RecordingPaneReadiness.new(tmux: tmux),
       main_agent: Workspace::MainAgent.new(project_config: project_config), revision: RecordingReviewRevision.new({revision: "rev1", problem: nil}),
       prompt: RecordingWorkflowPrompt.new, round_dirs: RecordingReviewTally.new, holder: -> { {"pid" => 1, "started" => nil} },
       shell: "/bin/zsh", error_output: StringIO.new, clock: -> { now }, home: home)
@@ -116,6 +117,67 @@ RSpec.describe Workspace::WorkflowReviewRound, "#prewarm" do
     step_hash["review_window"] = {"round" => 1, "window" => "@7", "pane" => "%7", "warm" => true}
     runner.prewarm(run, "plan", 1)
     expect(slot["window"]).to eq("@100")
+  end
+
+  describe "a window a rejected round kept" do
+    let(:kept) { {"round" => 1, "window" => "@7", "pane" => "%7"} }
+
+    before do
+      step_hash.merge!("review_rounds" => 1, "review_window" => kept, "attempts" => [{"n" => 1}, {"n" => 2}])
+      tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%7", pid: 1, store: nil}]
+    end
+
+    context "whose reviewer is between turns" do
+      let(:panes) { RecordingWorkflowPanes.new(quiet: ["%7"]) }
+
+      it "is killed and unbound, and a warm window for the next round takes its slot" do
+        recorded = runner.prewarm(run, "plan", 2)
+
+        expect(panes.calls).to eq([[:quiet?, "app", "%7"], [:unbind, "wr_1", {role: "reviewer", pane: "%7"}]])
+        expect(tmux.killed_windows).to eq(["@7"])
+        expect(tmux.opened_windows.map { |each| each[:option] }).to eq(["wr_1:plan:2"])
+        expect(slot).to eq(recorded)
+        expect(slot).to include("round" => 2, "window" => "@100", "pane" => "%100", "warm" => true)
+      end
+
+      it "records nothing, and kills the window it opened, when the slot changed during the open" do
+        tmux.after_open = -> { store.runs["wr_1"]["steps"]["plan"]["review_window"] = {"round" => 1, "window" => "@9", "pane" => "%9"} }
+        expect(runner.prewarm(run, "plan", 2)).to be_nil
+        expect(tmux.killed_windows).to eq(%w[@7 @100])
+        expect(slot["window"]).to eq("@9")
+      end
+
+      [
+        ["the step moved to reviewing", ->(state) { state["state"] = "reviewing" }],
+        ["its slot changed", ->(state) { state["review_window"] = {"round" => 1, "window" => "@9", "pane" => "%9"} }]
+      ].each do |label, move|
+        it "is left, nothing killed or unbound, when #{label} between dispatch and the follow-up" do
+          as_dispatched = run
+          move.call(store.runs["wr_1"]["steps"]["plan"])
+          expect(runner.prewarm(as_dispatched, "plan", 2)).to be_nil
+          expect(panes.calls.map(&:first)).to eq([:quiet?])
+          expect(tmux.killed_windows).to be_empty
+          expect(tmux.opened_windows).to be_empty
+        end
+      end
+
+      it "is left when tmux refuses its kill" do
+        allow(tmux).to receive(:kill_window).and_return(false)
+        expect(runner.prewarm(run, "plan", 2)).to be_nil
+        expect(panes.calls.map(&:first)).to eq([:quiet?])
+        expect(tmux.opened_windows).to be_empty
+        expect(slot).to eq(kept)
+      end
+    end
+
+    # A reviewer at work or waiting, or a daemon that can't say (WorkflowPanes#quiet? answers false for each).
+    it "is left for the next round's carried path when the daemon does not show its reviewer between turns" do
+      expect(runner.prewarm(run, "plan", 2)).to be_nil
+      expect(panes.calls).to eq([[:quiet?, "app", "%7"]])
+      expect(tmux.killed_windows).to be_empty
+      expect(tmux.opened_windows).to be_empty
+      expect(slot).to eq(kept)
+    end
   end
 
   [
