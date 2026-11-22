@@ -12,7 +12,9 @@ module Workspace
     private_constant :PS_ENV, :PS_COMMAND
 
     # @param logger [Workspace::Logger] debug logger
-    # @param timeout [Numeric] seconds to wait for `ps` before killing it
+    # @param timeout [Numeric, #call] seconds to wait for `ps` before killing it,
+    #   or an object whose `call` returns them; called at most once, on the
+    #   first snapshot
     # @param command [Array<String>] the `ps` argv; injectable for tests
     def initialize(logger: Workspace::Logger.new, timeout: DEFAULT_TIMEOUT, command: PS_COMMAND)
       @logger = logger
@@ -58,9 +60,10 @@ module Workspace
       readers = [out_r, err_r].map do |io|
         Thread.new { io.read }.tap { |t| t.report_on_exception = false }
       end
-      unless waiter.join(@timeout)
-        @logger.debug { "process_tree: ps timed out after #{@timeout}s" }
-        raise Workspace::Error, "could not read the process table (ps timed out after #{@timeout}s)"
+      timeout = resolved_timeout
+      unless waiter.join(timeout)
+        @logger.debug { "process_tree: ps timed out after #{timeout}s" }
+        raise Workspace::Error, "could not read the process table (ps timed out after #{timeout}s)"
       end
       [readers[0].value, readers[1].value, waiter.value]
     rescue SystemCallError => e
@@ -71,6 +74,10 @@ module Workspace
       kill_and_reap(pid, waiter) if waiter&.alive?
       readers&.each { |t| t.kill.join }
       [out_r, out_w, err_r, err_w].each { |io| io.close if io && !io.closed? }
+    end
+
+    def resolved_timeout
+      @resolved_timeout ||= @timeout.respond_to?(:call) ? @timeout.call : @timeout
     end
 
     def kill_and_reap(pid, waiter)

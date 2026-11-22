@@ -24,6 +24,36 @@ RSpec.describe Workspace::ProcessTree do
     end
   end
 
+  describe "a callable timeout" do
+    let(:calls) { [] }
+    let(:timeout) {
+      -> {
+        calls << :called
+        7
+      }
+    }
+    let(:lazy) { described_class.new(timeout: timeout, command: ["/usr/bin/printf", "%s", ps_output]) }
+
+    it "is not called at construction or until a snapshot is taken" do
+      lazy
+      expect(calls).to be_empty
+    end
+
+    it "is called once over several snapshots" do
+      3.times { lazy.snapshot }
+      expect(calls.size).to eq(1)
+    end
+
+    it "uses its value as the wait" do
+      hung = described_class.new(timeout: -> { 0.2 }, command: ["/bin/sleep", "30"])
+      expect { hung.snapshot }.to raise_error(Workspace::Error, /ps timed out after 0.2s/)
+    end
+
+    it "leaves a number as it was" do
+      expect(described_class.new(timeout: 5, command: ["/usr/bin/printf", "%s", ps_output]).snapshot.processes).not_to be_empty
+    end
+  end
+
   describe "#snapshot" do
     it "raises when ps fails, rather than reporting every process as exited" do
       failing = described_class.new(command: ["/bin/sh", "-c", "echo 'ps: fork failed' >&2; exit 1"])
