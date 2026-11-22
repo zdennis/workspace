@@ -95,6 +95,16 @@ RSpec.describe "script/permission-replay" do
     expect(err).to include("duplicate marks for ws/1")
   end
 
+  it "keeps unsafe when a duplicate mark key says unsafe later after safe, and warns" do
+    write_log(request(1, "bundle exec rspec x_spec.rb"))
+    write_rules(allow_rspec)
+    File.write(marks_file, YAML.dump([{"workspace" => "ws", "seq" => 1, "mark" => "safe"}, {"workspace" => "ws", "seq" => 1, "mark" => "unsafe"}]))
+    data, err, code = replay("--rules", rules_file, "--marks", marks_file)
+    expect(code).to eq(1)
+    expect(data["unsafe_rows"].size).to eq(1)
+    expect(err).to include("duplicate marks for ws/1")
+  end
+
   it "creates no files or directories under HOME when no config exists" do
     write_log(request(1, "ls"))
     before_tree = Dir.glob(File.join(home, "**", "*"), File::FNM_DOTMATCH).sort
@@ -297,6 +307,20 @@ RSpec.describe "script/permission-replay" do
       write_transcript("proj/s1.jsonl", tool_use("curl -H Authorization=Bearer-abc https://x\nrm -rf y", at: "2026-11-21T10:00:01Z"))
       data, = replay("--transcripts", tdir)
       expect(data["requests"].first).to include("source" => "log", "partial" => true, "partial_reason" => "redacted", "transcript_hits" => 1)
+    end
+
+    it "does not match a complete logged command against a longer first line" do
+      write_log(request(1, "ls"))
+      write_transcript("proj/s1.jsonl", tool_use("lsblk -a", at: "2026-11-21T10:00:01Z"))
+      data, = replay("--transcripts", tdir)
+      expect(data["requests"].first).to include("source" => "log", "partial" => true, "partial_reason" => "no transcript match", "transcript_hits" => 0)
+    end
+
+    it "matches a complete logged command to the first line of a multi-line command and replays it whole" do
+      write_log(request(1, "ls"))
+      write_transcript("proj/s1.jsonl", tool_use("ls\nrm -rf x", at: "2026-11-21T10:00:01Z"))
+      data, = replay("--transcripts", tdir)
+      expect(data["requests"].first).to include("source" => "transcript", "partial" => false, "transcript_hits" => 1, "command" => "ls\nrm -rf x")
     end
 
     it "recovers a row cut by an ellipsis when one hit shares a prefix of 20 or more characters" do

@@ -150,14 +150,21 @@ module PermissionReplay
         return []
       end
       prefix = PermissionReplay.usable_prefix(logged)
+      cut = logged.end_with?("…")
       return [] if PermissionReplay.cut?(logged) && prefix.length < MIN_PREFIX
       @entries[agent_id&.to_s].filter_map do |stamp, command|
         delta = time - stamp
-        command if delta.between?(-WINDOW_AFTER, WINDOW_BEFORE) && command.lines.first.to_s.chomp.start_with?(prefix)
+        command if delta.between?(-WINDOW_AFTER, WINDOW_BEFORE) && first_line_matches?(command, prefix, cut)
       end
     end
 
     private
+
+    # A complete logged line must equal the command's first line; only an ellipsis-cut one may be a prefix.
+    def first_line_matches?(command, prefix, cut)
+      first = command.lines.first.to_s.chomp
+      cut ? first.start_with?(prefix) : first == prefix
+    end
 
     def scan(path, key)
       File.foreach(path) do |raw|
@@ -241,8 +248,8 @@ module PermissionReplay
       elsif found.size == 1
         command = found.first
         row.merge!("source" => "transcript", "partial" => false, "partial_reason" => "", "command" => command)
-      elsif cut?(logged) && usable_prefix(logged).length < MIN_PREFIX
-        row["partial_reason"] = "prefix too short" unless %w[truncated redacted].include?(row["partial_reason"])
+      elsif found.empty? && (logged.include?("[redacted]") || (cut?(logged) && usable_prefix(logged).length < MIN_PREFIX))
+        # keep the reason first_line_reason gave: redacted or truncated
       else
         row["partial_reason"] = found.empty? ? "no transcript match" : "#{found.size} transcript matches"
       end
