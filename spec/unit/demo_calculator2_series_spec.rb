@@ -43,6 +43,8 @@ RSpec.describe DemoCalculator2::Series do
   let(:definition) { "id: x\n" }
   let(:files) { {} }
   let(:existing) { ["/live"] }
+  let(:unreadable) { [] }
+  let(:realpath) { ->(path) { path } }
   let(:wanted_driver) { DemoCalculator2::SharedValues::DRIVER_COMMAND }
   let(:exec) do
     SeriesExecFake.new
@@ -63,12 +65,12 @@ RSpec.describe DemoCalculator2::Series do
   let(:runs) { [] }
   let(:series) do
     described_class.new(root: root, options: options, exec: exec, registry: registry, out: out, err: err,
-      read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) })
+      read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) })
   end
 
   let(:dry_series) do
     described_class.new(root: root, options: described_class.parse(["--id", id, "--base", base, "--dry-run"]), exec: exec, registry: registry, out: out, err: err,
-      read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) })
+      read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) })
   end
   after { FileUtils.remove_entry(dir) }
 
@@ -158,6 +160,38 @@ RSpec.describe DemoCalculator2::Series do
     it "refuses when CI has no run" do
       exec.on(%w[gh run list], "[]")
       expect(refusal).to match(/none found/)
+    end
+
+    context "when a workflows.sources entry is not a readable directory" do
+      let(:gone) { "/gone/demo/calculator2/workflows" }
+      let(:unreadable) { [gone] }
+
+      before { exec.on(%w[workspace config show], {"keys" => [{"key" => "workflows.sources", "effective" => [gone]}]}.to_json) }
+
+      it "refuses, naming the entry and the exact command that removes it" do
+        expect(refusal).to eq("workflows.sources lists #{gone}, which is not a readable directory; `workspace workflow install` fails on it, " \
+          "and --take-over does not remove it. Remove it: workspace config unset workflows.sources")
+      end
+
+      it "names the set command that keeps the other entries" do
+        exec.on(%w[workspace config show], {"keys" => [{"key" => "workflows.sources", "effective" => ["/live", gone, "owner/repo/flows"]}]}.to_json)
+        expect(refusal).to end_with("Remove it: workspace config set workflows.sources /live,owner/repo/flows")
+      end
+
+      it "lists it among a dry run's refusals" do
+        expect(dry_series.call).to eq(1)
+        expect(out.string + err.string).to include("#{gone}, which is not a readable directory")
+      end
+    end
+
+    it "does not check a GitHub source as a directory" do
+      exec.on(%w[workspace config show], {"keys" => [{"key" => "workflows.sources", "effective" => ["owner/repo/flows", "https://github.com/o/r/tree/main/f"]}]}.to_json)
+      expect(refusal.to_s).not_to match(/readable director/)
+    end
+
+    it "passes a sources list whose entries are all readable directories" do
+      exec.on(%w[workspace config show], {"keys" => [{"key" => "workflows.sources", "effective" => ["/live"]}]}.to_json)
+      expect(refusal.to_s).not_to match(/readable directory/)
     end
 
     it "refuses when test-db is held" do
@@ -272,7 +306,7 @@ RSpec.describe DemoCalculator2::Series do
     it "refuses --take-over when the owner of a foreign value is unknown" do
       exec.on(%w[git config --local --get merge.calc-demo-tests.driver], "ruby /somewhere/else %O %A %B\n")
       expect(refusal).to include("--take-over")
-      other = described_class.new(root: root, options: described_class.parse(%w[--id s1 --take-over]), exec: exec, registry: registry, read_file: ->(path) { files[path] }, path_exists: ->(_) { true })
+      other = described_class.new(root: root, options: described_class.parse(%w[--id s1 --take-over]), exec: exec, registry: registry, read_file: ->(path) { files[path] }, path_exists: ->(_) { true }, readable_dir: ->(_) { true })
       expect { other.preflight }.to raise_error(described_class::Refused, /owning checkout is unknown/)
     end
 
@@ -282,7 +316,7 @@ RSpec.describe DemoCalculator2::Series do
       File.symlink(real, link)
       exec.on(%w[git config --local --get merge.calc-demo-tests.driver], absolute_driver(link) + "\n")
       runs << {"id" => "wr_9", "workflow" => "deliver-goal", "workspace" => "w03", "state" => "running", "worktree" => File.realpath(real)}
-      takeover = described_class.new(root: root, options: described_class.parse(%w[--id s1 --take-over]), exec: exec, registry: registry, path_exists: ->(_) { true })
+      takeover = described_class.new(root: root, options: described_class.parse(%w[--id s1 --take-over]), exec: exec, registry: registry, path_exists: ->(_) { true }, readable_dir: ->(_) { true })
       expect { takeover.preflight }.to raise_error(described_class::Refused, /has a going run \(wr_9\)/)
     end
 
@@ -370,7 +404,7 @@ RSpec.describe DemoCalculator2::Series do
     it "prints the sonnet steps, the scoreboard target and the kept line when asked" do
       options = described_class.parse(%w[--id s1 --dry-run --sonnet --keep --scoreboard board.md])
       described_class.new(root: root, options: options, exec: exec, registry: registry, out: out, err: err,
-        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }).call
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) }).call
       expect(out.string).to include("agent.commands.claude claude-sonnet", "template apply calc2-demo-s1-b --relaunch",
         "8. kept: --keep", "9. append the scoreboard row to #{root}/board.md")
     end
@@ -416,7 +450,7 @@ RSpec.describe DemoCalculator2::Series do
   describe "dry run" do
     it "calls only allowlisted argv and creates no file" do
       dry = described_class.new(root: root, options: described_class.parse(%w[--id s1 --dry-run]), exec: exec, registry: registry, out: out, err: err,
-        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) })
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) })
       expect(dry.call).to eq(0)
       expect(exec.calls).not_to be_empty
       expect(Dir.children(dir)).to be_empty
@@ -482,7 +516,7 @@ RSpec.describe DemoCalculator2::Series do
     end
     let(:full) do
       described_class.new(root: root, options: options, exec: exec, registry: live_registry, out: out, err: err,
-        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) },
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) }, realpath: realpath,
         write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, clock: -> { now[0] }, sleeper: ->(s) {
           sleeps << s
           now[0] += s
@@ -536,6 +570,32 @@ RSpec.describe DemoCalculator2::Series do
       expect(calls("workspace", "start", "calc2-demo-s1").first).to eq(%w[workspace start calc2-demo-s1 --base main --headless --yes --json])
     end
 
+    context "when the run starts" do
+      let(:recorded_at_run) { [] }
+      let(:run_logged) do
+        lambda do |argv, chdir:, log:|
+          recorded_at_run << live_registry.entries.dig("s1", "sources").dup
+          exec.calls << ["run", *argv]
+          files[log] = run_output[0]
+          run_output[1]
+        end
+      end
+
+      it "has already recorded each lane's own sources entry" do
+        expect(full.call).to eq(0)
+        expect(recorded_at_run).to eq([["/wt/a/demo/calculator2/workflows", "/wt/b/demo/calculator2/workflows"]])
+      end
+    end
+
+    context "when a lane's path goes through a symlink" do
+      let(:realpath) { ->(path) { path.sub("/wt/", "/private/wt/") } }
+
+      it "records both spellings, so the one the run writes is dropped" do
+        full.call
+        expect(live_registry.entries["s1"]["sources"]).to eq(%w[/wt/a /private/wt/a /wt/b /private/wt/b].map { |path| "#{path}/demo/calculator2/workflows" })
+      end
+    end
+
     it "stops when a lane is not at the base sha" do
       exec.on(%w[git rev-parse HEAD], "bbb\n")
       expect(full.call).to eq(3)
@@ -558,7 +618,7 @@ RSpec.describe DemoCalculator2::Series do
 
     it "stops with 3, prints the message and still runs the finish hook when a write fails in step 5" do
       failing = described_class.new(root: root, options: options, exec: exec, registry: live_registry, out: out, err: err,
-        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, run_logged: run_logged,
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) }, run_logged: run_logged,
         write_file: ->(*) { raise Errno::EACCES, "info/attributes" }, sleeper: ->(_) {})
       expect(failing).to receive(:finish)
       expect(failing.call).to eq(3)
@@ -592,7 +652,7 @@ RSpec.describe DemoCalculator2::Series do
 
       it "sets nothing without the flag" do
         plain = described_class.new(root: root, options: described_class.parse(%w[--id s1]), exec: exec, registry: live_registry, out: out, err: err,
-          read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, sleeper: ->(_) {})
+          read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) }, write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, sleeper: ->(_) {})
         plain.call
         expect(calls("workspace", "config", "set", "--scope")).to be_empty
         expect(calls("workspace", "template")).to be_empty
@@ -724,7 +784,7 @@ RSpec.describe DemoCalculator2::Series do
 
       it "leaves --workflow out for the script's own default" do
         series = described_class.new(root: root, options: described_class.parse(%w[--id s1 --workflow deliver-goal]), exec: exec, registry: live_registry, out: out, err: err,
-          read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, sleeper: ->(_) {})
+          read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) }, write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, sleeper: ->(_) {})
         series.call
         expect(runs.first[:argv]).not_to include("--workflow")
       end
@@ -775,7 +835,7 @@ RSpec.describe DemoCalculator2::Series do
       end
       let(:full) do
         described_class.new(root: root, options: options, exec: exec, registry: live_registry, out: out, err: err,
-          read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) },
+          read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) }, realpath: realpath,
           write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, clock: -> { now[0] }, sleeper: ->(s) { now[0] += s },
           copy_dir: ->(from, to) {
             exec.calls << ["copy", from, to]
@@ -895,7 +955,7 @@ RSpec.describe DemoCalculator2::Series do
       context "when the copy fails" do
         let(:full) do
           described_class.new(root: root, options: options, exec: exec, registry: live_registry, out: out, err: err,
-            read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) },
+            read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) }, realpath: realpath,
             write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, sleeper: ->(_) {}, copy_dir: ->(*) { raise Errno::ENOSPC })
         end
 
@@ -981,6 +1041,44 @@ RSpec.describe DemoCalculator2::Series do
           expect(calls("git", "config", "--local", "--unset").map(&:last)).to contain_exactly("merge.calc-demo-tests.driver", "merge.calc-demo-tests.name")
           expect(calls("workspace", "config", "unset")).to eq([%w[workspace config unset workflows.sources]])
           expect(live_registry.shared).to eq({})
+        end
+
+        context "when lane A's run added its own checkout's sources entry" do
+          let(:lane_entry) { "/wt/a/demo/calculator2/workflows" }
+
+          # The effective list after every set and unset so far, plus the entry the run's own configure appends.
+          def live_list
+            ran = exec.calls.index { |argv| argv.first == "run" }
+            last = exec.calls.rindex { |argv| [%w[workspace config set workflows.sources], %w[workspace config unset workflows.sources]].include?(argv.first(4)) }
+            list = (last && exec.calls[last][2] == "set") ? exec.calls[last][4].split(",") : []
+            list += [lane_entry] if ran && (last.nil? || last < ran)
+            list
+          end
+
+          before do
+            exec.on(%w[workspace config set workflows.sources], "")
+            exec.on(%w[workspace config show], -> { {"keys" => [{"key" => "workflows.sources", "effective" => live_list}]}.to_json })
+          end
+
+          it "drops it with the rest when it is the last id" do
+            full.call
+            expect(live_list).to eq([])
+          end
+
+          it "drops it while another id is registered, leaving the shared entry" do
+            DemoCalculator2::SeriesRegistry.new(registry_dir, pid: 1, host: "h").register("other")
+            full.call
+            expect(live_list).to eq([sources])
+          end
+
+          context "with a trailing slash" do
+            let(:lane_entry) { "/wt/a/demo/calculator2/workflows/" }
+
+            it "still drops it" do
+              full.call
+              expect(live_list).to eq([])
+            end
+          end
         end
 
         it "drops only its own entry from a longer sources list" do
@@ -1092,6 +1190,19 @@ RSpec.describe DemoCalculator2::Series do
           existing << "/x/.worktrees/calc2-demo-s1/runs/s1"
         end
 
+        it "drops the lane sources entry the crashed series recorded" do
+          lane_entry = "/x/.worktrees/calc2-demo-s1/demo/calculator2/workflows"
+          live_registry.record("s1", sources: [lane_entry])
+          exec.on(%w[workspace config set workflows.sources], "")
+          exec.on(%w[workspace config show], -> {
+            dropped = exec.calls.any? { |argv| [%w[workspace config set workflows.sources], %w[workspace config unset workflows.sources]].include?(argv.first(4)) }
+            {"keys" => [{"key" => "workflows.sources", "effective" => dropped ? [] : [lane_entry]}]}.to_json
+          })
+          expect(full.call).to eq(0)
+          expect(calls("workspace", "config", "unset")).to eq([%w[workspace config unset workflows.sources]])
+          expect(live_registry.entries).to be_empty
+        end
+
         context "when the series' process is still alive" do
           let(:alive) { true }
 
@@ -1106,7 +1217,7 @@ RSpec.describe DemoCalculator2::Series do
 
         it "adds no scoreboard row and says so" do
           forgetting = described_class.new(root: root, options: described_class.parse(%w[--forget s1 --scoreboard board.md]), exec: exec, registry: live_registry, out: out, err: err,
-            read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, write_file: ->(path, text) { files[path] = text }, copy_dir: ->(*) {})
+            read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) }, write_file: ->(path, text) { files[path] = text }, copy_dir: ->(*) {})
           expect(forgetting.call).to eq(0)
           expect(files).not_to have_key("/repo/board.md")
           expect(out.string).not_to include("| s1 ")
