@@ -952,7 +952,9 @@ module Workspace
     # @return [void]
     # @raise [Workspace::Error] if worktree creation fails
     # @note A branch that exists only on origin is created locally tracking
-    #   +origin/<branch>+.
+    #   +origin/<branch>+. A new branch gets no upstream, whatever its base, until
+    #   the first push sets one, so a push with no destination can't land on
+    #   the base under +push.default=upstream+.
     def create_worktree(path, branch, base: nil, quiet: false)
       cmd = ["git", "worktree", "add"]
       created_branch = false
@@ -963,7 +965,7 @@ module Workspace
         # has the branch, and refuses the checkout when several do.
         cmd += ["--track", "-b", branch, path, "origin/#{branch}"]
       else
-        cmd += ["-b", branch, path]
+        cmd += ["--no-track", "-b", branch, path]
         cmd << base if base
         created_branch = true
       end
