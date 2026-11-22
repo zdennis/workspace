@@ -1,0 +1,352 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Replays the Bash permission dialogs recorded in the hook event logs (`permission_requested` lines in
+# ~/.local/state/workspace/.events/<workspace>.jsonl, and rotated `.jsonl.N` files) through
+# Workspace::PermissionPolicy offline, to measure what a rule set would auto-allow. Read-only: it never writes
+# to the event logs or to any config. "today" is the policy the person's real config files give that workspace
+# (the project comes from the workspace name via WorkspaceName.project_of; no bound run is consulted), or "no
+# policy (agent dialog)" when none is set. "candidate" is the policy built from --rules FILE:
+#   {default: ask|allow|deny (optional), rules: [{tool, pattern, action}, ...]}
+# --marks FILE is a YAML list of {workspace, seq, mark: safe|unsafe}; a row marked unsafe that the candidate allows
+# is an "unsafe allowed" row, and so is a row marked unsafe that today's policy allows; the script then exits 1.
+# Marks join on workspace + seq, and seq can restart after a daemon restart, so a mark may hit more than one row.
+# --marks needs --rules. Exit 2 for bad options, a missing directory or file, or an invalid file.
+# In --json rows, candidate is null without --rules and "skipped (not Bash)" for a non-Bash row; unsafe_rows lists
+# the unsafe-marked rows an allow reached, each with allowed_by (candidate and/or today).
+#
+# The logged input is only the command's first line (cut at 4096 bytes, secrets redacted), so a later line could
+# write. Every row is "partial" unless --transcripts DIR finds exactly one Bash tool_use in Claude Code
+# transcripts (DIR/<project>/<session>.jsonl, DIR/<project>/<session>/subagents/agent-<id>.jsonl) whose first line
+# starts with the logged text and whose timestamp is 10s before to 1s after the request; that full command is then
+# replayed (source "transcript"). A logged text with [redacted] or cut by an ellipsis needs a usable prefix of 20+ characters to match at all, and a row with [redacted] stays partial (reason "redacted") even on one hit. A row with an agent_id looks only in agent-<id>.jsonl, else only in session files.
+# An allow on a partial row is shown as "allowed on partial text", counted apart from the clean allows, and still
+# counts as unsafe allowed when the row is marked unsafe. JSON rows add source, partial, partial_reason,
+# transcript_hits (null without --transcripts) and command (the replayed text).
+#
+#   script/permission-replay [--events-dir DIR] [--rules FILE] [--marks FILE] [--transcripts DIR] [--json]
+#   script/permission-replay --file PATH [--rules FILE] [--marks FILE] [--transcripts DIR] [--json]
+
+require "json"
+require "optparse"
+require "shellwords"
+require "time"
+require "yaml"
+require_relative "../lib/workspace"
+
+module PermissionReplay
+  NO_POLICY = "no policy (agent dialog)"
+  SKIPPED = "skipped (not Bash)"
+  COLUMNS = %w[at workspace seq mark today candidate source partial reason command].freeze
+  PARTIAL_ALLOW = "allowed on partial text"
+  WINDOW_BEFORE = 10
+  WINDOW_AFTER = 1
+  MIN_PREFIX = 20
+
+  def self.default_events_dir
+    File.join(File.expand_path(ENV.fetch("XDG_STATE_HOME", "~/.local/state")), "workspace/.events")
+  end
+
+  def self.event_files(dir)
+    Dir.glob(File.join(dir, "*.jsonl")).sort + Dir.glob(File.join(dir, "*.jsonl.[0-9]*")).sort
+  end
+
+  # @return [Array<Hash>] the `permission_requested` events of the given files, malformed lines skipped
+  def self.read_requests(paths)
+    paths.flat_map do |path|
+      File.foreach(path).filter_map do |line|
+        event = begin
+          JSON.parse(line.scrub)
+        rescue JSON::ParserError
+          next
+        end
+        event if event.is_a?(Hash) && event["type"] == "permission_requested"
+      end
+    rescue SystemCallError => e
+      raise ArgumentError, io_message(path, e)
+    end
+  end
+
+  def self.io_message(path, error)
+    "#{path}: #{SystemCallError.new(nil, error.errno).message}"
+  end
+
+  # @raise [ArgumentError] when the file is not `{default:, rules:}` with valid rules
+  def self.candidate_policy(path)
+    data = YAML.safe_load_file(path)
+    raise ArgumentError, "#{path}: must be a mapping with rules and optional default" unless data.is_a?(Hash)
+    unknown = data.keys.map(&:to_s) - %w[default rules]
+    raise ArgumentError, "#{path}: unknown key #{unknown.first.inspect}; allowed: default, rules" unless unknown.empty?
+    data = data.transform_keys(&:to_s)
+    default = data["default"]
+    raise ArgumentError, "#{path}: default must be allow, ask or deny" unless default.nil? || %w[allow ask deny].include?(default)
+    rules = Workspace::PermissionRules.parse(data["rules"], label: "rules")
+    Workspace::PermissionPolicy.new(layers: [{source: "candidate", rules: rules, default: default}])
+  rescue Psych::Exception => e
+    raise ArgumentError, "#{path}: #{e.message}"
+  rescue SystemCallError => e
+    raise ArgumentError, io_message(path, e)
+  end
+
+  # @return [Hash{Array => String}] mark by [workspace, seq as string]
+  def self.read_marks(path)
+    data = YAML.safe_load_file(path)
+    raise ArgumentError, "#{path}: must be a list of {workspace, seq, mark}" unless data.is_a?(Array)
+    duplicated = []
+    marks = data.each_with_object({}) do |entry, marks|
+      raise ArgumentError, "#{path}: each entry must be a mapping" unless entry.is_a?(Hash)
+      mark = entry["mark"].to_s
+      raise ArgumentError, "#{path}: mark must be safe or unsafe, got #{mark.inspect}" unless %w[safe unsafe].include?(mark)
+      key = [entry["workspace"].to_s, entry["seq"].to_s]
+      duplicated << key if marks.key?(key)
+      marks[key] = (marks[key] == "unsafe") ? "unsafe" : mark
+    end
+    unless duplicated.empty?
+      warn "permission-replay: duplicate marks for #{duplicated.uniq.map { |w, q| "#{w}/#{q}" }.join(", ")}; unsafe wins"
+    end
+    marks
+  rescue Psych::Exception => e
+    raise ArgumentError, "#{path}: #{e.message}"
+  rescue SystemCallError => e
+    raise ArgumentError, io_message(path, e)
+  end
+
+  # Today's policy per logged workspace, from real config files only: no CLI, no tmux, no bound run.
+  class Today
+    # Answers "bound to no run", so only config layers count.
+    class NoRun
+      def run_id_strict = nil
+    end
+
+    def initialize
+      config = Workspace::Config.new
+      resolver = Workspace::ConfigResolver.new(project_settings: Workspace::ProjectSettings.new(config: config))
+      @builder = Workspace::PermissionPolicyConfig.new(config_resolver: resolver, bound_run: NoRun.new, run_store: nil, logger: Workspace::Logger.new)
+      @policies = {}
+    end
+
+    # @return [Workspace::PermissionPolicy, nil]
+    def policy(workspace)
+      return @policies[workspace] if @policies.key?(workspace)
+      @policies[workspace] = @builder.policy(workspace: workspace, project: Workspace::WorkspaceName.project_of(workspace))
+    end
+  end
+
+  # Bash tool_use commands of Claude Code transcripts, read line by line, grouped by the agent they belong to.
+  class Transcripts
+    def initialize(dir)
+      @entries = Hash.new { |h, k| h[k] = [] }
+      Dir.glob(File.join(dir, "**", "*.jsonl")).sort.each do |path|
+        key = File.basename(path)[/\Aagent-(.+)\.jsonl\z/, 1]
+        scan(path, key)
+      end
+    end
+
+    # @return [Array<String>] full commands of the tool_use entries that match the logged first line in the window
+    def hits(agent_id, logged, at)
+      time = begin
+        Time.iso8601(at.to_s)
+      rescue ArgumentError
+        return []
+      end
+      prefix = PermissionReplay.usable_prefix(logged)
+      cut = PermissionReplay.cut?(logged)
+      return [] if PermissionReplay.cut?(logged) && prefix.length < MIN_PREFIX
+      @entries[agent_id&.to_s].filter_map do |stamp, command|
+        delta = time - stamp
+        command if delta.between?(-WINDOW_AFTER, WINDOW_BEFORE) && first_line_matches?(command, prefix, cut)
+      end
+    end
+
+    private
+
+    # A complete logged line must equal the command's first line; only a cut or redacted one may be a prefix.
+    def first_line_matches?(command, prefix, cut)
+      first = command.lines.first.to_s.chomp
+      cut ? first.start_with?(prefix) : first == prefix
+    end
+
+    def scan(path, key)
+      File.foreach(path) do |raw|
+        line = raw.scrub
+        next unless line.include?("tool_use") && line.include?("Bash")
+        entry = begin
+          JSON.parse(line)
+        rescue JSON::ParserError
+          next
+        end
+        next unless entry.is_a?(Hash)
+        stamp = begin
+          Time.iso8601(entry["timestamp"].to_s)
+        rescue ArgumentError
+          next
+        end
+        content = entry.dig("message", "content")
+        next unless content.is_a?(Array)
+        content.each do |item|
+          next unless item.is_a?(Hash) && item["type"] == "tool_use" && item["name"] == "Bash"
+          command = item.dig("input", "command")
+          @entries[key] << [stamp, command] if command.is_a?(String)
+        end
+      end
+    rescue SystemCallError => e
+      raise ArgumentError, PermissionReplay.io_message(path, e)
+    end
+  end
+
+  # @return [Boolean] whether the logged text was redacted or cut, so its prefix may be short
+  def self.cut?(input)
+    input.include?("[redacted]") || input.end_with?("…")
+  end
+
+  # @return [String] the logged text before a trailing ellipsis or the first [redacted]
+  def self.usable_prefix(input)
+    input.to_s.sub(/…\z/, "").split("[redacted]", 2).first.to_s
+  end
+
+  # @return [String] why a logged first line cannot stand for the whole command
+  def self.first_line_reason(input)
+    return "truncated" if input.end_with?("…") || input.bytesize >= 4096
+    return "redacted" if input.include?("[redacted]")
+    return "heredoc" if input.match?(/<<-?\s*['"]?\w/)
+    begin
+      Shellwords.split(input)
+    rescue ArgumentError
+      return "unclosed quote"
+    end
+    "first line only"
+  end
+
+  def self.reason(command, pieces, decision)
+    flags = []
+    flags << "substitution" if pieces.substitution?(command)
+    flags << "redirect" if pieces.redirect?(command)
+    flags << "opaque" if pieces.opaque?(command)
+    rule = decision ? decision[:rule].to_s : ""
+    return rule if flags.empty?
+    rule.empty? ? flags.join(", ") : "#{rule} (#{flags.join(", ")})"
+  end
+
+  # The one place a row is built.
+  def self.build_row(event, today:, candidate:, marks:, transcripts: nil, pieces: Workspace::BashCommandPieces.new)
+    logged = event["input"].to_s
+    row = {"at" => event["at"], "workspace" => event["workspace"], "seq" => event["seq"], "tool" => event["tool"],
+           "command" => logged, "mark" => marks[[event["workspace"].to_s, event["seq"].to_s]],
+           "source" => "log", "partial" => false, "partial_reason" => "", "transcript_hits" => nil}
+    unless event["tool"] == "Bash"
+      row.merge!("today" => SKIPPED, "candidate" => (candidate ? SKIPPED : nil), "reason" => "", "allowed_by" => [])
+      return row
+    end
+    command = logged
+    row["partial"] = true
+    row["partial_reason"] = first_line_reason(logged)
+    if transcripts
+      found = transcripts.hits(event["agent_id"], logged, event["at"])
+      row["transcript_hits"] = found.size
+      if found.size == 1 && logged.include?("[redacted]")
+        row["partial_reason"] = "redacted"
+      elsif found.size == 1
+        command = found.first
+        row.merge!("source" => "transcript", "partial" => false, "partial_reason" => "", "command" => command)
+      elsif found.empty? && (logged.include?("[redacted]") || (cut?(logged) && usable_prefix(logged).length < MIN_PREFIX))
+        # keep the reason first_line_reason gave: redacted or truncated
+      else
+        row["partial_reason"] = found.empty? ? "no transcript match" : "#{found.size} transcript matches"
+      end
+    end
+    input = {"command" => command}
+    today_policy = today.policy(event["workspace"].to_s)
+    today_decision = today_policy&.decide(tool_name: "Bash", tool_input: input, cwd: nil)
+    candidate_decision = candidate&.decide(tool_name: "Bash", tool_input: input, cwd: nil)
+    row.merge!("today" => today_decision ? today_decision[:action] : NO_POLICY,
+      "candidate" => candidate_decision&.fetch(:action),
+      "reason" => reason(command, pieces, candidate_decision || today_decision))
+    row["allowed_by"] = {"candidate" => row["candidate"], "today" => row["today"]}.select { |_, v| v == "allow" }.keys
+    row
+  end
+
+  # @return [Array(Hash, Array<Hash>)] counts and the unsafe-marked rows that an allow reached
+  def self.summarize(rows)
+    unsafe = rows.select { |r| r["mark"] == "unsafe" && !r["allowed_by"].empty? }
+    clean = rows.reject { |r| r["partial"] }
+    partial = rows.select { |r| r["partial"] }
+    counts = {"requests" => rows.size, "allowed_today" => clean.count { |r| r["today"] == "allow" },
+              "allowed_candidate" => clean.count { |r| r["candidate"] == "allow" },
+              "allowed_partial" => {"today" => partial.count { |r| r["today"] == "allow" },
+                                    "candidate" => partial.count { |r| r["candidate"] == "allow" }},
+              "unsafe_allowed" => unsafe.size}
+    [counts, unsafe]
+  end
+
+  def self.format_text(rows, counts, unsafe, with_candidate:)
+    cols = with_candidate ? COLUMNS : COLUMNS - ["candidate"]
+    lines = [cols.join("\t")]
+    rows.each do |r|
+      lines << cols.map { |c|
+        case c
+        when "command" then r[c][0, 80].tr("\n\t", "  ")
+        when "partial" then r["partial_reason"]
+        when "today", "candidate" then (r["partial"] && r[c] == "allow") ? PARTIAL_ALLOW : r[c].to_s
+        else r[c].to_s
+        end
+      }.join("\t")
+    end
+    lines << ""
+    partial = counts["allowed_partial"]
+    lines << "requests: #{counts["requests"]}"
+    lines << "allowed today: #{counts["allowed_today"]}"
+    lines << "allowed candidate: #{counts["allowed_candidate"]}" if with_candidate
+    lines << "allowed on partial text, today: #{partial["today"]}"
+    lines << "allowed on partial text, candidate: #{partial["candidate"]}" if with_candidate
+    lines << "unsafe allowed: #{counts["unsafe_allowed"]}"
+    unsafe.each { |r| lines << "  #{r["at"]} #{r["workspace"]} seq=#{r["seq"]} allowed by #{r["allowed_by"].join(" and ")}: #{r["command"][0, 80].tr("\n\t", "  ")}" }
+    lines.join("\n")
+  end
+
+  def self.main(argv, out: $stdout, err: $stderr)
+    opts = {json: false, events_dir: default_events_dir}
+    parser = OptionParser.new do |o|
+      o.banner = "Usage: permission-replay [--events-dir DIR | --file PATH] [--rules FILE] [--marks FILE] [--transcripts DIR] [--json]"
+      o.on("--events-dir DIR", "Directory of hook event logs (default ~/.local/state/workspace/.events)") { |v| opts[:events_dir] = v }
+      o.on("--file PATH", "Read this one event log") { |v| opts[:file] = v }
+      o.on("--rules FILE", "Candidate rules, YAML {default:, rules: [{tool, pattern, action}]}") { |v| opts[:rules] = v }
+      o.on("--marks FILE", "YAML list of {workspace, seq, mark: safe|unsafe}") { |v| opts[:marks] = v }
+      o.on("--transcripts DIR", "Claude Code transcripts to recover each command's full text (no default)") { |v| opts[:transcripts] = v }
+      o.on("--json", "Print JSON") { opts[:json] = true }
+    end
+    parser.parse!(argv)
+    raise ArgumentError, "--marks needs --rules" if opts[:marks] && !opts[:rules]
+    if opts[:file]
+      raise ArgumentError, "#{opts[:file]}: no such file" unless File.file?(opts[:file])
+    else
+      raise ArgumentError, "#{opts[:events_dir]}: no such directory" unless File.directory?(opts[:events_dir])
+    end
+
+    if opts[:transcripts] && !File.directory?(opts[:transcripts])
+      raise ArgumentError, "#{opts[:transcripts]}: no such directory"
+    end
+
+    candidate = opts[:rules] && candidate_policy(opts[:rules])
+    marks = opts[:marks] ? read_marks(opts[:marks]) : {}
+    paths = opts[:file] ? [opts[:file]] : event_files(opts[:events_dir])
+    today = Today.new
+    transcripts = opts[:transcripts] && Transcripts.new(opts[:transcripts])
+    rows = read_requests(paths).map { |event| build_row(event, today: today, candidate: candidate, marks: marks, transcripts: transcripts) }
+    rows.sort_by! { |r| [r["at"].to_s, r["workspace"].to_s, r["seq"].to_i] }
+    counts, unsafe = summarize(rows)
+    unmatched = marks.keys - rows.map { |r| [r["workspace"].to_s, r["seq"].to_s] }
+    err.puts "permission-replay: #{unmatched.size} marks match no row: #{unmatched.map { |w, q| "#{w}/#{q}" }.join(", ")}" unless unmatched.empty?
+
+    if opts[:json]
+      out.puts JSON.generate("requests" => rows, "counts" => counts, "unsafe_rows" => unsafe)
+    else
+      out.puts format_text(rows, counts, unsafe, with_candidate: !candidate.nil?)
+    end
+    unsafe.empty? ? 0 : 1
+  rescue OptionParser::ParseError, ArgumentError, SystemCallError => e
+    err.puts "permission-replay: #{e.message}"
+    2
+  end
+end
+
+exit PermissionReplay.main(ARGV) if $PROGRAM_NAME == __FILE__
