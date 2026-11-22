@@ -157,6 +157,17 @@ RSpec.describe Workspace::AgentReadiness do
     expect(result.reason).to eq("Claude Code (pane 0.1) has not drawn its screen yet")
   end
 
+  it "reports a blank visible screen as not drawn even when its history rows hold text" do
+    panes.replace([{id: "%9", window: 0, index: 0, pid: 900, command: "codex"}])
+    history = (1..5).map { |i| "old output #{i}" }.join("\n")
+    allow(tmux).to receive(:capture_screen_scrollback) { capture("#{history}\n\n\n", 5) }
+
+    result = readiness.wait("proj", deadline: readiness.deadline_in(5))
+
+    expect(result).not_to be_ready
+    expect(result.reason).to eq("Codex (pane 0.0) has not drawn its screen yet")
+  end
+
   it "does not count a static trust dialog as ready, even once the screen is quiet" do
     allow(tmux).to receive(:capture_screen_scrollback) { capture("Do you trust the files in this folder?\n╭──────────╮\n│ ❯ 1. Yes │\n│   2. No  │\n╰──────────╯") }
 

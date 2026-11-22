@@ -97,7 +97,7 @@ module Workspace
           current = styled&.text
           now = @clock.call
           found[:reason] = "#{found[:label]} (pane #{found[:target]}) is still starting up"
-          if current.nil? || current.strip.empty?
+          if styled.nil? || styled.visible_lines.join("\n").strip.empty?
             found[:reason] = "#{found[:label]} (pane #{found[:target]}) has not drawn its screen yet"
             screen = quiet_since = nil
           elsif current != screen
