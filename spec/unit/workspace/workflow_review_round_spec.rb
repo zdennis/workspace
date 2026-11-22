@@ -87,7 +87,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
       expect(opened.first[:command]).to eq(["/bin/zsh", "-lc", "claude"])
     end
 
-    it "computes the revision, checks the round's directory and writes the prompt before any window opens" do
+    it "computes the revision, checks the round's directory and opens or finds the window, then writes the prompt" do
       runner.call("wr_1", pending)
 
       expect(revision.calls.size).to eq(1)
@@ -96,6 +96,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
     end
 
     it "reuses the window already marked for the round, and closes one a round before it left" do
+      store.runs["wr_1"] = run_hash(review: {"redeliveries" => 1})
       tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70},
         {window: "@6", name: "review-plan", review: "wr_1:plan:0", pane: "%60", pid: 60},
         {window: "@5", name: "review-x", review: "wr_2:x:1", pane: "%50", pid: 50}]
@@ -260,7 +261,72 @@ RSpec.describe Workspace::WorkflowReviewRound do
         expect(round).to include("pane" => "%70", "window" => "@7", "delivery" => nil, "clear_from" => "2026-11-14T12:00:00.000Z")
         expect(store.runs["wr_1"]["steps"]["plan"]).not_to have_key("review_window")
         expect(change.events.last).to eq(["wr_1", "review_delivered", {"step" => "plan", "attempt" => 2, "round" => 2, "pane" => "%70", "window" => "@7",
-                                                                       "reused" => false, "cleared" => true}])
+                                                                       "reused" => false, "cleared" => true, "carried" => true}])
+      end
+
+      context "the time a carried window's process started" do
+        let(:later_pending) { {"step" => "plan", "attempt" => 2, "round" => 2} }
+
+        def carry(attempts)
+          hash = run_hash(review: {"round" => 2})
+          hash["steps"]["plan"]["attempts"] = attempts
+          store.runs["wr_1"] = hash
+          tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+          runner.call("wr_1", pending.merge("attempt" => 2, "round" => 2))
+          prompt.calls.last.last[:early_start]
+        end
+
+        it "is the earliest kick_at of the rounds delivered in that window, never a started_at" do
+          expect(carry([{"n" => 1, "outcome" => "failed", "started_at" => "2026-11-14T09:00:00.000Z", "rounds" => [
+            {"round" => 0, "window" => "@3", "started_at" => "2026-11-14T10:00:00.000Z", "kick_at" => "2026-11-14T10:00:05.000Z"},
+            {"round" => 1, "window" => "@7", "started_at" => "2026-11-14T11:00:00.000Z", "kick_at" => "2026-11-14T11:20:00.000Z"},
+            {"round" => 2, "window" => "@7", "started_at" => "2026-11-14T11:01:00.000Z", "kick_at" => "2026-11-14T11:10:00.000Z"}
+          ]}, {"n" => 2}])).to eq(Time.utc(2026, 11, 14, 11, 10, 0))
+        end
+
+        it "is true when the rounds of that window have a started_at but no kick_at, whatever other rounds and attempts record" do
+          expect(carry([{"n" => 1, "started_at" => "2026-11-14T09:00:00.000Z", "rounds" => [
+            {"round" => 1, "window" => "@7", "started_at" => "2026-11-14T11:00:00.000Z"},
+            {"round" => 1, "window" => "@3", "started_at" => "2026-11-14T10:00:00.000Z", "kick_at" => "2026-11-14T10:00:05.000Z"}
+          ]}, {"n" => 2, "started_at" => "2026-11-14T09:30:00.000Z"}])).to be(true)
+        end
+
+        it "is true when no round recorded that window, so the prompt still carries the no-time warning" do
+          expect(carry([{"n" => 1, "started_at" => "not a time"}, {"n" => 2}])).to be(true)
+        end
+      end
+
+      it "tells a window reused for the same round's redelivery the earliest kick_at of the round's own records in it, else no time" do
+        pending_one = {"step" => "plan", "attempt" => 1, "round" => 1}
+        tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+
+        hash = run_hash
+        hash["steps"]["plan"]["attempts"] = [{"n" => 1, "rounds" => [
+          {"round" => 1, "window" => "@7", "started_at" => "2026-11-14T11:00:00.000Z", "kick_at" => "2026-11-14T11:40:00.000Z"},
+          {"round" => 1, "window" => "@7", "kick_at" => "2026-11-14T11:30:00.000Z"},
+          {"round" => 1, "window" => "@9", "kick_at" => "2026-11-14T08:00:00.000Z"},
+          {"round" => 0, "window" => "@7", "kick_at" => "2026-11-14T07:00:00.000Z"}
+        ]}]
+        store.runs["wr_1"] = hash
+        runner.call("wr_1", pending_one)
+        expect(prompt.calls.last.last[:early_start]).to eq(Time.utc(2026, 11, 14, 11, 30, 0))
+
+        standing = run_hash(review: {"window" => "@7", "kick_at" => "2026-11-14T11:35:00.000Z"})
+        store.runs["wr_1"] = standing
+        runner.call("wr_1", pending_one)
+        expect(prompt.calls.last.last[:early_start]).to eq(Time.utc(2026, 11, 14, 11, 35, 0))
+
+        store.runs["wr_1"] = run_hash(review: {"redeliveries" => 1})
+        runner.call("wr_1", pending_one)
+        expect(prompt.calls.last.last[:early_start]).to be(true)
+      end
+
+      it "gives a round in a window opened for it no early start" do
+        store.runs["wr_1"] = run_hash
+        runner.call("wr_1", {"step" => "plan", "attempt" => 1, "round" => 1})
+
+        expect(opened.size).to eq(1)
+        expect(prompt.calls.last.last).not_to have_key(:early_start)
       end
 
       it "records the pane and the clear's start before the line (and its /clear) is typed, so a Stop meanwhile is judged against it" do
@@ -453,6 +519,8 @@ RSpec.describe Workspace::WorkflowReviewRound do
 
       it "waits without closing it, keeps it on the failed round and leaves its binding" do
         tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        # A redelivery of the round: an earlier delivery may have typed its line there.
+        store.runs["wr_1"] = run_hash(review: {"redeliveries" => 1})
 
         runner.call("wr_1", pending)
 
@@ -480,6 +548,8 @@ RSpec.describe Workspace::WorkflowReviewRound do
 
       it "keeps the window, its id on the failed round, and its binding" do
         tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        # A redelivery of the round: an earlier delivery may have typed its line there.
+        store.runs["wr_1"] = run_hash(review: {"redeliveries" => 1})
 
         runner.call("wr_1", pending)
 
@@ -613,6 +683,8 @@ RSpec.describe Workspace::WorkflowReviewRound do
 
       it "leaves the window it reused alone and records no failure" do
         tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        # A redelivery of the round: an earlier delivery may have typed its line there.
+        store.runs["wr_1"] = run_hash(review: {"redeliveries" => 1})
 
         runner.call("wr_1", pending)
 
@@ -806,7 +878,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
       runner.call("wr_1", pending)
 
       expect(revision.calls).to be_empty
-      expect(prompt.calls.map { |call| call.values_at(4, 5, 6) }).to eq([[1, "rev0", {only: %w[skeptic], rerun: 1}]])
+      expect(prompt.calls.map { |call| call.values_at(4, 5, 6) }).to eq([[1, "rev0", {only: %w[skeptic], rerun: 1, early_start: true}]])
       expect(opened).to be_empty
       expect(panes.calls.last).to include(:kick)
       expect(panes.calls.last.last).to include(fresh: true, text: "Read #{File.join(worktree, ".workflow", "wr_1", "steps", "plan.1.r1.rerun1.review.md")} and follow it.")

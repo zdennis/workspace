@@ -1274,6 +1274,12 @@ RSpec.describe Workspace::Tmux do
 
       expect(tmux.review_windows("gone")).to eq([])
     end
+
+    it "is nil, not empty, when tmux fails and strict is asked" do
+      allow(Open3).to receive(:capture3).and_return(["", "no server", instance_double(Process::Status, success?: false)])
+
+      expect(tmux.review_windows("gone", strict: true)).to be_nil
+    end
   end
 
   describe "#server_pid_for_session" do

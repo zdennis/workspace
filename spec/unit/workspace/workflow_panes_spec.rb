@@ -488,6 +488,41 @@ RSpec.describe Workspace::WorkflowPanes do
     end
   end
 
+  describe "#quiet?" do
+    let(:hooked) { {"kind" => "claude", "hook_mode" => "hooks", "user_prompt_at" => "2026-10-04T12:00:00Z", "main_turn_over_since" => "2026-10-04T12:00:05Z"} }
+
+    it "is true for a Claude Code pane between turns, done or idle, with no grace" do
+      allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0).and_return("panes" => [
+        hooked.merge("pane_id" => "%5", "state" => "done", "state_since" => "2026-10-04T12:00:59Z"), hooked.merge("pane_id" => "%6", "state" => "idle")
+      ])
+      expect(%w[%5 %6].map { |pane| panes.quiet?("app", pane) }).to eq([true, true])
+    end
+
+    it "is false for a pane at work, waiting, with a failed turn, a turn, tool or sub-agent under way, no hooks, another agent or no row" do
+      allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0).and_return("panes" => [
+        hooked.merge("pane_id" => "%1", "state" => "working"), hooked.merge("pane_id" => "%2", "state" => "waiting"),
+        hooked.merge("pane_id" => "%3", "state" => "idle", "turn_failed" => true),
+        hooked.merge("pane_id" => "%4", "state" => "idle", "main_turn_over_since" => nil),
+        hooked.merge("pane_id" => "%5", "state" => "idle", "open_tools" => ["Bash"]),
+        hooked.merge("pane_id" => "%6", "state" => "idle", "subagents" => [{"id" => "a"}]),
+        hooked.merge("pane_id" => "%7", "state" => "idle", "hook_mode" => "screen"),
+        hooked.merge("pane_id" => "%8", "state" => "idle", "kind" => "codex")
+      ])
+      expect(%w[%1 %2 %3 %4 %5 %6 %7 %8 %9].map { |pane| panes.quiet?("app", pane) }).to all(be false)
+    end
+
+    it "is false when the daemon is not running or does not answer, and starts none" do
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no answer", reason: :timeout))
+      expect(panes.quiet?("app", "%5")).to be false
+
+      allow(config).to receive(:agent_running?).with("app").and_return(false)
+      allow(snapshot_client).to receive(:fetch).and_return("panes" => [hooked.merge("pane_id" => "%5", "state" => "idle")])
+      expect(panes.quiet?("app", "%5")).to be false
+      expect(snapshot_client).to have_received(:fetch).once
+      expect(ensured).to eq([])
+    end
+  end
+
   describe "#kick" do
     let(:shown) { {"pane_id" => "%5", "kind" => "claude", "state" => "done"} }
 

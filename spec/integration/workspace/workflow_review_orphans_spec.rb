@@ -138,4 +138,29 @@ RSpec.describe Workspace::WorkflowReviewOrphans do
     expect(tmux.killed_windows).to eq(["@1"])
     expect(panes.calls).to eq([[:unbind, "wr_1", {role: "reviewer", pane: "%1"}]])
   end
+  describe "a warm window opened ahead of its round" do
+    let(:warm) { {"round" => 1, "window" => "@9", "pane" => "%9", "warm" => true, "memory" => "m", "opened_at" => "2026-11-14T12:00:00Z"} }
+
+    before { tmux.review_window_list = [window("@9", "wr_1:plan:1", "%9")] }
+
+    it "is spared while its step is the run's current one and running" do
+      write_run("wr_1", step_state: "running", round: nil, kept: warm)
+
+      expect(found).to eq([])
+    end
+
+    it "is closable once the run has left its step" do
+      write_run("wr_1", step_state: "failed", round: nil, kept: warm, current: "build")
+
+      expect(found).to eq([["@9", "not_recorded"]])
+      expect(orphans.find.first[:closable]).to be(true)
+    end
+
+    it "is closable once the run has ended" do
+      write_run("wr_1", state: "cancelled", step_state: "running", round: nil, kept: warm, dir: "archive")
+
+      expect(found).to eq([["@9", "run_over"]])
+      expect(orphans.find.first[:closable]).to be(true)
+    end
+  end
 end

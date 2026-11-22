@@ -49,13 +49,13 @@ end
 # Fake of Workspace::WorkflowRunChange over the run Hashes a RecordingRunStore holds: +call+ yields the stored run
 # as a frozen WorkflowRun and a real Context, writes the run the block returns (the one read for nil) back into the Hash,
 # keeps the line a block registered in +deliveries+ (it types nothing), the review round in +reviews+, the ended round whose
-# revision is computed again in +review_ends+, the window to close in +closes+ and the lines queued with Context#event in
+# revision is computed again in +review_ends+, the window to close in +closes+, the warm window to open in +prewarms+ and the lines queued with Context#event in
 # +events+ (as +event+ does, with no from_state or to_state), and returns the run;
 # a +nonblocking+ call on a run it was told is busy answers nil without yielding.
 class RecordingRunChange
-  CONTROL_METHODS = %i[calls events deliveries reviews review_ends closes].freeze
+  CONTROL_METHODS = %i[calls events deliveries reviews review_ends closes prewarms].freeze
 
-  attr_reader :calls, :events, :deliveries, :reviews, :review_ends, :closes
+  attr_reader :calls, :events, :deliveries, :reviews, :review_ends, :closes, :prewarms
 
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param finished [Array<String>] ids whose change raises `run_not_active`, as for a run cancelled meanwhile
@@ -77,6 +77,7 @@ class RecordingRunChange
     @reviews = []
     @review_ends = []
     @closes = []
+    @prewarms = []
   end
 
   def call(run_id, actor:, cause:, nonblocking: false)
@@ -96,6 +97,7 @@ class RecordingRunChange
     @reviews << ctx.review if ctx.review
     @review_ends << ctx.review_end if ctx.review_end
     @closes << ctx.close_review if ctx.close_review
+    @prewarms << ctx.prewarm if ctx.prewarm
     ctx.after_locks.each do |each|
       each.call(changed)
     rescue
@@ -217,8 +219,8 @@ class RecordingWorkflowPrompt
     File.join(Workspace::WorkflowRun.from_h(run).artifacts_dir, "steps", "#{step["id"]}.#{attempt_number}.r#{round}#{tag}.review.md")
   end
 
-  def review_text(run, step, attempt_number, round, revision, only: nil, rerun: nil)
-    @calls << [:review_text, Workspace::WorkflowRun.from_h(run), step["id"], attempt_number, round, revision, {only: only, rerun: rerun}]
+  def review_text(run, step, attempt_number, round, revision, only: nil, rerun: nil, early_start: nil)
+    @calls << [:review_text, Workspace::WorkflowRun.from_h(run), step["id"], attempt_number, round, revision, {only: only, rerun: rerun}.merge(early_start ? {early_start: early_start} : {})]
     {"path" => review_path(run, step, attempt_number, round, rerun: only ? rerun : nil), "text" => "review prompt", "packs" => []}
   end
 
@@ -377,7 +379,9 @@ class RecordingWorkflowPanes
   # @param idle [Array<String>] the panes whose agent the daemon says has ended its turn
   # @param pids [Hash{String=>Integer}] the process tmux started in each pane; nil for one it does not list
   # @param spawned [Array<Hash>] what each +spawn_author+ answers, in order
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {}, idle: [], pids: {}, spawned: [])
+  # @param quiet [Array<String>] the panes whose agent the daemon shows between turns
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {}, idle: [], pids: {}, spawned: [], quiet: [])
+    @quiet = quiet
     @spawned = spawned.dup
     @pids = pids
     @idle = idle
@@ -426,6 +430,12 @@ class RecordingWorkflowPanes
 
   # Whether the daemon says +pane+'s agent ended its turn: listed in +idle+.
   def idle?(_workspace, pane) = @idle.include?(pane)
+
+  # Whether the daemon shows +pane+'s agent between turns: listed in +quiet+, recorded in +calls+.
+  def quiet?(workspace, pane)
+    @calls << [:quiet?, workspace, pane]
+    @quiet.include?(pane)
+  end
 
   # Whether +pane+'s turn is proven over: listed in +turn_over+.
   def main_turn_over?(_workspace, pane) = @turn_over.include?(pane)
