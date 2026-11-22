@@ -37,6 +37,8 @@ module MergeTestMethods
     our_blocks, = split(ours)
     their_blocks, their_rest = split(theirs)
     raise Conflict, "theirs changed lines outside the test methods" unless their_rest == base_rest
+    twice = their_blocks.map(&:name).tally.find { |_, count| count > 1 }
+    raise Conflict, "theirs defines #{twice[0]} twice" if twice
     theirs_by_name = their_blocks.to_h { |block| [block.name, block] }
     base_blocks.each do |block|
       same = theirs_by_name[block.name]

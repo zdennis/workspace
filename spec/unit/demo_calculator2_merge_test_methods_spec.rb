@@ -25,8 +25,9 @@ RSpec.describe MergeTestMethods do
   end
 
   it "keeps several added methods in theirs' order" do
+    ours = file(smoke, test_method("test_mine"))
     theirs = file(smoke, test_method("test_a"), test_method("test_b"))
-    expect(described_class.merge(ancestor, ancestor, theirs)).to eq(theirs)
+    expect(described_class.merge(ancestor, ours, theirs)).to eq(file(smoke, test_method("test_mine"), test_method("test_a"), test_method("test_b")))
   end
 
   it "returns ours itself when theirs added nothing" do
@@ -46,6 +47,10 @@ RSpec.describe MergeTestMethods do
 
   it "conflicts when theirs changes a method of the ancestor" do
     expect { described_class.merge(ancestor, ancestor, file(test_method("test_smoke", "refute true"))) }.to raise_error(described_class::Conflict, /test_smoke/)
+  end
+
+  it "conflicts when theirs defines the same new name twice" do
+    expect { described_class.merge(ancestor, ancestor, file(smoke, test_method("test_a"), test_method("test_a"))) }.to raise_error(described_class::Conflict, /twice/)
   end
 
   it "conflicts when theirs removes a method of the ancestor" do

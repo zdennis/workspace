@@ -172,7 +172,7 @@ module DemoCalculator2
     # and `.driver` in that repository's local config. Every goal appends test methods to that file, and the driver
     # (`merge_test_methods`) keeps both lanes' added methods whole, where `merge=union` interleaved their `end` lines. The driver is
     # named by the absolute path of this checkout's copy of the script (lane A's, where the merge runs), so it resolves from any directory.
-    # The file and the config are shared by every worktree and are part of no diff. The run record gets `merge_driver` with what was written.
+    # The file and the config are shared by every worktree and are part of no diff. The run record gets `merge_driver` with what was written (the line and the config section), for whoever removes them; nothing in the harness removes them.
     #
     # @param record_path [String, nil] the run.json to record what was written in
     # @return [void]
