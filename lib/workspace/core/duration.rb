@@ -10,6 +10,7 @@ module Workspace
     # @param iso [String] an ISO 8601 time
     # @return [String] its local clock time as HH:MM:SS; the text itself when it is not a time
     def self.clock_time(iso)
+      require "time"
       Time.iso8601(iso.to_s).localtime.strftime("%H:%M:%S")
     rescue ArgumentError
       iso.to_s

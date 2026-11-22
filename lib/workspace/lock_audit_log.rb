@@ -1,5 +1,4 @@
 require "json"
-require "time"
 
 module Workspace
   # Append-only audit log for one lock namespace, written to `locks.jsonl`

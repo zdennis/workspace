@@ -640,10 +640,91 @@ RSpec.describe Workspace::Commands::SessionEvent do
         expect(File.read(log_path)).to include("undeliverable event=permission_request workspace=proj", "socket dir is too deep")
       end
 
-      it "keeps today's failure for another hook when delivery raises a workspace error" do
-        allow(config).to receive(:agent_socket_path).and_raise(Workspace::Error, "socket dir is too deep")
+      describe "a failure before or during delivery" do
+        let(:log_path) { File.join(tmpdir, "failure.log") }
+        let(:delivery_log) { Workspace::DeliveryLog.new(path: log_path) }
 
-        expect { invoke({"hook_event_name" => "Stop"}) }.to raise_error(Workspace::Error)
+        it "exits 0 and logs when the socket path lookup raises" do
+          allow(config).to receive(:agent_socket_path).and_raise(Workspace::Error, "socket dir is too deep")
+
+          expect(invoke({"hook_event_name" => "Stop"}, delivery_log: delivery_log)).to eq(exit_code: 0)
+          expect(File.read(log_path)).to include("undeliverable event=stop workspace=proj pane=%2", "socket dir is too deep")
+        end
+
+        it "exits 0 and logs when delivery raises a non-IO error" do
+          allow(Socket).to receive(:new).and_raise(ArgumentError, "boom")
+
+          expect(invoke({"hook_event_name" => "Stop"}, delivery_log: delivery_log)).to eq(exit_code: 0)
+          expect(File.read(log_path)).to include("undeliverable event=stop workspace=proj", "ArgumentError: boom")
+        end
+
+        it "exits 0 and logs only the class when translate raises" do
+          command = described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate("hook_event_name" => "Stop")), env: env, delivery_log: delivery_log)
+          allow(command).to receive(:translate).and_raise(KeyError, "secret payload text")
+
+          expect(command.call).to eq(exit_code: 0)
+          expect(File.read(log_path)).to include("undeliverable event=stop workspace=proj pane=%2", "(KeyError)")
+          expect(File.read(log_path)).not_to include("secret payload text")
+        end
+
+        it "treats a raising ambiguity check as ambiguous: logs, exits 0, prints no decision, still delivers" do
+          policy_config = instance_double(Workspace::PermissionPolicyConfig)
+          expect(policy_config).not_to receive(:policy)
+          out = StringIO.new
+
+          event = deliver({"hook_event_name" => "PermissionRequest", "tool_name" => "Bash"}, nil, output: out, permission_policy_config: policy_config, session_ambiguous: ->(_s) { raise "ambiguity broke" }, delivery_log: delivery_log)
+
+          expect(event).to include("event" => "permission_request")
+          expect(out.string).to eq("")
+          expect(File.read(log_path)).to include("RuntimeError: ambiguity broke")
+        end
+
+        it "exits 0 with stdout unchanged when the ledger write raises" do
+          ledger = instance_double(Workspace::SessionLedger)
+          allow(ledger).to receive(:record).and_raise(Errno::EACCES)
+          allow(tmux).to receive(:pane_slot).and_return(nil)
+          out = StringIO.new
+
+          expect(invoke({"hook_event_name" => "SessionStart"}, session_ledger: ledger, output: out)).to eq(exit_code: 0)
+          expect(out.string).to eq("")
+        end
+
+        it "exits 0 with stdout unchanged when the binding lookup raises" do
+          bindings = instance_double(Workspace::PaneBindings)
+          allow(bindings).to receive(:binding_for).and_raise(Errno::EACCES)
+          out = StringIO.new
+
+          expect(invoke({"hook_event_name" => "SessionStart"}, pane_bindings: bindings, output: out)).to eq(exit_code: 0)
+          expect(out.string).to eq("")
+        end
+
+        it "exits 0 and prints no decision when the permission policy raises" do
+          policy_config = instance_double(Workspace::PermissionPolicyConfig)
+          allow(policy_config).to receive(:policy).and_raise(Errno::EIO)
+          out = StringIO.new
+
+          expect(invoke({"hook_event_name" => "PermissionRequest", "tool_name" => "Bash"}, permission_policy_config: policy_config, output: out)).to eq(exit_code: 0)
+          expect(out.string).to eq("")
+        end
+
+        it "exits 0 and logs when the workspace lookup raises" do
+          lookup = ->(_session) { raise "lookup broke" }
+
+          expect(invoke({"hook_event_name" => "Stop"}, workspace_for_session: lookup, delivery_log: delivery_log)).to eq(exit_code: 0)
+          expect(File.read(log_path)).to include("undeliverable event=stop workspace=proj pane=%2", "RuntimeError: lookup broke")
+        end
+
+        it "still exits 2 with the deny message when a guard denied and delivery would raise" do
+          allow(config).to receive(:agent_socket_path).and_raise(Workspace::Error, "socket dir is too deep")
+          guard = instance_double(Workspace::LockEnforcer, check: "denied by lock")
+          err = StringIO.new
+
+          result = invoke({"hook_event_name" => "PreToolUse", "tool_name" => "Edit"}, lock_enforcer: guard, error_output: err, delivery_log: delivery_log)
+
+          expect(result).to eq(exit_code: 2)
+          expect(err.string).to eq("denied by lock\n")
+          expect(File.exist?(log_path)).to be(false)
+        end
       end
 
       it "makes no decision and prints nothing for an ambiguous session, but still forwards the request" do

@@ -25,6 +25,7 @@ module Workspace
 
     # A string `id:` in a definition's text, if it parses far enough to have one.
     def self.claimed_id(text)
+      require "yaml"
       value = YAML.safe_load(text)&.then { |doc| doc["id"] if doc.is_a?(Hash) }
       value if value.is_a?(String)
     rescue Psych::Exception, ArgumentError

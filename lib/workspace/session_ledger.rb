@@ -1,6 +1,5 @@
 require "json"
 require "fileutils"
-require "time"
 
 module Workspace
   # Append-only history of coding-agent sessions: one JSON line per

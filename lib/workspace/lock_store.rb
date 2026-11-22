@@ -1,6 +1,5 @@
 require "json"
 require "fileutils"
-require "time"
 
 module Workspace
   # Reads and mutates one namespace's `locks.json`, guarded by `flock` so
