@@ -22,6 +22,9 @@ module Workspace
     # Seconds to wait for the daemon when asking whether a pane is idle.
     IDLE_TIMEOUT = 1.0
 
+    # The daemon's row states of an agent in a turn or at a prompt: no line is typed into one, and none is quiet.
+    BUSY_STATES = %w[working waiting].freeze
+
     # Seconds each tmux read of a review window (its pane state, listing, closing) may take, so a wedged tmux server
     # does not hang the sweep, `doctor` or a round's delivery.
     TMUX_READ_TIMEOUT = 5
@@ -314,6 +317,22 @@ module Workspace
     # @return [Boolean] whether the pane has shown a shell for {AGENT_GONE_AFTER} seconds
     def self.agent_gone_row?(row)
       !row.nil? && row["kind"] == "shell" && row["idle_seconds"].to_i >= AGENT_GONE_AFTER
+    end
+
+    # Whether the daemon shows the Claude Code agent in a pane between turns: not in {BUSY_STATES}, no failed turn, and
+    # its hooks showing no turn under way ({#hooked_turn?}). Anything the daemon can't say counts as not quiet: no daemon
+    # or no answer, a pane it does not list, another agent, or a row without hooks.
+    #
+    # @param workspace [String]
+    # @param pane [String] a pane id
+    # @return [Boolean]
+    def quiet?(workspace, pane)
+      return false unless daemon_running?(workspace)
+      row = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
+      return false unless row && row["kind"] == "claude" && !row["turn_failed"]
+      !BUSY_STATES.include?(row["state"]) && !hooked_turn?(row)
+    rescue Workspace::Error
+      false
     end
 
     # @param workspace [String]
@@ -733,7 +752,7 @@ module Workspace
       shown = opened ? named_row(workspace, pane) : row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
       return {"pane_id" => pane, "kind" => "unknown", "state" => "unknown"} if opened && shown.nil?
       return shown if shown && shown["turn_failed"] && shown["kind"] == "shell"
-      return nil unless %w[working waiting].include?(shown && shown["state"])
+      return nil unless BUSY_STATES.include?(shown && shown["state"])
       return nil if opened && shown["state"] == "working" && !hooked_turn?(shown)
       shown
     rescue Workspace::Error

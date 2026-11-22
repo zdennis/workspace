@@ -641,7 +641,8 @@ module Workspace
       @panes.unbind(run["id"])
       # Every window a round of the run left, of any step: the closer finds them by their mark, a step of nil naming
       # them all, so this takes the place of a close of one step's window the same change registered.
-      reviewed = run["steps"].values.any? { |each| each.is_a?(Hash) && each["review_rounds"].to_i.positive? }
+      # A step that only holds a window (a warm one opened ahead of its round, or one a rejected round kept) counts too.
+      reviewed = run["steps"].values.any? { |each| each.is_a?(Hash) && (each["review_rounds"].to_i.positive? || each["review_window"].is_a?(Hash)) }
       # A fan_out sibling's kept failure details (`failed_reason`, read only by its group's join) go with the run too.
       run["steps"].each_value { |each| %w[review_window failed_reason].each { |key| each.delete(key) } if each.is_a?(Hash) }
       ctx.close_review({"workspace" => run["workspace"], "step" => nil, "round" => nil, "pane" => nil}) if ctx && reviewed

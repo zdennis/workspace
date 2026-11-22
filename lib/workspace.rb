@@ -629,11 +629,16 @@ module Workspace
   # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
   # @param main_agent [Workspace::MainAgent, nil] reads a project's main agent kind, for the start preflight's
   #   `subagents` refusal (default: nil, which skips that check)
+  # @param prewarm [Boolean] true has the dispatch open a reviewed step's next round window once its line is typed and
+  #   close the warm windows of steps the run has left, through the round +review_runner+ builds
+  #   ({WorkflowReviewRound#prewarm}, {WorkflowReviewRound#close_warm}; `build_cli`); false opens none (the simulator)
+  # @raise [ArgumentError] when +prewarm+ is true and no +review_runner+ is given
   # @return [Workspace::WorkflowEngine]
   def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
     env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, ask_for: nil, review_round: nil, review_tally: nil, review_closer: nil, review_revision: nil,
     review_runner: nil, round_rerun: nil, review_summary: nil, round_holder: nil, holder_alive: nil, interrupter: ->(*) { raise Workspace::Error, "cannot interrupt: no key presser was given" }, clock: -> { Time.now },
-    prompt_writer: File.method(:write), downtime: nil, exec_program: WorkflowExecProgram, transcript: TranscriptSummary.new, main_agent: nil)
+    prompt_writer: File.method(:write), downtime: nil, exec_program: WorkflowExecProgram, transcript: TranscriptSummary.new, main_agent: nil, prewarm: false)
+    raise ArgumentError, "prewarm: true needs a review_runner: to open its windows through" if prewarm && !review_runner
     attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
     require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
       commands_config: commands_config, checker: checker)
@@ -641,14 +646,14 @@ module Workspace
     # The change types a step's line through Dispatch, which is built after it.
     dispatch = nil
     change = WorkflowRunChange.new(store: store, attempt_record: attempt_record, deliver: ->(run_id, delivery) { dispatch.deliver(run_id, delivery) },
-      alerts: alerts, event_log: event_log)
-    dispatch = WorkflowDispatch.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
-      guard: guard, env_stopper: env_stopper, event_log: event_log, downtime: downtime, clock: clock)
-    if review_runner
-      runner = review_runner.call(change: change, store: store, prompt: prompt)
+      alerts: alerts, event_log: event_log, prewarm: ->(run_id, found) { dispatch.prewarm(run_id, found) })
+    runner = review_runner&.call(change: change, store: store, prompt: prompt)
+    if runner
       review_round ||= runner.method(:call)
       review_closer ||= runner.method(:close)
     end
+    dispatch = WorkflowDispatch.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
+      guard: guard, env_stopper: env_stopper, event_log: event_log, downtime: downtime, clock: clock, prewarm: prewarm ? runner : nil)
     log_tail ||= WorkflowLogTail.new
     rejection = WorkflowRejection.new(change: change, dispatch: dispatch, log_tail: log_tail)
     round_rerun ||= WorkflowRoundRerun.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record,
@@ -1168,6 +1173,7 @@ module Workspace
           revision: workflow_review_revision, prompt: prompt, round_dirs: workflow_review_tally, holder: round_holder.method(:identity), shell: review_shell,
           error_output: error_output)
       end,
+      prewarm: true,
       round_holder: round_holder.method(:identity),
       holder_alive: round_holder.method(:alive?),
       excludes: GitExclude.new(git: git),
