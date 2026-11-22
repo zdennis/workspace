@@ -247,6 +247,8 @@ class MovingScreenTmux
 
   def capture_screen_styled(_target) = @styled
 
+  def capture_screen_scrollback(_target) = @styled && Workspace::Tmux::StyledCapture.new(@styled, 0).freeze
+
   def deliver(_session, _target, text, **)
     @texts << text
     @after_delivery.call(text)

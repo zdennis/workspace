@@ -39,6 +39,11 @@ RSpec.describe Workspace::HandoffWatcher do
 
       def capture_screen_styled(pane_id) = capture_screen(pane_id)
 
+      def capture_screen_scrollback(pane_id)
+        screen = capture_screen(pane_id)
+        screen && Workspace::Tmux::StyledCapture.new(screen, 0).freeze
+      end
+
       def deliver(session, target, text, enter: true)
         on_paste&.call unless enter
         @delivered << [session, target, text, enter]

@@ -700,7 +700,7 @@ module Workspace
     # `state` isn't masked by `done`.
     def screen_refusal(pane, row)
       facts = {kind: row["kind"], state: row["activity_state"], open_tools: Array(row["open_tools"])}
-      @idle_check.refusal(facts, @tmux.capture_screen_styled(pane))
+      @idle_check.refusal(facts, @tmux.capture_screen_scrollback(pane))
     end
 
     # With a Stop to go by, the transcript alone decides: a woken turn that has

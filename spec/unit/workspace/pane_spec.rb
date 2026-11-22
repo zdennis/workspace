@@ -19,7 +19,7 @@ RSpec.describe Workspace::Pane do
 
   it "captures its own screen plain and styled" do
     expect(pane.capture).to eq("plain")
-    expect(pane.capture_styled).to eq("styled")
+    expect(pane.capture_styled.raw).to eq("styled")
   end
 
   it "delivers to its own session and pane, with Enter by default" do
@@ -75,9 +75,13 @@ RSpec.describe Workspace::Pane do
     it "captures with the pane id as the target" do
       allow(Open3).to receive(:capture3).and_return(["screen", "", ok])
       expect(pane.capture).to eq("screen")
-      expect(pane.capture_styled).to eq("screen")
       expect(Open3).to have_received(:capture3).with("tmux", "capture-pane", "-p", "-t", "%5")
-      expect(Open3).to have_received(:capture3).with("tmux", "capture-pane", "-e", "-p", "-t", "%5")
+
+      allow(Open3).to receive(:capture3).and_return(["2\nscreen", "", ok])
+      expect(pane.capture_styled).to eq(Workspace::Tmux::StyledCapture.new("screen", 2))
+      expect(Open3).to have_received(:capture3).with(
+        "tmux", "display-message", "-p", "-t", "%5", "\#{history_size}", ";", "capture-pane", "-e", "-p", "-S", "-5", "-t", "%5"
+      )
     end
 
     it "answers nil for a screen tmux could not read" do

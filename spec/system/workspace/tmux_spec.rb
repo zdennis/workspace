@@ -685,6 +685,42 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#capture_screen_scrollback" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:argv) do
+      ["tmux", "display-message", "-p", "-t", "%23", "\#{history_size}",
+        ";", "capture-pane", "-e", "-p", "-S", "-5", "-t", "%23"]
+    end
+
+    def stub_output(output, success: true)
+      allow(Open3).to receive(:capture3).with(*argv).and_return([output, "", double(success?: success)])
+    end
+
+    [[0, 0], [3, 3], [200, 5]].each do |size, rows|
+      it "counts #{rows} history rows for a history size of #{size}" do
+        stub_output("#{size}\n\e[2mone\e[0m\ntwo\n")
+
+        capture = tmux.capture_screen_scrollback("%23")
+
+        expect(capture.raw).to eq("\e[2mone\e[0m\ntwo\n")
+        expect(capture.history_rows).to eq(rows)
+        expect(capture).to be_frozen
+      end
+    end
+
+    it "returns nil when tmux fails" do
+      stub_output("3\nscreen\n", success: false)
+
+      expect(tmux.capture_screen_scrollback("%23")).to be_nil
+    end
+
+    it "returns nil when the first line is not an integer" do
+      stub_output("garbled\nscreen\n")
+
+      expect(tmux.capture_screen_scrollback("%23")).to be_nil
+    end
+  end
+
   describe "#send_key" do
     let(:tmux) { described_class.new(config: config) }
 

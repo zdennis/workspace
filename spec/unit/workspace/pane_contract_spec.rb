@@ -5,7 +5,7 @@ require "spec_helper"
 RSpec.shared_examples "a pane" do
   it "captures the plain and the styled screen" do
     expect(pane.capture).to eq("plain")
-    expect(pane.capture_styled).to eq("styled")
+    expect(pane.capture_styled.raw).to eq("styled")
   end
 
   it "takes a delivery and a key" do

@@ -908,11 +908,11 @@ RSpec.describe Workspace::WorkflowPanes do
     before do
       write_transcript(record("assistant", "2026-10-04T12:00:09.000Z"), record("system", "2026-10-04T12:00:11.000Z"))
       allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0) { {"panes" => [row]} }
-      allow(tmux).to receive(:capture_screen_styled).with("%5") { screen.first }
+      allow(tmux).to receive(:capture_screen_scrollback).with("%5") { screen.first }
     end
 
     it "is false when tmux can't be run" do
-      allow(tmux).to receive(:capture_screen_styled).and_raise(Errno::ENOENT)
+      allow(tmux).to receive(:capture_screen_scrollback).and_raise(Errno::ENOENT)
       expect(over?).to be(false)
     end
 
@@ -1071,7 +1071,7 @@ RSpec.describe Workspace::WorkflowPanes do
 
     before do
       allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0) { snapshot }
-      allow(tmux).to receive(:capture_screen_styled).with("%5") { screen.first }
+      allow(tmux).to receive(:capture_screen_scrollback).with("%5") { screen.first }
       allow(tmux).to receive(:deliver).and_return(typed)
     end
 
@@ -1082,6 +1082,24 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(kick).to eq(ok: true)
       expect(tmux).to have_received(:deliver).twice
       expect(sleeps).to eq([])
+    end
+
+    it "types into an idle box whose top rule scrolled into history on a short pane" do
+      rule = "─" * 40
+      raw = [rule, "❯ ", rule, "  [Model] status", ""].join("\n")
+      allow(tmux).to receive(:capture_screen_scrollback).with("%5").and_return(Workspace::Tmux::StyledCapture.new(raw, 1).freeze)
+
+      expect(kick).to eq(ok: true)
+      expect(tmux).to have_received(:deliver).once
+    end
+
+    it "refuses a pane whose only input box sits entirely in history rows, typing nothing" do
+      rule = "─" * 40
+      raw = [rule, "❯ ", rule, "  some output", "  more output", ""].join("\n")
+      allow(tmux).to receive(:capture_screen_scrollback).with("%5").and_return(Workspace::Tmux::StyledCapture.new(raw, 3).freeze)
+
+      expect(kick).to include(ok: false, code: "pane_busy")
+      expect(tmux).not_to have_received(:deliver)
     end
 
     it "refuses a spinner row with its reason, after waiting SCREEN_SETTLE, typing nothing" do
@@ -1156,7 +1174,7 @@ RSpec.describe Workspace::WorkflowPanes do
 
       snapshot["panes"] = []
       expect(kick).to eq(ok: true)
-      expect(tmux).not_to have_received(:capture_screen_styled)
+      expect(tmux).not_to have_received(:capture_screen_scrollback)
     end
 
     it "types as today against a daemon from before this code" do
@@ -1165,7 +1183,7 @@ RSpec.describe Workspace::WorkflowPanes do
       shown.delete("open_tools")
 
       expect(kick).to eq(ok: true)
-      expect(tmux).not_to have_received(:capture_screen_styled)
+      expect(tmux).not_to have_received(:capture_screen_scrollback)
     end
   end
 
