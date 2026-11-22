@@ -244,9 +244,19 @@ module Workspace
         unless name
           session = @tmux.session_name_for_pane(pane_id)
           return ok { "session-event: no session for #{pane_id}, dropped" } unless session
-          name = @workspace_for_session.call(session)
+          begin
+            name = @workspace_for_session.call(session)
+          rescue => e
+            return failed(session, hook, pane_id, e, "workspace lookup")
+          end
           return ok { "session-event: session #{session} is no workspace's, dropped" } unless name
-          ambiguous = hook == "PermissionRequest" && @session_ambiguous.call(session)
+          begin
+            ambiguous = hook == "PermissionRequest" && @session_ambiguous.call(session)
+          rescue => e
+            # Unknown counts as ambiguous: no permission decision is made, and the event is still delivered.
+            ambiguous = true
+            failed(session, hook, pane_id, e, "ambiguity check")
+          end
         end
 
         # Decided before anything else for this event, and before delivery, so the daemon can't delay or change it.
@@ -255,19 +265,14 @@ module Workspace
         record_in_ledger(payload, pane_id, name)
         announce_binding(payload, pane_id)
 
-        event = translate(payload, pane_id, name, decision)
+        begin
+          event = translate(payload, pane_id, name, decision)
+        rescue => e
+          return failed(name, hook, pane_id, e, "translate", message: false)
+        end
         return ok { "session-event: ignoring #{hook}" } unless event
 
-        begin
-          deliver(name, event)
-        rescue => e
-          # A PermissionRequest never fails: with a reply already on stdout an error exit would void it, and without one it would
-          # stop the agent's own dialog from showing. The failure goes to the debug log and, for a resolved workspace, the delivery log.
-          raise unless hook == "PermissionRequest"
-
-          @logger.debug { "session-event: delivery failed on a PermissionRequest (#{e.class}: #{e.message})" }
-          record_undeliverable(name, event, nil, e)
-        end
+        deliver(name, event)
         ok
       end
 
@@ -275,6 +280,15 @@ module Workspace
 
       def ok
         @logger.debug { yield } if block_given?
+        {exit_code: 0}
+      end
+
+      # A step before delivery raised: recorded like an undeliverable event, and the hook still exits 0.
+      # `message: false` keeps the error message out of both logs, for an error that can echo payload text.
+      def failed(workspace, hook, pane_id, error, step, message: true)
+        detail = message ? "#{error.class}: #{error.message}" : error.class.to_s
+        @logger.debug { "session-event: #{step} failed on #{hook} (#{detail})" }
+        record_undeliverable(workspace, {"event" => AGENT_EVENTS[@agent][hook] || hook, "pane_id" => pane_id}, nil, detail)
         {exit_code: 0}
       end
 
@@ -668,7 +682,8 @@ module Workspace
         else
           @logger.debug { "session-event: sent #{event["event"]} for #{event["pane_id"]}; no reply in #{@reply_timeout}s" }
         end
-      rescue SystemCallError, IOError, DeliveryTimeout => e
+      rescue => e
+        # Any failure, not only a dead daemon: a hook never fails the agent's turn (a PermissionRequest's reply is already on stdout).
         @logger.debug { "session-event: could not deliver to #{path} (#{e.class}: #{e.message})" }
         record_undeliverable(workspace, event, path, e)
       ensure
@@ -678,8 +693,9 @@ module Workspace
       # A daemon that is not running is normal, so only a workspace resolved by
       # name is recorded, and only once per workspace and event in a while.
       def record_undeliverable(workspace, event, path, error)
+        detail = error.is_a?(String) ? error : "#{error.class}: #{error.message}"
         @delivery_log&.record(
-          "undeliverable event=#{event["event"]} workspace=#{workspace} pane=#{event["pane_id"]}#{decision_note(event)} socket=#{path} (#{error.class}: #{error.message})",
+          "undeliverable event=#{event["event"]} workspace=#{workspace} pane=#{event["pane_id"]}#{decision_note(event)} socket=#{path} (#{detail})",
           key: "#{workspace}/#{event["event"]}"
         )
       end

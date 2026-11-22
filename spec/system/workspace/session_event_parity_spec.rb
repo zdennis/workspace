@@ -299,14 +299,14 @@ RSpec.describe "workspace session-event old path vs fast path" do
     expect(new[:elapsed] - baseline_new[:elapsed]).to be < 2.0
   end
 
-  it "matches for a socket path that cannot fit (a too-deep HOME), exiting 1 on both" do
+  it "matches for a socket path that cannot fit (a too-deep HOME), exiting 0 on both" do
     @home = File.join(@root, "d" * 90)
     row = {daemon: :none, args: %w[--workspace proj], payload: self.class.event("Stop")}
     old, new = run_once(:old, row), run_once(:new, row)
 
     expect(old.except(:elapsed, :route)).to eq(new.except(:elapsed, :route))
     expect(new[:route]).to eq("fast")
-    expect([old[:exit], old[:stderr]]).to eq([1, "Error: socket dir is too deep for an agent file to fit within 100 bytes: #{File.join(@home, ".local/workspace/run")}\n".b])
+    expect([old[:exit], old[:stderr]]).to eq([0, "".b])
   end
 
   # Q7: the old path's build_cli warns about the bad keys on every call; the fast path reads
