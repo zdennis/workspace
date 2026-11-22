@@ -446,6 +446,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/terminal_text.rb` — The one escaper for text printed to a terminal.
 - `script/hook-timeline` — Times a headless Claude Code session's hooks through logging shims and prints per-hook medians, the PreToolUse-to-PostToolUse gap X and the predicted Read delta.
 - `script/hook-latency` — Prints n, median and p90 of a workspace's tool_started-to-tool_finished delta from its hook event log, or with `--process N` the median wall time of `session-event` run in a throwaway HOME.
+- `script/permission-replay` — Replays logged Bash permission dialogs through `PermissionPolicy` offline, under today's config and an optional `--rules` candidate, to measure what a rule set would auto-allow.
 
 - State tracked in `~/.workspace-state.json`
 - Configs installed to `~/.config/tmuxinator/`

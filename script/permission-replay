@@ -1,0 +1,179 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Replays the Bash permission dialogs recorded in the hook event logs (`permission_requested` lines in
+# ~/.local/state/workspace/.events/<workspace>.jsonl, and rotated `.jsonl.N` files) through
+# Workspace::PermissionPolicy offline, to measure what a rule set would auto-allow. Read-only: it never writes
+# to the event logs or to any config. "today" is the policy the person's real config files give that workspace
+# (the project comes from the workspace name via WorkspaceName.project_of; no bound run is consulted), or "no
+# policy (agent dialog)" when none is set. "candidate" is the policy built from --rules FILE:
+#   {default: ask|allow|deny (optional), rules: [{tool, pattern, action}, ...]}
+# --marks FILE is a YAML list of {workspace, seq, mark: safe|unsafe}; a row marked unsafe that the candidate allows
+# is an "unsafe allowed" row, and the script then exits 1. Exit 2 for bad options or an invalid file.
+#
+#   script/permission-replay [--events-dir DIR] [--rules FILE] [--marks FILE] [--json]
+#   script/permission-replay --file PATH [--rules FILE] [--marks FILE] [--json]
+
+require "json"
+require "optparse"
+require "yaml"
+require_relative "../lib/workspace"
+
+module PermissionReplay
+  NO_POLICY = "no policy (agent dialog)"
+  SKIPPED = "skipped (not Bash)"
+  COLUMNS = %w[at workspace seq mark today candidate reason command].freeze
+
+  def self.default_events_dir
+    File.join(File.expand_path(ENV.fetch("XDG_STATE_HOME", "~/.local/state")), "workspace/.events")
+  end
+
+  def self.event_files(dir)
+    Dir.glob(File.join(dir, "*.jsonl")).sort + Dir.glob(File.join(dir, "*.jsonl.[0-9]*")).sort
+  end
+
+  # @return [Array<Hash>] the `permission_requested` events of the given files, malformed lines skipped
+  def self.read_requests(paths)
+    paths.flat_map do |path|
+      File.foreach(path).filter_map do |line|
+        event = begin
+          JSON.parse(line)
+        rescue JSON::ParserError
+          next
+        end
+        event if event.is_a?(Hash) && event["type"] == "permission_requested"
+      end
+    end
+  end
+
+  # @raise [ArgumentError] when the file is not `{default:, rules:}` with valid rules
+  def self.candidate_policy(path)
+    data = YAML.safe_load_file(path)
+    raise ArgumentError, "#{path}: must be a mapping with rules and optional default" unless data.is_a?(Hash)
+    unknown = data.keys.map(&:to_s) - %w[default rules]
+    raise ArgumentError, "#{path}: unknown key #{unknown.first.inspect}; allowed: default, rules" unless unknown.empty?
+    data = data.transform_keys(&:to_s)
+    default = data["default"]
+    raise ArgumentError, "#{path}: default must be allow, ask or deny" unless default.nil? || %w[allow ask deny].include?(default)
+    rules = Workspace::PermissionRules.parse(data["rules"], label: "rules")
+    Workspace::PermissionPolicy.new(layers: [{source: "candidate", rules: rules, default: default}])
+  rescue Psych::Exception, SystemCallError => e
+    raise ArgumentError, "#{path}: #{e.message}"
+  end
+
+  # @return [Hash{Array => String}] mark by [workspace, seq as string]
+  def self.read_marks(path)
+    data = YAML.safe_load_file(path)
+    raise ArgumentError, "#{path}: must be a list of {workspace, seq, mark}" unless data.is_a?(Array)
+    data.each_with_object({}) do |entry, marks|
+      raise ArgumentError, "#{path}: each entry must be a mapping" unless entry.is_a?(Hash)
+      mark = entry["mark"].to_s
+      raise ArgumentError, "#{path}: mark must be safe or unsafe, got #{mark.inspect}" unless %w[safe unsafe].include?(mark)
+      marks[[entry["workspace"].to_s, entry["seq"].to_s]] = mark
+    end
+  rescue Psych::Exception, SystemCallError => e
+    raise ArgumentError, "#{path}: #{e.message}"
+  end
+
+  # Today's policy per logged workspace, from real config files only: no CLI, no tmux, no bound run.
+  class Today
+    # Answers "bound to no run", so only config layers count.
+    class NoRun
+      def run_id_strict = nil
+    end
+
+    def initialize
+      config = Workspace::Config.new
+      resolver = Workspace::ConfigResolver.new(project_settings: Workspace::ProjectSettings.new(config: config))
+      @builder = Workspace::PermissionPolicyConfig.new(config_resolver: resolver, bound_run: NoRun.new, run_store: nil, logger: Workspace::Logger.new)
+      @policies = {}
+    end
+
+    # @return [Workspace::PermissionPolicy, nil]
+    def policy(workspace)
+      return @policies[workspace] if @policies.key?(workspace)
+      @policies[workspace] = @builder.policy(workspace: workspace, project: Workspace::WorkspaceName.project_of(workspace))
+    end
+  end
+
+  def self.reason(command, pieces, decision)
+    flags = []
+    flags << "substitution" if pieces.substitution?(command)
+    flags << "redirect" if pieces.redirect?(command)
+    flags << "opaque" if pieces.opaque?(command)
+    return flags.join(", ") unless flags.empty?
+    return "no matching rule" if decision && decision[:action] != "allow"
+    decision ? decision[:rule].to_s : ""
+  end
+
+  # The one place a row is built; a later --transcripts source can feed it the same event shape.
+  def self.build_row(event, today:, candidate:, marks:, pieces: Workspace::BashCommandPieces.new)
+    row = {"at" => event["at"], "workspace" => event["workspace"], "seq" => event["seq"], "tool" => event["tool"],
+           "command" => event["input"].to_s, "mark" => marks[[event["workspace"].to_s, event["seq"].to_s]]}
+    unless event["tool"] == "Bash"
+      row.merge!("today" => SKIPPED, "candidate" => (candidate ? SKIPPED : nil), "reason" => "")
+      return row
+    end
+    input = {"command" => event["input"]}
+    today_policy = today.policy(event["workspace"].to_s)
+    today_decision = today_policy&.decide(tool_name: "Bash", tool_input: input, cwd: nil)
+    candidate_decision = candidate&.decide(tool_name: "Bash", tool_input: input, cwd: nil)
+    row.merge!("today" => today_decision ? today_decision[:action] : NO_POLICY,
+      "candidate" => candidate_decision&.fetch(:action),
+      "reason" => reason(event["input"].to_s, pieces, candidate_decision || today_decision))
+    row
+  end
+
+  def self.summarize(rows, with_candidate:)
+    unsafe = with_candidate ? rows.select { |r| r["mark"] == "unsafe" && r["candidate"] == "allow" } : []
+    counts = {"requests" => rows.size, "allowed_today" => rows.count { |r| r["today"] == "allow" },
+              "allowed_candidate" => rows.count { |r| r["candidate"] == "allow" }, "unsafe_allowed" => unsafe.size}
+    [counts, unsafe]
+  end
+
+  def self.format_text(rows, counts, unsafe, with_candidate:)
+    cols = with_candidate ? COLUMNS : COLUMNS - ["candidate"]
+    lines = [cols.join("\t")]
+    rows.each { |r| lines << cols.map { |c| (c == "command") ? r[c][0, 80].tr("\n\t", "  ") : r[c].to_s }.join("\t") }
+    lines << ""
+    lines << "requests: #{counts["requests"]}"
+    lines << "allowed today: #{counts["allowed_today"]}"
+    lines << "allowed candidate: #{counts["allowed_candidate"]}" if with_candidate
+    lines << "unsafe allowed: #{counts["unsafe_allowed"]}"
+    unsafe.each { |r| lines << "  #{r["at"]} #{r["workspace"]} seq=#{r["seq"]} #{r["command"][0, 80].tr("\n\t", "  ")}" }
+    lines.join("\n")
+  end
+
+  def self.main(argv, out: $stdout, err: $stderr)
+    opts = {json: false, events_dir: default_events_dir}
+    parser = OptionParser.new do |o|
+      o.banner = "Usage: permission-replay [--events-dir DIR | --file PATH] [--rules FILE] [--marks FILE] [--json]"
+      o.on("--events-dir DIR", "Directory of hook event logs (default ~/.local/state/workspace/.events)") { |v| opts[:events_dir] = v }
+      o.on("--file PATH", "Read this one event log") { |v| opts[:file] = v }
+      o.on("--rules FILE", "Candidate rules, YAML {default:, rules: [{tool, pattern, action}]}") { |v| opts[:rules] = v }
+      o.on("--marks FILE", "YAML list of {workspace, seq, mark: safe|unsafe}") { |v| opts[:marks] = v }
+      o.on("--json", "Print JSON") { opts[:json] = true }
+    end
+    parser.parse!(argv)
+
+    candidate = opts[:rules] && candidate_policy(opts[:rules])
+    marks = opts[:marks] ? read_marks(opts[:marks]) : {}
+    paths = opts[:file] ? [opts[:file]] : event_files(opts[:events_dir])
+    today = Today.new
+    rows = read_requests(paths).map { |event| build_row(event, today: today, candidate: candidate, marks: marks) }
+    rows.sort_by! { |r| r["at"].to_s }
+    counts, unsafe = summarize(rows, with_candidate: !candidate.nil?)
+
+    if opts[:json]
+      out.puts JSON.generate("requests" => rows, "counts" => counts, "unsafe_allowed" => unsafe)
+    else
+      out.puts format_text(rows, counts, unsafe, with_candidate: !candidate.nil?)
+    end
+    unsafe.empty? ? 0 : 1
+  rescue OptionParser::ParseError, ArgumentError, SystemCallError => e
+    err.puts e.message
+    2
+  end
+end
+
+exit PermissionReplay.main(ARGV) if $PROGRAM_NAME == __FILE__
