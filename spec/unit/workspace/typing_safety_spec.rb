@@ -254,6 +254,49 @@ RSpec.describe Workspace::TypingSafety do
     end
   end
 
+  describe "with a capture that carries scrollback" do
+    let(:capture_class) { Struct.new(:raw, :history_rows) }
+    def capture(rows, history_rows)
+      capture_class.new(rows.join("\n"), history_rows)
+    end
+
+    it "takes text when the rule is one row into scrollback and the box is empty" do
+      screen = capture(["────────────────────", "❯ ", "────────────────────", "  status line"], 1)
+
+      expect(safety.check(facts, screen)).to be_nil
+    end
+
+    it "refuses a prompt that is only in scrollback" do
+      screen = capture(["────────────────────", "❯ ", "Do you want to proceed?", "  1. Yes", "  2. No"], 2)
+
+      expect(safety.check(facts, screen)).to include(reason: "no_input_prompt")
+    end
+
+    it "refuses a draft in the box when the rule is in scrollback" do
+      screen = capture(["────────────────────", "❯ half a thought", "────────────────────", "  status line"], 1)
+
+      expect(safety.check(facts, screen)).to include(reason: "input_not_empty")
+    end
+
+    it "still reads a faint suggestion as empty when the rule is in scrollback" do
+      screen = capture(["\e[38;5;244m────────────────────\e[39m", "\e[39m❯ \e[2mrun the tests\e[0m", "\e[38;5;244m────────────────────\e[39m", "  status line"], 1)
+
+      expect(safety.check(facts, screen)).to be_nil
+    end
+
+    it "goes by the last prompt, also when it is the visible one" do
+      screen = capture(["────────", "❯ old text in scrollback", "────────", "❯ ", "────────", "  status"], 3)
+
+      expect(safety.check(facts, screen)).to be_nil
+    end
+
+    it "accepts a StyledScreen built with history rows" do
+      screen = Workspace::StyledScreen.new("────────\n❯ \n────────\n", history_rows: 1)
+
+      expect(safety.check(facts, screen)).to be_nil
+    end
+  end
+
   describe "with exact:" do
     let(:text) { "An API error stopped your last turn. Continue where you left off." }
 
