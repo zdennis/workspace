@@ -43,9 +43,11 @@ module DemoCalculator2
     # @param poll [Numeric] the longest seconds one wait lasts
     # @param timeout [Numeric] seconds `--wait` may run in all
     # @param held_limit [Numeric] seconds an item may stay held
+    # @param idle_wait [Numeric] the longest seconds lane B may take to show an idle agent pane before the run is refused
+    # @param idle_poll [Numeric] seconds between snapshots while waiting for lane B to go idle
     def initialize(root:, workspace:, lane_b: nil, workflow: WORKFLOW_ID, name: nil, goals: GOALS, stub_ref: "main", base: nil, out_dir: nil,
       dry_run: false, wait: false, out: $stdout, err: $stderr, clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) },
-      waiter: nil, poll: 5, timeout: 14_400, held_limit: 1200,
+      waiter: nil, poll: 5, timeout: 14_400, held_limit: 1200, idle_wait: 300, idle_poll: 5,
       exec: ->(argv, chdir:) {
         out, status = Open3.capture2(*argv, chdir: chdir)
         [out, status.success?]
@@ -69,6 +71,8 @@ module DemoCalculator2
       @poll = poll
       @timeout = timeout
       @held_limit = held_limit
+      @idle_wait = idle_wait
+      @idle_poll = idle_poll
       @exec = exec
     end
 
@@ -283,6 +287,26 @@ module DemoCalculator2
       format("%dm%02ds", whole / 60, whole % 60)
     end
 
+    # Lane B must be running, with an idle agent pane, a clean checkout reachable from the stub ref and an empty,
+    # disabled queue; the queue is emptied and disabled here.
+    #
+    # @return [String, nil] lane B's checkout path; nil under dry_run
+    def prepare_lane_b
+      if @dry_run
+        say "would check that lane B (#{@lane_b}) is running, has an idle agent pane and a clean checkout on #{@stub_ref}, then empty and disable its queue"
+        return nil
+      end
+      member = wait_for_idle_lane_b
+      path = member["path"].to_s
+      raise DemoCalculator::Refused, "lane B's checkout is not a directory: #{path}" unless File.directory?(path)
+      status, = git(path, "status", "--porcelain", *DemoCalculator.out_dir_exclude(path, @out_dir && File.expand_path(@out_dir, @root)))
+      raise DemoCalculator::Refused, "lane B's checkout has uncommitted changes" unless status.to_s.strip.empty?
+      _, on_stub = git(path, "merge-base", "--is-ancestor", "HEAD", @stub_ref)
+      raise DemoCalculator::Refused, "lane B's HEAD is not on #{@stub_ref}: it must start from main, not a run branch" unless on_stub
+      clear_lane_b_queue
+      path
+    end
+
     private
 
     def say(line) = @out.puts(line)
@@ -323,29 +347,24 @@ module DemoCalculator2
       File.write(@record_path, JSON.pretty_generate(record) + "\n")
     end
 
-    # Lane B must be running, with an idle agent pane, a clean checkout reachable from the stub ref and an empty,
-    # disabled queue; the queue is emptied and disabled here.
-    #
-    # @return [String, nil] lane B's checkout path; nil under dry_run
-    def prepare_lane_b
-      if @dry_run
-        say "would check that lane B (#{@lane_b}) is running, has an idle agent pane and a clean checkout on #{@stub_ref}, then empty and disable its queue"
-        return nil
+    # Lane B's snapshot member once it is running with an idle agent pane. Only a missing idle pane is waited on, every
+    # `idle_poll` seconds up to `idle_wait`; any other problem refuses at once.
+    def wait_for_idle_lane_b
+      deadline = nil
+      loop do
+        doc = workspace_json("snapshot", "--json", "--name", @lane_b)
+        member = (doc["projects"] || []).flat_map { |project| project["members"] || [] }.find { |each| same_workspace?(each["workspace"], @lane_b) }
+        raise DemoCalculator::Refused, "no workspace named #{@lane_b} (lane B): start it first" unless member
+        raise DemoCalculator::Refused, "lane B (#{@lane_b}) is not running" unless member["running"]
+        return member if Array(member["panes"]).any? { |pane| pane["kind"] == "claude" && %w[idle done].include?(pane["state"]) }
+        now = @clock.call
+        unless deadline
+          deadline = now + @idle_wait
+          say "waiting up to #{@idle_wait}s for lane B (#{@lane_b}) to have an idle Claude Code pane"
+        end
+        raise DemoCalculator::Refused, "lane B (#{@lane_b}) has no idle Claude Code pane" if now + @idle_poll > deadline
+        @sleeper.call(@idle_poll)
       end
-      doc = workspace_json("snapshot", "--json", "--name", @lane_b)
-      member = (doc["projects"] || []).flat_map { |project| project["members"] || [] }.find { |each| same_workspace?(each["workspace"], @lane_b) }
-      raise DemoCalculator::Refused, "no workspace named #{@lane_b} (lane B): start it first" unless member
-      raise DemoCalculator::Refused, "lane B (#{@lane_b}) is not running" unless member["running"]
-      idle = Array(member["panes"]).any? { |pane| pane["kind"] == "claude" && %w[idle done].include?(pane["state"]) }
-      raise DemoCalculator::Refused, "lane B (#{@lane_b}) has no idle Claude Code pane" unless idle
-      path = member["path"].to_s
-      raise DemoCalculator::Refused, "lane B's checkout is not a directory: #{path}" unless File.directory?(path)
-      status, = git(path, "status", "--porcelain", *DemoCalculator.out_dir_exclude(path, @out_dir && File.expand_path(@out_dir, @root)))
-      raise DemoCalculator::Refused, "lane B's checkout has uncommitted changes" unless status.to_s.strip.empty?
-      _, on_stub = git(path, "merge-base", "--is-ancestor", "HEAD", @stub_ref)
-      raise DemoCalculator::Refused, "lane B's HEAD is not on #{@stub_ref}: it must start from main, not a run branch" unless on_stub
-      clear_lane_b_queue
-      path
     end
 
     # Whether a workspace name the CLI reports is the one the person passed: the same name, or a worktree workspace whose

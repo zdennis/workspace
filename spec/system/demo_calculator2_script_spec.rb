@@ -268,9 +268,13 @@ RSpec.describe "script/demo-calculator2" do
       git(main_dir, "worktree", "add", "-q", "-b", "lane-b", lane_b_dir, "main")
       File.write(snapshot, JSON.generate("projects" => [{"members" => [{"workspace" => "workspace.worktree-ws-b", "running" => running, "path" => lane_b_dir, "panes" => [pane]}]}]))
       ENV["WORKSPACE_BIN"] = fake_workspace
+      ENV["DEMO_LANE_B_IDLE_WAIT"] = "0"
     end
 
-    after { ENV.delete("WORKSPACE_BIN") }
+    after do
+      ENV.delete("WORKSPACE_BIN")
+      ENV.delete("DEMO_LANE_B_IDLE_WAIT")
+    end
 
     it "prints a dry run with the group coverage check, the sources entry, the merge driver line and the fork, and changes nothing" do
       expect(main(*lane_args, "--goals", "01,06", "--dry-run")).to eq(0), err.string

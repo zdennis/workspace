@@ -86,6 +86,69 @@ RSpec.describe DemoCalculator2::Lanes do
     ids.each { |id| history[lane] << {"id" => id, "outcome" => outcome, "result" => {"run_id" => "run-#{id}"}} }
   end
 
+  describe "#prepare_lane_b: the idle pane wait" do
+    let(:lane_dir) { Dir.mktmpdir }
+    let(:no_idle) { {"kind" => "claude", "state" => "working"} }
+    let(:idle) { {"kind" => "claude", "state" => "idle"} }
+
+    def snapshot(panes, running: true)
+      JSON.generate("projects" => [{"members" => [{"workspace" => "ws-b", "running" => running, "path" => lane_dir, "panes" => panes}]}])
+    end
+
+    def script_snapshots(*docs)
+      queue = docs.dup
+      on("ws-bin", "snapshot") { [(queue.size > 1) ? queue.shift : queue.first, true] }
+    end
+
+    def script_ready_checkout(dirty: false, on_stub: true)
+      on("git", "status") { [dirty ? " M a.rb\n" : "", true] }
+      on("git", "merge-base", "--is-ancestor", "HEAD") { ["", on_stub] }
+      on("ws-bin", "work-queue") { ["", true] }
+      on("ws-bin", "work-queue", "list") { [JSON.generate("queues" => [{"state" => "off", "items" => []}]), true] }
+    end
+
+    it "takes the idle pane that shows up on the second snapshot, sleeping one poll between" do
+      script_snapshots(snapshot([no_idle]), snapshot([idle]))
+      script_ready_checkout
+      expect(lanes.prepare_lane_b).to eq(lane_dir)
+      expect(slept).to eq([5])
+      expect(out.string).to include("waiting up to 300s")
+    end
+
+    it "refuses with the usual message when no pane is idle at the cap" do
+      script_snapshots(snapshot([no_idle]))
+      expect { lanes.prepare_lane_b }.to raise_error(DemoCalculator::Refused, "lane B (ws-b) has no idle Claude Code pane")
+      expect(slept.size).to be_between(25, 60)
+      expect(slept.uniq).to eq([5])
+    end
+
+    it "refuses at once, without sleeping, when lane B is not running" do
+      script_snapshots(snapshot([no_idle], running: false))
+      expect { lanes.prepare_lane_b }.to raise_error(DemoCalculator::Refused, /is not running/)
+      expect(slept).to be_empty
+    end
+
+    it "refuses at once, without sleeping, when the checkout is dirty" do
+      script_snapshots(snapshot([idle]))
+      script_ready_checkout(dirty: true)
+      expect { lanes.prepare_lane_b }.to raise_error(DemoCalculator::Refused, /uncommitted changes/)
+      expect(slept).to be_empty
+    end
+
+    it "refuses at once, without sleeping, when HEAD is off the stub ref" do
+      script_snapshots(snapshot([idle]))
+      script_ready_checkout(on_stub: false)
+      expect { lanes.prepare_lane_b }.to raise_error(DemoCalculator::Refused, /not on main/)
+      expect(slept).to be_empty
+    end
+
+    it "refuses at once, without sleeping, when the workspace is missing" do
+      script_snapshots(JSON.generate("projects" => []))
+      expect { lanes.prepare_lane_b }.to raise_error(DemoCalculator::Refused, /no workspace named ws-b/)
+      expect(slept).to be_empty
+    end
+  end
+
   describe "#fork_check!" do
     def script_fork(head: sha, ref: base, checkout: true, ancestor: true, ref_found: true)
       on("git", "checkout", "-B", branch, sha) { ["", checkout] }
