@@ -21,6 +21,8 @@ module DemoCalculator2
     ATTRIBUTES_LINE = "#{DEMO_DIR}/test/calc_test.rb merge=union".freeze
     # Queue outcomes that count as a goal delivered.
     SUCCESS = %w[succeeded completed].freeze
+    # What joins a project name to a worktree suffix in a workspace name (Workspace::WorkspaceName::SEPARATOR).
+    WORKTREE_SEPARATOR = ".worktree-"
     DRIVER_LINE = "LOOP DONE".freeze
 
     # @param root [String] lane A's checkout
@@ -250,7 +252,7 @@ module DemoCalculator2
         return nil
       end
       doc = workspace_json("snapshot", "--json", "--name", @lane_b)
-      member = (doc["projects"] || []).flat_map { |project| project["members"] || [] }.find { |each| each["workspace"] == @lane_b }
+      member = (doc["projects"] || []).flat_map { |project| project["members"] || [] }.find { |each| same_workspace?(each["workspace"], @lane_b) }
       raise DemoCalculator::Refused, "no workspace named #{@lane_b} (lane B): start it first" unless member
       raise DemoCalculator::Refused, "lane B (#{@lane_b}) is not running" unless member["running"]
       idle = Array(member["panes"]).any? { |pane| pane["kind"] == "claude" && %w[idle done].include?(pane["state"]) }
@@ -263,6 +265,14 @@ module DemoCalculator2
       raise DemoCalculator::Refused, "lane B's HEAD is not on #{@stub_ref}: it must start from main, not a run branch" unless on_stub
       clear_lane_b_queue
       path
+    end
+
+    # Whether a workspace name the CLI reports is the one the person passed: the same name, or a worktree workspace whose
+    # name after ".worktree-" is it, as WorkspaceName#for_input settles a short name; case is ignored.
+    def same_workspace?(reported, given)
+      return false if reported.nil? || given.nil?
+      suffix = reported.split(WORKTREE_SEPARATOR, 2)[1]
+      reported.casecmp?(given) || (!suffix.nil? && suffix.casecmp?(given))
     end
 
     def clear_lane_b_queue

@@ -266,7 +266,7 @@ RSpec.describe "script/demo-calculator2" do
 
     before do
       git(main_dir, "worktree", "add", "-q", "-b", "lane-b", lane_b_dir, "main")
-      File.write(snapshot, JSON.generate("projects" => [{"members" => [{"workspace" => "ws-b", "running" => running, "path" => lane_b_dir, "panes" => [pane]}]}]))
+      File.write(snapshot, JSON.generate("projects" => [{"members" => [{"workspace" => "workspace.worktree-ws-b", "running" => running, "path" => lane_b_dir, "panes" => [pane]}]}]))
       ENV["WORKSPACE_BIN"] = fake_workspace
     end
 
@@ -313,6 +313,11 @@ RSpec.describe "script/demo-calculator2" do
       expect(calls.grep(/\Aconfig set workflows.sources /).first).to end_with("/demo/calculator2/workflows")
     end
 
+    it "finds lane B by its full project-prefixed name as well as by its short name" do
+      expect(main(*lane_args.map { |each| (each == "ws-b") ? "workspace.worktree-ws-b" : each })).to eq(0), err.string
+      expect(calls).to include("work-queue disable --name workspace.worktree-ws-b")
+    end
+
     context "when lane B is not ready" do
       def refused_before_anything_changes(message)
         expect(main(*lane_args)).to eq(1)
@@ -332,6 +337,11 @@ RSpec.describe "script/demo-calculator2" do
         let(:running) { false }
 
         it("refuses") { refused_before_anything_changes("is not running") }
+      end
+
+      it "refuses a name that only ends the same way as the reported workspace" do
+        expect(main(*lane_args.map { |each| (each == "ws-b") ? "s-b" : each })).to eq(1)
+        expect(err.string).to include("no workspace named s-b")
       end
 
       it "refuses a checkout with uncommitted changes" do
