@@ -308,7 +308,7 @@ module DemoCalculator2
       status, = git(path, "status", "--porcelain", *DemoCalculator.out_dir_exclude(path, @out_dir && File.expand_path(@out_dir, @root)))
       raise DemoCalculator::Refused, "lane B's checkout has uncommitted changes" unless status.to_s.strip.empty?
       _, on_stub = git(path, "merge-base", "--is-ancestor", "HEAD", @stub_ref)
-      raise DemoCalculator::Refused, "lane B's HEAD is not on #{@stub_ref}: it must start from main, not a run branch" unless on_stub
+      raise DemoCalculator::Refused, "lane B's HEAD is not on #{@stub_ref}: it must start from #{@stub_ref}, not a run branch" unless on_stub
       clear_lane_b_queue
       path
     end

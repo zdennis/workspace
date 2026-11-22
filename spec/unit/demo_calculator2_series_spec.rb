@@ -335,6 +335,15 @@ RSpec.describe DemoCalculator2::Series do
       expect(out.string).to include("preflight ok", "would add git-config:merge.calc-demo-tests.driver", "exclude:/runs/s1/")
     end
 
+    context "with another base" do
+      let(:base) { "feature" }
+
+      it "shows the base as the run's --stub-ref in step 6" do
+        expect(dry_series.call).to eq(0)
+        expect(out.string).to match(/^  6\. run .* --lane-b calc2-demo-s1-b .* --stub-ref feature$/)
+      end
+    end
+
     it "prints steps 2 to 9 on a dry run, with the names and paths a real series would use" do
       expect(dry_series.call).to eq(0)
       text = out.string
@@ -695,6 +704,22 @@ RSpec.describe DemoCalculator2::Series do
         expect(run[:log]).to eq("/wt/a/runs/s1/driver.log")
         expect(run[:argv]).to eq(["/wt/a/script/demo-calculator2", "run", "--lanes", "--lane-b", lane_b, "--id", "s1", "--wait", "--out", "runs/s1", "--workflow", "deliver-goal-fast"])
         expect(files["/wt/a/runs/s1/driver.log"]).to include("LOOP DONE")
+      end
+
+      it "leaves --stub-ref out for base main, the run's own default" do
+        full.call
+        expect(runs.first[:argv]).not_to include("--stub-ref")
+      end
+
+      context "with another base" do
+        let(:base) { "feature" }
+
+        before { exec.on(%w[git rev-parse feature], "aaa\n") }
+
+        it "passes the base as the run's --stub-ref, so lane B may start from it" do
+          expect(full.call).to eq(0)
+          expect(runs.first[:argv].last(2)).to eq(%w[--stub-ref feature])
+        end
       end
 
       it "leaves --workflow out for the script's own default" do

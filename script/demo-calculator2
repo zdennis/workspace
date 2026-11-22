@@ -120,7 +120,7 @@ module DemoCalculator2
         "  run    on a new calc-demo/<stamp> branch: point refs/demo-calc2/acceptance-base at the run's base commit, empty the queue,\n" \
         "         drop the acceptance tests and README, install the workflow, set commands.test and commands.lint,\n" \
         "         queue the seven goals, start the first and write run.json; with --wait, watch the queue until it stops (exit 0 drained, 3 stopped)\n" \
-        "         with --lanes, goals 01-05 run here (lane A) and 06, 07 in the --lane-b workspace, which must be running and idle on main;\n" \
+        "         with --lanes, goals 01-05 run here (lane A) and 06, 07 in the --lane-b workspace, which must be running and idle on the --stub-ref (main by default);\n" \
         "         --wait forks lane B from the head goal 03 ends on, waits for both queues, merges lane B here and ends with one `LOOP DONE: ...` line\n" \
         "         (`wall=... integration=clean|integrate first_pass=... items=N/7` and exit 0, or `stopped reason=timeout|paused|disabled|held|fork_check|integrate_failed|error` and exit 3;\n" \
         "         a refusal before the queues start prints no LOOP DONE and exits 1)\n" \
@@ -137,7 +137,7 @@ module DemoCalculator2
         options[:stub_ref] = v
       }
       o.on("--lanes", "run: two lanes, A (goals 01-05, this workspace) and B (06, 07, the --lane-b workspace)") { options[:lanes] = true }
-      o.on("--lane-b WORKSPACE", "run --lanes: lane B's workspace, running and idle on main") { |v| options[:lane_b] = v }
+      o.on("--lane-b WORKSPACE", "run --lanes: lane B's workspace, running and idle on the --stub-ref (default main)") { |v| options[:lane_b] = v }
       o.on("--workflow ID", "run: the workflow each goal runs as (#{GOAL_WORKFLOW_IDS.join(", ")}; default #{WORKFLOW_ID})") { |v|
         raise OptionParser::InvalidArgument, "needs one of #{GOAL_WORKFLOW_IDS.join(", ")}, not #{v}" unless GOAL_WORKFLOW_IDS.include?(v)
         options[:workflow] = v

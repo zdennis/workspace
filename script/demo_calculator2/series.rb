@@ -4,6 +4,7 @@ require "json"
 require "open3"
 require "optparse"
 
+require_relative "../demo_calculator/cost"
 require_relative "../demo_calculator/demo"
 require_relative "config"
 require_relative "series_registry"
@@ -647,6 +648,7 @@ module DemoCalculator2
       lane_a, lane_b = @lanes
       argv = [File.join(lane_a[:path], "script", "demo-calculator2"), "run", "--lanes", "--lane-b", lane_b[:workspace], "--id", id, "--wait", "--out", File.join("runs", id)]
       argv += ["--workflow", @options.workflow] unless @options.workflow == WORKFLOW_ID
+      argv += ["--stub-ref", @options.base] unless @options.base == "main"
       log = File.join(lane_a[:path], "runs", id, "driver.log")
       status = @run_logged.call(argv, chdir: lane_a[:path], log: log)
       done = @read_file.call(log).to_s.lines.reverse.find { |line| line.include?(LOOP_DONE) }
@@ -876,6 +878,7 @@ module DemoCalculator2
       end
       argv = ["<lane A path>/script/demo-calculator2", "run", "--lanes", "--lane-b", b, "--id", id, "--wait", "--out", File.join("runs", id)]
       argv += ["--workflow", o.workflow] unless o.workflow == WORKFLOW_ID
+      argv += ["--stub-ref", o.base] unless o.base == "main"
       @out.puts "  6. run #{argv.join(" ")}"
       @out.puts "     in <lane A path>, output appended to <lane A path>/runs/#{id}/driver.log"
       @out.puts "  7. save evidence to <lane A path>/runs/#{id}: eval.txt, work-queue-history-a.json, work-queue-history-b.json, " \
