@@ -96,9 +96,10 @@ module DemoCalculator2
       config = DemoCalculator2.lane_config(:a, workflow_id: @workflow, stub_ref: @stub_ref, goals: @goals, extras: extras)
       demo = DemoCalculator::Demo.new(root: @root, workspace: @workspace, name: @name, dry_run: @dry_run, out: @out, err: @err, base: @base,
         out_dir: @out_dir, clock: -> { started }, config: config)
-      record = demo.run
-      write_attributes(demo.record_path)
-      write_out_exclude(demo.record_path)
+      record = demo.run(before_start: -> {
+        write_attributes(demo.record_path)
+        write_out_exclude(demo.record_path)
+      })
       if @dry_run
         say "would wait for lane A's #{fork_goal}, then in lane B: git checkout -B #{branch_b} <#{fork_goal}'s final head>, queue #{b_goals.join(", ")} and enable its queue"
         say "would then merge #{branch_b} in lane A and run the tests, lint and the plain acceptance runner on 07-repl (groups 1..7)"

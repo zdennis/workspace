@@ -576,4 +576,51 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(File.exist?(File.join(dir, "info", "attributes"))).to be(false)
     end
   end
+
+  describe "#run: info files before the queue starts" do
+    let(:dir) { File.join(tmp, "common") }
+    let(:driver_key) { "merge.calc-demo-tests.driver" }
+    let(:live) { {} }
+    let(:record_path) { File.join(tmp, "runs", "w01", "run.json").tap { |path| FileUtils.mkdir_p(File.dirname(path)) } }
+    let(:at_enable) { {} }
+    let(:demo) do
+      instance_double(DemoCalculator::Demo, record_path: record_path).tap do |fake|
+        allow(fake).to receive(:run) do |before_start: nil|
+          before_start&.call
+          at_enable["exclude"] = File.exist?(File.join(dir, "info", "exclude")) && File.read(File.join(dir, "info", "exclude"))
+          calls << ["ws-bin", "work-queue", "enable", "--name", "ws"]
+          record
+        end
+      end
+    end
+
+    before do
+      FileUtils.mkdir_p(File.join(tmp, "demo", "calculator2"))
+      allow(DemoCalculator::Demo).to receive(:new).and_return(demo)
+      on("git", "rev-parse", "--git-common-dir") { ["#{dir}\n", true] }
+      on("git", "config", "--local", "--get") { |argv| live.key?(argv.last) ? ["#{live[argv.last]}\n", true] : ["", false] }
+      on("git", "config", "--local", /\Amerge/) { ["", true] }
+      on("ws-bin", "workflow", "status") { ["", true] }
+      on("ws-bin", "config", "get") { ["", true] }
+      allow(lanes).to receive(:prepare_lane_b).and_return(tmp)
+    end
+
+    it "writes info/attributes, the driver config and the exclude before work-queue enable" do
+      lanes.run
+      enable = calls.index { |argv| argv[1, 2] == %w[work-queue enable] }
+      driver = calls.index { |argv| argv[0, 3] == %w[git config --local] && argv[3] == driver_key }
+      expect(enable).not_to be_nil
+      expect(driver).to be < enable
+      expect(File.read(File.join(dir, "info", "attributes"))).to include("merge=calc-demo-tests")
+      expect(at_enable["exclude"]).to include("/runs/w01/")
+    end
+
+    it "runs no work-queue enable when a foreign-live driver refuses" do
+      other = File.join(tmp, "other")
+      FileUtils.mkdir_p(other)
+      live[driver_key] = "ruby #{Shellwords.escape(other)}/script/demo_calculator2/merge_test_methods %O %A %B"
+      expect { lanes.run }.to raise_error(DemoCalculator::Refused, /git-config:merge.calc-demo-tests.driver/)
+      expect(calls.select { |argv| argv[1, 2] == %w[work-queue enable] }).to be_empty
+    end
+  end
 end

@@ -121,8 +121,9 @@ module DemoCalculator
     # Moves to a fresh calc-demo/<stamp> branch, empties the queue, drops the acceptance tests and resets the stub
     # there, installs the workflows, queues all seven, runs the first pass and writes the run record.
     #
+    # @param before_start [#call, nil] called with no arguments after the record is written and before the queue is enabled
     # @return [Hash, nil] the record; nil under `dry_run`
-    def run
+    def run(before_start: nil)
       guard!
       stamp = @clock.call.utc.strftime("%Y%m%dT%H%M%SZ")
       branch = "#{RUN_BRANCH_PREFIX}#{stamp}"
@@ -140,6 +141,7 @@ module DemoCalculator
         configure
         items = queue_items
         record = write_record(stamp, branch, base_sha, workspace_sha, items, acceptance_sha, removal_sha)
+        before_start&.call
         self.class.starting(name_args: name_args).each { |argv| workspace(*argv) }
       rescue Refused
         @err.puts "#{@config.program}: run stopped after switching to #{branch}; `git switch -` returns to the previous branch (#{branch} is left partial)" unless @dry_run
