@@ -412,6 +412,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/timed_process.rb` — Runs one command with a time limit and no prompt.
 - `lib/workspace/tty_processes.rb` — Lists the command names of the processes on one `/dev/ttysN` terminal, through `ps`.
 - `lib/workspace/gateway_window_match.rb` — The strict rule for whether an iTerm window is a leftover tmux -CC gateway window, from its screen, launch commands and tty commands.
+- `lib/workspace/gateway_window_closer.rb` — After a stop kills its tmux sessions, closes each target's iTerm window, by recorded uid or by a detached gateway window match, and warns instead of failing.
 - `lib/workspace/commands/pull_request.rb` — `pr create`: finds or creates the branch's pull request.
 - `lib/workspace/workspace_checkout.rb` — Resolves the workspace, checkout path and branch a command works on.
 - `lib/workspace/commands/rebase.rb` — `rebase --onto local|update|remote`.
