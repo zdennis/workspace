@@ -45,9 +45,10 @@ module DemoCalculator2
     # @param held_limit [Numeric] seconds an item may stay held
     # @param idle_wait [Numeric] the longest seconds lane B may take to show an idle agent pane before the run is refused
     # @param idle_poll [Numeric] seconds between snapshots while waiting for lane B to go idle
+    # @param id [String, nil] a run id: the run branches end in `-<id>` (lane B `-<id>-b`) and the acceptance ref is per id
     def initialize(root:, workspace:, lane_b: nil, workflow: WORKFLOW_ID, name: nil, goals: GOALS, stub_ref: "main", base: nil, out_dir: nil,
       dry_run: false, wait: false, out: $stdout, err: $stderr, clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) },
-      waiter: nil, poll: 5, timeout: 14_400, held_limit: 1200, idle_wait: 300, idle_poll: 5,
+      waiter: nil, poll: 5, timeout: 14_400, held_limit: 1200, idle_wait: 300, idle_poll: 5, id: nil,
       exec: ->(argv, chdir:) {
         out, status = Open3.capture2(*argv, chdir: chdir)
         [out, status.success?]
@@ -73,6 +74,7 @@ module DemoCalculator2
       @held_limit = held_limit
       @idle_wait = idle_wait
       @idle_poll = idle_poll
+      @id = id
       @exec = exec
     end
 
@@ -89,14 +91,14 @@ module DemoCalculator2
       say_coverage(a_goals, b_goals)
       started = @clock.call
       stamp = started.utc.strftime("%Y%m%dT%H%M%SZ")
-      branch_b = "#{DemoCalculator::RUN_BRANCH_PREFIX}#{stamp}-b"
+      branch_b = "#{DemoCalculator::RUN_BRANCH_PREFIX}#{stamp}#{"-#{@id}" if @id}-b"
       path_b = prepare_lane_b
       items_b = stage_lane_b(b_goals)
       extras = {"lanes" => {"workflow" => @workflow, "started_at" => started.utc.iso8601, "fork_after" => fork_goal,
                             "a" => {"workspace" => @name, "goals" => a_goals}, "b" => {"workspace" => @lane_b, "path" => path_b, "branch" => branch_b, "goals" => b_goals, "items" => items_b}}}
-      config = DemoCalculator2.lane_config(:a, workflow_id: @workflow, stub_ref: @stub_ref, goals: @goals, extras: extras)
+      config = DemoCalculator2.lane_config(:a, workflow_id: @workflow, stub_ref: @stub_ref, goals: @goals, extras: extras, id: @id)
       demo = DemoCalculator::Demo.new(root: @root, workspace: @workspace, name: @name, dry_run: @dry_run, out: @out, err: @err, base: @base,
-        out_dir: @out_dir, clock: -> { started }, config: config)
+        out_dir: @out_dir, clock: -> { started }, config: config, id: @id)
       record = demo.run(before_start: -> {
         write_attributes(demo.record_path)
         write_out_exclude(demo.record_path)
@@ -164,19 +166,20 @@ module DemoCalculator2
     # @param lane_b_path [String] lane B's checkout
     # @param branch [String] the branch to create there
     # @param sha [String] the full sha lane A's fork goal ended on
-    # @param acceptance_base [String] the sha lane A's run recorded for refs/demo-calc2/acceptance-base
+    # @param acceptance_base [String] the sha lane A's run recorded for the acceptance ref
+    # @param ref [String] the acceptance ref the record names (the fixed ref for a record that names none)
     # @return [void]
     # @raise [ForkCheckFailed] when checking out fails, HEAD is not sha, the acceptance ref is missing or differs, or it is not an ancestor of sha
-    def fork_check!(lane_b_path, branch, sha, acceptance_base)
+    def fork_check!(lane_b_path, branch, sha, acceptance_base, ref: ACCEPTANCE_REF)
       _, ok = git(lane_b_path, "checkout", "-B", branch, sha)
       raise ForkCheckFailed, "git checkout -B #{branch} #{sha} failed in #{lane_b_path}" unless ok
       head, = git(lane_b_path, "rev-parse", "HEAD")
       raise ForkCheckFailed, "lane B's HEAD is #{head.to_s.strip[0, 12]}, not the fork point #{sha[0, 12]}" unless head.to_s.strip == sha
-      ref, found = git(lane_b_path, "rev-parse", ACCEPTANCE_REF)
-      raise ForkCheckFailed, "lane B cannot see #{ACCEPTANCE_REF}" unless found
-      raise ForkCheckFailed, "#{ACCEPTANCE_REF} is #{ref.strip[0, 12]} in lane B, not #{acceptance_base.to_s[0, 12]} as lane A's run recorded" unless ref.strip == acceptance_base
-      _, ancestor = git(lane_b_path, "merge-base", "--is-ancestor", ACCEPTANCE_REF, sha)
-      raise ForkCheckFailed, "#{ACCEPTANCE_REF} is not an ancestor of the fork point #{sha[0, 12]}" unless ancestor
+      found_sha, found = git(lane_b_path, "rev-parse", ref)
+      raise ForkCheckFailed, "lane B cannot see #{ref}" unless found
+      raise ForkCheckFailed, "#{ref} is #{found_sha.strip[0, 12]} in lane B, not #{acceptance_base.to_s[0, 12]} as lane A's run recorded" unless found_sha.strip == acceptance_base
+      _, ancestor = git(lane_b_path, "merge-base", "--is-ancestor", ref, sha)
+      raise ForkCheckFailed, "#{ref} is not an ancestor of the fork point #{sha[0, 12]}" unless ancestor
     end
 
     # Adds `calc_test.rb merge=calc-demo-tests` to `info/attributes` in the shared git dir, and sets `merge.calc-demo-tests.name`
@@ -318,7 +321,7 @@ module DemoCalculator2
     def stage_lane_b(b_goals)
       return [] if @dry_run
       b_name = name_args(@lane_b)
-      config = DemoCalculator2.lane_config(:b, workflow_id: @workflow, stub_ref: @stub_ref, goals: b_goals)
+      config = DemoCalculator2.lane_config(:b, workflow_id: @workflow, stub_ref: @stub_ref, goals: b_goals, id: @id)
       workspace_do("config", "set", "--scope", "workspace", *b_name, "commands.test", config.test_command)
       workspace_do("config", "set", "--scope", "workspace", *b_name, "commands.lint", config.lint_command)
       config.queue_items.call(b_name).zip(b_goals).map do |(workflow, argv), goal|
@@ -532,7 +535,8 @@ module DemoCalculator2
       run_id = entry.dig("result", "run_id")
       raise ForkCheckFailed, "the fork goal's queue entry names no run" unless run_id
       sha = resolve(final_head(run_id))
-      fork_check!(record.dig("lanes", "b", "path"), record.dig("lanes", "b", "branch"), sha, record.dig("acceptance_ref", "sha"))
+      fork_check!(record.dig("lanes", "b", "path"), record.dig("lanes", "b", "branch"), sha, record.dig("acceptance_ref", "sha"),
+        ref: record.dig("acceptance_ref", "name") || ACCEPTANCE_REF)
       record["fork"] = {"at" => @clock.call.utc.iso8601, "sha" => sha, "acceptance_base" => record.dig("acceptance_ref", "sha"),
         "goal" => record.dig("lanes", "fork_after"), "item" => entry["id"], "run_id" => run_id}
       b_name = name_args(@lane_b)

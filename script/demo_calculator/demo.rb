@@ -64,9 +64,11 @@ module DemoCalculator
     # @param poll [Numeric] seconds between polls
     # @param sleeper [#call] sleeps for the given seconds
     # @param config [Config] which demo this is
+    # @param id [String, nil] when set, the run branch is calc-demo/<stamp>-<id>
     def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout, err: $stderr, base: nil, out_dir: nil, clock: -> { Time.now },
-      wait: false, held_limit: 1200, timeout: 14_400, poll: 15, sleeper: ->(seconds) { sleep(seconds) }, config: Config.v1)
+      wait: false, held_limit: 1200, timeout: 14_400, poll: 15, sleeper: ->(seconds) { sleep(seconds) }, config: Config.v1, id: nil)
       @config = config
+      @id = id
       @root = File.expand_path(root)
       @workspace = workspace
       @name = name
@@ -126,7 +128,7 @@ module DemoCalculator
     def run(before_start: nil)
       guard!
       stamp = @clock.call.utc.strftime("%Y%m%dT%H%M%SZ")
-      branch = "#{RUN_BRANCH_PREFIX}#{stamp}"
+      branch = "#{RUN_BRANCH_PREFIX}#{stamp}#{"-#{@id}" if @id}"
       base = @base || "HEAD"
       preflight(branch)
       check_stub!

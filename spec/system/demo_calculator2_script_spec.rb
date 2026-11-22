@@ -213,6 +213,12 @@ RSpec.describe "script/demo-calculator2" do
       expect(err.string).to include("reset|run|eval")
     end
 
+    it "prints the per-id branch and acceptance ref for run --id under --dry-run" do
+      expect(DemoCalculator2.main(%w[run --dry-run --id x], out: out, err: err, root: work_dir)).to eq(0), err.string
+      expect(out.string).to match(%r{\+ git switch -c calc-demo/\d{8}T\d{6}Z-x })
+      expect(out.string).to include("+ git update-ref refs/demo-calc2/acceptance/x ")
+    end
+
     it "refuses to run in the main checkout" do
       expect(DemoCalculator2.main(%w[reset --dry-run], out: out, err: err, root: main_dir)).to eq(1)
       expect(err.string).to include("demo-calculator2: refusing")
@@ -286,6 +292,29 @@ RSpec.describe "script/demo-calculator2" do
       expect(File.exist?(log)).to be(false)
       expect(attributes_text).not_to include("merge=calc-demo-tests")
       expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("demo-branch")
+    end
+
+    it "prints the per-id branch, lane B branch and acceptance ref under --id, and creates neither" do
+      expect(main(*lane_args, "--id", "x", "--dry-run")).to eq(0), err.string
+      expect(out.string).to match(%r{\+ git switch -c calc-demo/\d{8}T\d{6}Z-x })
+      expect(out.string).to match(%r{\+ git update-ref refs/demo-calc2/acceptance/x })
+      expect(out.string).to match(%r{git checkout -B calc-demo/\d{8}T\d{6}Z-x-b })
+      expect(git(work_dir, "for-each-ref", "refs/demo-calc2/").strip).to eq("")
+      expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("demo-branch")
+    end
+
+    it "prints the plain names without --id" do
+      expect(main(*lane_args, "--dry-run")).to eq(0), err.string
+      expect(out.string).to match(%r{\+ git switch -c calc-demo/\d{8}T\d{6}Z })
+      expect(out.string).to include("+ git update-ref refs/demo-calc2/acceptance-base ")
+      expect(out.string).to match(%r{git checkout -B calc-demo/\d{8}T\d{6}Z-b })
+    end
+
+    it "refuses an --id that is not lowercase letters and digits starting with a letter, or is b" do
+      %w[b 1x X-y x_y].each do |bad|
+        expect(main(*lane_args, "--id", bad, "--dry-run")).to eq(1)
+        expect(err.string).to include("--id")
+      end
     end
 
     it "covers every group by some item's own check when all seven goals run, so the integration-only list is none" do

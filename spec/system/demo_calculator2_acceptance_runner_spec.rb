@@ -229,4 +229,66 @@ RSpec.describe "script/demo_calculator2/acceptance_runner", type: :system do
       expect(out).to include("group 6: FAIL", "group 7: pass")
     end
   end
+
+  describe "which acceptance ref it reads" do
+    let(:per_id) { "refs/demo-calc2/acceptance/x" }
+    let(:goal) { "demo/calculator2/goals/01-x.md" }
+
+    # The fixed ref holds a failing group 1 and the per-id ref a passing one, so the summary shows which ref was read.
+    def build_two_refs(dir, ref, per_id)
+      body = ->(verdict) { "require \"minitest/autorun\"\nclass G1 < Minitest::Test\n  def test_it = #{verdict}\nend\n" }
+      build_custom_repo(dir, ref, body.call("flunk(\"legacy\")"))
+      File.write(File.join(dir, "demo", "calculator2", "acceptance", "group_1_x_test.rb"), body.call("assert(true)"))
+      git(dir, "add", "-A")
+      git(dir, "commit", "-q", "-m", "per id")
+      git(dir, "update-ref", per_id, "HEAD")
+    end
+
+    def read_by(runner, dir, branch, goal, env: {})
+      git(dir, "switch", "-q", "-c", branch)
+      out, _, status = run_runner(runner, dir, goal, env: env)
+      [out[/group 1: (pass|FAIL)/, 1], status]
+    end
+
+    around do |example|
+      Dir.mktmpdir { |dir|
+        @dir = [dir]
+        example.run
+      }
+    end
+
+    let(:dir) { @dir.first }
+
+    before { build_two_refs(dir, ref, per_id) }
+
+    it "reads the per-id ref on calc-demo/<stamp>-<id>" do
+      expect(read_by(runner, dir, "calc-demo/20261121T050000Z-x", goal).first).to eq("pass")
+    end
+
+    it "reads the per-id ref on lane B's calc-demo/<stamp>-<id>-b" do
+      expect(read_by(runner, dir, "calc-demo/20261121T050000Z-x-b", goal).first).to eq("pass")
+    end
+
+    it "reads the fixed ref on the legacy calc-demo/<stamp> branch" do
+      expect(read_by(runner, dir, "calc-demo/20261121T050000Z", goal).first).to eq("FAIL")
+    end
+
+    it "reads the fixed ref on the legacy lane B branch calc-demo/<stamp>-b, whose id would be b" do
+      expect(read_by(runner, dir, "calc-demo/20261121T050000Z-b", goal).first).to eq("FAIL")
+    end
+
+    it "reads the fixed ref on a branch that does not match" do
+      expect(read_by(runner, dir, "feature/x", goal).first).to eq("FAIL")
+      expect(read_by(runner, dir, "calc-demo/x", goal).first).to eq("FAIL")
+    end
+
+    it "lets CALC2_ACCEPTANCE_REF win over the branch" do
+      expect(read_by(runner, dir, "calc-demo/20261121T050000Z-x", goal, env: {"CALC2_ACCEPTANCE_REF" => ref}).first).to eq("FAIL")
+    end
+
+    it "falls back to the fixed ref when the per-id ref is missing" do
+      git(dir, "update-ref", "-d", per_id)
+      expect(read_by(runner, dir, "calc-demo/20261121T050000Z-x", goal).first).to eq("FAIL")
+    end
+  end
 end

@@ -164,6 +164,24 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(calls.map { |argv| argv[1] }).to eq(%w[checkout rev-parse rev-parse merge-base])
     end
 
+    it "checks the ref a record names, not the fixed one" do
+      named = "refs/demo-calc2/acceptance/x"
+      on("git", "checkout", "-B", branch, sha) { ["", true] }
+      on("git", "rev-parse", "HEAD") { ["#{sha}\n", true] }
+      on("git", "rev-parse", named) { ["#{base}\n", true] }
+      on("git", "merge-base", "--is-ancestor", named, sha) { ["", true] }
+      expect { lanes.fork_check!("/lane-b", branch, sha, base, ref: named) }.not_to raise_error
+      expect(calls.flatten).not_to include(DemoCalculator2::ACCEPTANCE_REF)
+    end
+
+    it "names the recorded ref when lane B cannot see it" do
+      named = "refs/demo-calc2/acceptance/x"
+      on("git", "checkout", "-B", branch, sha) { ["", true] }
+      on("git", "rev-parse", "HEAD") { ["#{sha}\n", true] }
+      on("git", "rev-parse", named) { ["", false] }
+      expect { lanes.fork_check!("/lane-b", branch, sha, base, ref: named) }.to raise_error(DemoCalculator2::ForkCheckFailed, %r{cannot see refs/demo-calc2/acceptance/x})
+    end
+
     it "stops the run when the checkout fails" do
       script_fork(checkout: false)
       expect { lanes.fork_check!("/lane-b", branch, sha, base) }.to raise_error(DemoCalculator2::ForkCheckFailed, /checkout -B .* failed/)
@@ -225,6 +243,29 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(saved["fork"]).to include("sha" => "2" * 40, "acceptance_base" => base, "goal" => "03-div-zero", "item" => "a3")
       expect(saved["fork"]["at"]).to match(/\A2026-11-21T/)
       expect(saved.dig("lanes", "b", "items").map { |item| item["goal"] }).to eq(%w[06-json 07-repl])
+    end
+
+    it "checks the fork against the ref the record names" do
+      named = "refs/demo-calc2/acceptance/x"
+      data = JSON.parse(File.read(record_path))
+      data["acceptance_ref"]["name"] = named
+      File.write(record_path, JSON.generate(data))
+      on("git", "rev-parse", named) { ["#{base}\n", true] }
+      finished("a1", "a2", "a3")
+      lanes.wait_run(record_path)
+      expect(calls).to include(["git", "rev-parse", named])
+      expect(calls).not_to include(["git", "rev-parse", DemoCalculator2::ACCEPTANCE_REF])
+      expect(saved["fork"]).to include("acceptance_base" => base)
+    end
+
+    it "checks the fixed ref for an old record that names none" do
+      data = JSON.parse(File.read(record_path))
+      data["acceptance_ref"].delete("name")
+      File.write(record_path, JSON.generate(data))
+      finished("a1", "a2", "a3")
+      lanes.wait_run(record_path)
+      expect(calls).to include(["git", "rev-parse", DemoCalculator2::ACCEPTANCE_REF])
+      expect(saved["fork"]).to include("sha" => "2" * 40)
     end
 
     context "with lane B's items staged before the fork" do
@@ -666,6 +707,37 @@ RSpec.describe DemoCalculator2::Lanes do
       end
       lanes.run
       expect(captured.dig("b", "items").map { |item| item.values_at("id", "goal") }).to eq([%w[b-06 06-json], %w[b-07 07-repl]])
+    end
+
+    context "with an id" do
+      let(:lanes) do
+        described_class.new(root: tmp, workspace: "ws-bin", lane_b: "ws-b", name: "ws", workflow: "deliver-goal-fast", out: out, err: err, clock: clock,
+          sleeper: ->(seconds) { slept << seconds }, waiter: waiter, exec: exec, held_limit: 0, timeout: 10**9, id: "x")
+      end
+
+      it "gives lane B the branch <stamp>-<id>-b, lane A's config the per-id ref and the run its id" do
+        captured = nil
+        allow(DemoCalculator::Demo).to receive(:new) do |**kwargs|
+          captured = kwargs
+          demo
+        end
+        lanes.run
+        expect(captured[:id]).to eq("x")
+        expect(captured[:config].acceptance_ref).to eq("refs/demo-calc2/acceptance/x")
+        expect(captured[:config].record_extras.dig("lanes", "b", "branch")).to match(%r{\Acalc-demo/\d{8}T\d{6}Z-x-b\z})
+      end
+    end
+
+    it "keeps lane B's plain <stamp>-b branch and the fixed ref without an id" do
+      captured = nil
+      allow(DemoCalculator::Demo).to receive(:new) do |**kwargs|
+        captured = kwargs
+        demo
+      end
+      lanes.run
+      expect(captured[:id]).to be_nil
+      expect(captured[:config].acceptance_ref).to eq(DemoCalculator2::ACCEPTANCE_REF)
+      expect(captured[:config].record_extras.dig("lanes", "b", "branch")).to match(%r{\Acalc-demo/\d{8}T\d{6}Z-b\z})
     end
 
     it "runs no work-queue enable when a foreign-live driver refuses" do

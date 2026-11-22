@@ -34,6 +34,7 @@ module DemoCalculator2
     args[:stub_ref] = options[:stub_ref] if options[:stub_ref]
     args[:goals] = pick_goals(options[:goals]) if options[:goals]
     args[:workflow_id] = options[:workflow] if options[:workflow]
+    args[:id] = options[:id] if options[:id]
     config(**args)
   end
 
@@ -42,6 +43,7 @@ module DemoCalculator2
     args = {root: root, workspace: workspace, lane_b: options[:lane_b], name: options[:name], dry_run: options[:dry_run], wait: options[:wait],
             base: options[:base], out_dir: options[:out_dir], out: out, err: err}
     args[:workflow] = options[:workflow] if options[:workflow]
+    args[:id] = options[:id] if options[:id]
     args[:stub_ref] = options[:stub_ref] if options[:stub_ref]
     args[:goals] = pick_goals(options[:goals]) if options[:goals]
     args[:waiter] = EventWaiter.new
@@ -66,10 +68,10 @@ module DemoCalculator2
   def self.main(
     argv, out: $stdout, err: $stderr, root: File.expand_path("..", __dir__)
   )
-    options = {json: false, dry_run: false, name: nil, wait: false, run_dir: nil, base: nil, out_dir: nil, stub_ref: nil, goals: nil, lanes: false, lane_b: nil, workflow: nil}
+    options = {json: false, dry_run: false, name: nil, wait: false, run_dir: nil, base: nil, out_dir: nil, stub_ref: nil, goals: nil, lanes: false, lane_b: nil, workflow: nil, id: nil}
     parser = OptionParser.new do |o|
       o.banner = "Usage: script/demo-calculator2 reset|run|eval|integrate [--name WORKSPACE] [--dry-run] [--wait]\n" \
-        "       run [--base REF] [--stub-ref REF] [--goals 01,02] [--workflow ID] [--out DIR] [--wait]\n" \
+        "       run [--base REF] [--stub-ref REF] [--goals 01,02] [--workflow ID] [--id ID] [--out DIR] [--wait]\n" \
         "       run --lanes --lane-b WORKSPACE [--workflow deliver-goal-fast] [--goals 01,06] [--wait]\n" \
         "       eval [--run DIR] [--json]\n" \
         "       integrate [--run DIR]\n" \
@@ -97,6 +99,10 @@ module DemoCalculator2
       o.on("--workflow ID", "run: the workflow each goal runs as (#{GOAL_WORKFLOW_IDS.join(", ")}; default #{WORKFLOW_ID})") { |v|
         raise OptionParser::InvalidArgument, "needs one of #{GOAL_WORKFLOW_IDS.join(", ")}, not #{v}" unless GOAL_WORKFLOW_IDS.include?(v)
         options[:workflow] = v
+      }
+      o.on("--id ID", "run: name this run: branch calc-demo/<stamp>-ID and acceptance ref refs/demo-calc2/acceptance/ID (lowercase letters and digits, starting with a letter; not b)") { |v|
+        raise OptionParser::InvalidArgument, "needs lowercase letters and digits starting with a letter, and not b: #{v}" unless v.match?(/\A[a-z][a-z0-9]*\z/) && v != "b"
+        options[:id] = v
       }
       o.on("--goals LIST", "run: queue only these goals, such as 01,03 (default all seven)") { |v| options[:goals] = v }
       o.on("--out DIR", "run: where to write run.json (default tmp/demo-calculator2/runs/<stamp>)") { |v| options[:out_dir] = v }
@@ -131,7 +137,7 @@ module DemoCalculator2
       return wait_exit(build_lanes(options, workspace: workspace, root: root, out: out, err: err).run, err)
     end
     record = DemoCalculator::Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out, err: err,
-      base: options[:base], out_dir: options[:out_dir], wait: options[:wait], config: build_config(options)).public_send(verb)
+      base: options[:base], out_dir: options[:out_dir], wait: options[:wait], config: build_config(options), id: options[:id]).public_send(verb)
     wait_exit(record, err)
   rescue DemoCalculator::Refused, DemoCalculator::Evaluation::Error, OptionParser::ParseError => e
     err.puts "demo-calculator2: #{e.message}"
