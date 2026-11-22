@@ -1,0 +1,12 @@
+# deliver-goal-fast: plan's status check fails once, listing R-numbers with no task, and the run loops back to
+# research before plan passes.
+inputs:
+  task: "Deliver the goal in goals/01.md"
+  goal: goals/01.md
+  acceptance: script/acceptance_runner
+steps:
+  plan:
+    - {check: fail, log: "In no task of ## Task details: R2 R3 R4"}
+    - reviews: {skeptical: approve}
+  acceptance:
+    - {}
