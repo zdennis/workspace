@@ -57,11 +57,13 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(review.call(definition.to_h)["max_rounds"]).to eq(review.call(parent)["max_rounds"])
   end
 
-  it "runs the plan review on sonnet as a direct round, with the parent's skeptical prompt unchanged" do
-    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+  it "runs the plan review on sonnet as a direct round, with a skeptical prompt that checks the requirements list" do
     skeptical = definition.to_h["reviewers"]["skeptical"]
     expect(skeptical["model"]).to eq("sonnet")
-    expect(skeptical.except("model")).to eq(parent["reviewers"]["skeptical"])
+    expect(skeptical["prompt"]).to include("any R in")
+    expect(skeptical["prompt"]).to include("{{artifacts}}/requirements.md with no task")
+    expect(skeptical["prompt"]).to include("any reading chosen there that the brief")
+    expect(skeptical["prompt"]).not_to match(/accept|calc/i)
     plan = definition.to_h["steps"].find { |each| each["id"] == "plan" }
     expect(Workspace::WorkflowDefinition.direct_review?(definition.to_h, plan)).to be(true)
   end
