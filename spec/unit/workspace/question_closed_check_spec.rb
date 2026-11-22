@@ -122,4 +122,30 @@ RSpec.describe Workspace::QuestionClosedCheck do
       end
     end
   end
+
+  describe "with scrollback rows" do
+    let(:capture) { Struct.new(:raw, :history_rows) }
+
+    it "reads nothing from a 12-row screen with 5 history rows above it" do
+      raw = (Array.new(5) { "old" } + ["────────", "❯ ", "────────"] + Array.new(9) { "" }).join("\n")
+
+      expect(check.reading("claude", capture.new(raw, 5))).to be_nil
+    end
+
+    it "gives a tall screen the same digest whatever the history rows hold" do
+      visible = tall(box)
+      a = capture.new("a\nb\nc\nd\ne\n#{visible}", 5)
+      b = capture.new("w\nx\ny\nz\n────────\n#{visible}", 5)
+
+      expect(check.reading("claude", a)).to be_a(String)
+      expect(check.reading("claude", a)).to eq(check.reading("claude", b))
+      expect(check.reading("claude", a)).to eq(check.reading("claude", visible))
+    end
+
+    it "reads nothing from a capture that is not valid UTF-8" do
+      raw = "#{tall(box)}caf\xE9\n".force_encoding("UTF-8")
+
+      expect(check.reading("claude", capture.new(raw, 2))).to be_nil
+    end
+  end
 end

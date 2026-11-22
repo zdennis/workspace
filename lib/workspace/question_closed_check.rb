@@ -57,20 +57,28 @@ module Workspace
     end
 
     # @param kind [String] the pane's agent
-    # @param styled_capture [String, nil] {Workspace::Tmux#capture_screen_styled}
-    # @return [String, nil] a digest of the screen down to the box when it shows
-    #   no dialog, to compare with a later reading; rows below the box aren't in
-    #   it, so a status line that keeps moving doesn't count. nil when not proven
+    # @param styled_capture [String, #raw, nil] {Workspace::Tmux#capture_screen_styled},
+    #   or a {Workspace::Tmux::StyledCapture} with scrollback rows; only the
+    #   visible rows count toward {MIN_ROWS} and the digest
+    # @return [String, nil] a digest of the visible screen down to the box when
+    #   it shows no dialog, to compare with a later reading; rows below the box
+    #   aren't in it, so a status line that keeps moving doesn't count. nil when
+    #   not proven
     def reading(kind, styled_capture)
-      return nil unless styled_capture&.valid_encoding?
+      return nil if styled_capture.nil?
+      raw = styled_capture.respond_to?(:raw) ? styled_capture.raw : styled_capture
+      return nil unless raw.valid_encoding?
       return nil if @idle_check.refusal({kind: kind, state: "idle", open_tools: []}, styled_capture)
 
-      text = StyledScreen.parse(styled_capture).text
-      return nil if text.chomp.count("\n") + 1 < MIN_ROWS
+      screen = StyledScreen.parse(styled_capture)
+      lines = screen.visible_lines
+      return nil if lines.join("\n").chomp.count("\n") + 1 < MIN_ROWS
 
       pattern = @providers.find { |provider| provider.key == kind }.ready_pattern
-      lines = text.split("\n", -1)
-      closing = text[0...text.rindex(pattern)].count("\n") + 2
+      box = screen.input_box(pattern)
+      return nil if box.nil?
+
+      closing = screen.text[0...box.begin(0)].count("\n") - screen.history_rows + 2
       return nil unless lines[closing]&.match?(RULE)
       below = lines[(closing + 1)..]
       return nil if below.any? { |row| row.match?(DIALOG_HINTS) || row.match?(OPTION_ROW) }

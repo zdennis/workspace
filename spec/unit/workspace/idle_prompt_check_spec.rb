@@ -174,4 +174,26 @@ RSpec.describe Workspace::IdlePromptCheck do
 
     expect(check.refusal(facts, text)).to be_nil
   end
+
+  describe "with scrollback rows" do
+    let(:capture) { Struct.new(:raw, :history_rows) }
+
+    it "passes a short pane whose opening rule is in history and whose box is empty" do
+      raw = [*Array.new(5) { "old" }, rule, "❯ ", rule, *Array.new(6) { "" }, ""].join("\n")
+
+      expect(check.refusal(facts, capture.new(raw, 1))).to be_nil
+    end
+
+    it "refuses a prompt that is only in history" do
+      raw = [rule, "❯ ", rule, "history", "more", "text"].join("\n")
+
+      expect(check.refusal(facts, capture.new(raw, 4))).to include(reason: "no_input_prompt")
+    end
+
+    it "reads a spinner row in history above the box as busy" do
+      raw = ["✻ Razzle-dazzling… (12s)", rule, "❯ ", rule, "  [Model] example status", ""].join("\n")
+
+      expect(check.refusal(facts, capture.new(raw, 1))).to include(reason: "turn_started")
+    end
+  end
 end
