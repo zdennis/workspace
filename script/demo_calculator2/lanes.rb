@@ -5,6 +5,7 @@ require "shellwords"
 require "time"
 require_relative "../demo_calculator/demo"
 require_relative "config"
+require_relative "test_names"
 
 module DemoCalculator2
   # Lane B's fork failed one of its three checks (HEAD, the acceptance base ref, ancestry); the run stops, since a lane
@@ -482,8 +483,10 @@ module DemoCalculator2
       full.strip
     end
 
-    # One attempt each at the test command, lint and the plain acceptance runner on 07-repl, stopping at the first failure.
+    # The duplicate test-name scan of the merged calc_test.rb, then one attempt each at the test command, lint and the plain acceptance runner on 07-repl, stopping at the first failure.
     def first_pass_checks(integration)
+      return false unless test_names_clean?(integration)
+
       config = DemoCalculator2.config
       commands = {
         "test" => ["sh", "-c", config.test_command],
@@ -500,6 +503,14 @@ module DemoCalculator2
         return false unless ok
       end
       true
+    end
+
+    def test_names_clean?(integration)
+      path = File.join(@root, DEMO_DIR, "test", "calc_test.rb")
+      duplicates = File.exist?(path) ? MergeTestMethods.duplicate_names(File.read(path)) : []
+      integration["test_names"] = {"ok" => duplicates.empty?, "duplicates" => duplicates}
+      say "first-pass check test_names failed: duplicate test methods in #{DEMO_DIR}/test/calc_test.rb: #{duplicates.join(", ")}" unless duplicates.empty?
+      duplicates.empty?
     end
 
     # Queues integrate-branch in lane A, waits for it and records its outcome apart from the first pass.

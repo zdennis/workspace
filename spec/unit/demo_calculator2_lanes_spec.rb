@@ -316,6 +316,29 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(saved["integration"]).not_to have_key("lint")
     end
 
+    def write_calc_test(*names)
+      path = File.join(tmp, "demo/calculator2/test/calc_test.rb")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, names.map { |name| "  def #{name}\n  end\n" }.join("\n"))
+    end
+
+    it "makes a duplicated test method name not a first pass and runs no test command after it" do
+      write_calc_test("test_add", "test_sub", "test_add")
+      finished("int1")
+      lanes.integrate_run(record_path)
+      expect(saved["integration"]).to include("merge" => "clean", "first_pass" => false, "test_names" => {"ok" => false, "duplicates" => ["test_add"]})
+      expect(saved["integration"]).not_to have_key("test")
+      expect(calls).not_to include(a_collection_starting_with("sh", "-c"))
+      expect(calls.none? { |argv| argv.first.to_s.end_with?("acceptance_runner") }).to be(true)
+      expect(out.string).to include("first-pass check test_names failed", "test_add")
+    end
+
+    it "records a clean test-name scan and goes on to the test command" do
+      write_calc_test("test_add", "test_sub")
+      lanes.integrate_run(record_path)
+      expect(saved["integration"]).to include("first_pass" => true, "test_names" => {"ok" => true, "duplicates" => []}, "test" => true)
+    end
+
     it "records a repair that did not pass apart from the first pass, and stops when integrate-branch is held" do
       on("git", "merge", "--no-ff", "--no-edit", branch) { ["CONFLICT", false] }
       on("git", "rev-parse", "-q", "--verify", "MERGE_HEAD") { ["abc\n", true] }
