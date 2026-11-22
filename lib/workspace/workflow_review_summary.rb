@@ -1,4 +1,5 @@
 require "digest"
+require "time"
 
 module Workspace
   # What a review round leaves for a person once its verdicts decide it: the engine's own `summary.md` in the
@@ -21,11 +22,19 @@ module Workspace
     OUTCOME_WORDS = {approved: "approved", rejected: "rejected", incomplete: "not decided", stale: "stale", review_guard: "checkout changed"}.freeze
     private_constant :OUTCOME_WORDS
 
+    # How long the item of an approved round lasts once the run went on past the step or ended: it asks nothing of a
+    # person by then, so it expires rather than wait in the inbox after the run is over. A later round on the same key
+    # sets it back to none.
+    APPROVED_EXPIRY = 168 * 3600
+    private_constant :APPROVED_EXPIRY
+
     # @param inbox_for [#call, nil] given a workspace name, its {InboxStore}; nil posts no item
     # @param files [#directory_problem, #read] checks the round's directory is a plain one and reads a verdict ({WorkflowReviewTally::Files})
-    def initialize(inbox_for: nil, files: WorkflowReviewTally::Files.new)
+    # @param clock [#call] returns the current Time, from which an approved item's `expires_at` counts
+    def initialize(inbox_for: nil, files: WorkflowReviewTally::Files.new, clock: -> { Time.now })
       @inbox_for = inbox_for
       @files = files
+      @clock = clock
     end
 
     # The summary's path for a step's attempt and round.
@@ -70,7 +79,8 @@ module Workspace
     end
 
     # Upserts the run and step's review item, opening it again when it was resolved. Off when the step's
-    # `review.notify` is false.
+    # `review.notify` is false. An approved round whose run went on past the step, or ended, gets an `expires_at`
+    # {APPROVED_EXPIRY} from now; every other item, a gate wait included, has none.
     #
     # @param run [Hash{String=>Object}] the run after the round's decision
     # @param step [String] the reviewed step
@@ -86,16 +96,18 @@ module Workspace
       workspace = run["workspace"]
       path = summary["path"]
       noted = Array(summary["not_blocking"])
+      fate = fate(run, step, attempt)
+      expires = (outcome == :approved && %i[went_on ended].include?(fate)) ? (@clock.call + APPROVED_EXPIRY).utc.iso8601 : nil
       where = noted.any? ? "#{path}, which quotes what #{noted.map { |name| one_line(name) }.join(", ")} noted but did not block on" : path
       @inbox_for.call(workspace).upsert({
         "type" => "review_request", "scope" => {"kind" => "workspace", "key" => workspace, "name" => workspace},
         "title" => "Workflow run #{run["id"]}: review of #{step}, round #{round}: #{OUTCOME_WORDS.fetch(outcome, outcome.to_s)}",
-        "body" => "#{next_words(run, step, attempt)} #{path ? "The round's summary is #{where}." : "The round's summary could not be written: #{summary["problem"]}."} " \
+        "body" => "#{next_words(run, step, fate)} #{path ? "The round's summary is #{where}." : "The round's summary could not be written: #{summary["problem"]}."} " \
           "`workspace workflow status #{run["id"]}` shows the run.",
         "source" => {"kind" => "workflow", "ref" => run["id"], "url" => nil},
         "dedupe_key" => "review:#{run["id"]}:#{step}",
         "created_by" => {"kind" => "cli", "pane" => nil, "session_id" => nil, "tmux_server" => nil},
-        "links" => {"run_id" => run["id"], "step" => step, "attempt" => attempt, "round" => round, "summary" => path}, "expires_at" => nil, "note" => nil
+        "links" => {"run_id" => run["id"], "step" => step, "attempt" => attempt, "round" => round, "summary" => path}, "expires_at" => expires, "note" => nil
       }, reopen: true).outcome
     rescue
       nil
@@ -110,20 +122,31 @@ module Workspace
       File.open(path, File::RDONLY | File::NOFOLLOW | File::NONBLOCK) { |file| file.binmode.read(text.bytesize + 1) } == text.b
     end
 
-    # What the run does now the round decided, as one sentence.
-    def next_words(run, step, attempt)
+    # What the run does now the round decided: `:gate`, `:stopped`, `:again`, `:ended` or `:went_on`.
+    def fate(run, step, attempt)
       reason = WorkflowRun.slot(run, step, "reason")
       code = reason.is_a?(Hash) ? reason["code"] : nil
       if code == "waiting_you" && reason.dig("details", "kind") == "gate" && run["current"] == step
-        "Step #{step} waits at its gate: read the summary, then `workspace workflow approve #{run["id"]}` or `workspace workflow reject #{run["id"]} --note ...`."
+        :gate
       elsif code
-        "The run stopped for a person (#{code})."
+        :stopped
       elsif run["current"] == step && run.dig("steps", step, "attempts").to_a.last&.dig("n").to_i > attempt
-        "Step #{step} runs again as a new attempt, told what the reviewers wrote."
+        :again
       elsif WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
-        "The run is #{run["state"]}."
+        :ended
       else
-        "Step #{step} passed; the run went on."
+        :went_on
+      end
+    end
+
+    # The {#fate} as one sentence.
+    def next_words(run, step, fate)
+      case fate
+      when :gate then "Step #{step} waits at its gate: read the summary, then `workspace workflow approve #{run["id"]}` or `workspace workflow reject #{run["id"]} --note ...`."
+      when :stopped then "The run stopped for a person (#{WorkflowRun.slot(run, step, "reason")["code"]})."
+      when :again then "Step #{step} runs again as a new attempt, told what the reviewers wrote."
+      when :ended then "The run is #{run["state"]}."
+      else "Step #{step} passed; the run went on."
       end
     end
 
