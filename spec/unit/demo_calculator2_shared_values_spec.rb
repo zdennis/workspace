@@ -7,7 +7,7 @@ RSpec.describe DemoCalculator2::SharedValues do
   let(:driver_key) { described_class::DRIVER_KEY }
   let(:wanted) { described_class::DRIVER_COMMAND }
   let(:existing) { ->(path) { path == "/live" } }
-  let(:state) { ->(key, live, **opts) { described_class.classify(key, live: live, wanted: opts.delete(:wanted) || wanted, path_exists: existing, owner_running: false, **opts) } }
+  let(:state) { ->(key, live, **opts) { described_class.classify(key, live: live, wanted: opts.delete(:wanted) || wanted, path_exists: existing, **opts) } }
 
   def absolute(path) = "ruby #{Shellwords.escape(path)}/script/demo_calculator2/merge_test_methods %O %A %B"
 
@@ -63,7 +63,7 @@ RSpec.describe DemoCalculator2::SharedValues do
   describe ".classify for a sources list" do
     let(:ours) { "/ours/demo/calculator2/workflows" }
     let(:key) { "workflows.sources:#{ours}" }
-    let(:call) { ->(live, **opts) { described_class.classify(key, live: live, wanted: ours, path_exists: ->(path) { path.start_with?("/live") }, owner_running: false, **opts) } }
+    let(:call) { ->(live, **opts) { described_class.classify(key, live: live, wanted: ours, path_exists: ->(path) { path.start_with?("/live") }, **opts) } }
 
     it "is absent with no calculator2 entry" do
       expect(call.call([])).to eq(:absent)

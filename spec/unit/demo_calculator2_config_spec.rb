@@ -37,8 +37,22 @@ RSpec.describe DemoCalculator2 do
   end
 
   it "points at the calculator2 paths and the test and lint commands" do
-    expect(config).to have_attributes(workflows_suffix: "/demo/calculator2/workflows", test_command: "ruby demo/calculator2/test/calc_test.rb",
+    expect(config).to have_attributes(workflows_suffix: "/demo/calculator2/workflows", test_command: described_class::TEST_COMMAND,
       lint_command: "bundle exec standardrb demo/calculator2", acceptance_ref: "refs/demo-calc2/acceptance-base", stub_ref: "main")
+  end
+
+  it "runs every test file of the demo from the checkout root, and the stub restore keeps lane B's file out of the stub" do
+    expect(described_class::TEST_COMMAND).to include('Dir["demo/calculator2/test/*_test.rb"]', "abort", "files.empty?")
+    expect(config.restored).to eq(%w[bin lib test])
+  end
+
+  it "tells lane B not to assert that any expression is unsupported, and names goals 06 and 07's test file and command" do
+    expect(described_class::LANE_B_PROMPT).to include("do not write a test that asserts any arithmetic expression is unsupported or invalid")
+    %w[06-json 07-repl].each do |goal|
+      text = File.read(File.join(PROJECT_ROOT, "demo/calculator2/goals/#{goal}.md"))
+      expect(text).to include("demo/calculator2/test/lane_b_test.rb", described_class::TEST_COMMAND.sub(/\Aruby -e /, "")[1..-2])
+      expect(text).not_to include("ruby demo/calculator2/test/calc_test.rb")
+    end
   end
 
   it "takes a stub ref and a goal list, and records both for run.json" do
@@ -90,7 +104,9 @@ RSpec.describe DemoCalculator2 do
       expect(b.map { |_, argv| argv[argv.index("--dedupe-key") + 1] }).to eq(%w[calculator2-demo:06-json calculator2-demo:07-repl])
       (a + b).each { |_, argv| expect(argv).to include("acceptance=script/demo_calculator2/acceptance_runner_lanes") }
       expect(a.map { |_, argv| argv[argv.index("--prompt") + 1] }).to all(satisfy { |text| text.start_with?("Deliver the goal in demo/calculator2/goals/0") && !text.include?("Earlier goals") })
-      expect(b.map { |_, argv| argv[argv.index("--prompt") + 1] }).to all(end_with("Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05."))
+      expect(b.map { |_, argv| argv[argv.index("--prompt") + 1] }).to all(end_with(DemoCalculator2::LANE_B_PROMPT))
+      expect(DemoCalculator2::LANE_B_PROMPT).to include("do not read or build goals 04 or 05")
+      expect(DemoCalculator2::LANE_B_PROMPT).to include("`demo/calculator2/test/lane_b_test.rb`", "never edit `demo/calculator2/test/calc_test.rb`", DemoCalculator2::TEST_COMMAND)
     end
 
     it "takes each lane's goals from the goals of the run" do

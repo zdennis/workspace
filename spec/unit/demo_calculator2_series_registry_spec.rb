@@ -74,10 +74,66 @@ RSpec.describe DemoCalculator2::SeriesRegistry do
     expect(registry.remove("a")).to include("key" => "exclude:/runs/a/", "value" => "/runs/a/", "replaced" => nil)
   end
 
+  it "records an id's own sources entries and always returns them on its remove, even while another id is registered" do
+    registry.register("a")
+    registry.register("b2")
+    registry.record("a", sources: ["/wt/a/demo/calculator2/workflows"])
+    registry.record("a", sources: ["/wt/a/demo/calculator2/workflows", "/wt/b/demo/calculator2/workflows"])
+    expect(registry.entries["a"]["sources"]).to eq(["/wt/a/demo/calculator2/workflows", "/wt/b/demo/calculator2/workflows"])
+    expect(registry.remove("a")).to include(
+      {"key" => "workflows.sources:/wt/a/demo/calculator2/workflows", "value" => "/wt/a/demo/calculator2/workflows", "replaced" => nil},
+      {"key" => "workflows.sources:/wt/b/demo/calculator2/workflows", "value" => "/wt/b/demo/calculator2/workflows", "replaced" => nil}
+    )
+    expect(registry.entries.keys).to eq(["b2"])
+  end
+
   it "reports ids whose process is gone as stale" do
     registry.register("a")
     described_class.new(dir, clock: clock, pid: 222, host: "h", alive: alive).register("b2")
     expect(registry.stale).to eq(["b2"])
+  end
+
+  it "refuses to register an id another pid already holds, leaving the file unchanged" do
+    registry.register("a")
+    before = File.read(File.join(dir, "series.json"))
+    other = described_class.new(dir, clock: clock, pid: 222, host: "h", alive: alive)
+    expect { other.register("a", workspaces: ["ws"]) }
+      .to raise_error(described_class::Refusal, /series a is already registered by pid 111/)
+    expect(File.read(File.join(dir, "series.json"))).to eq(before)
+  end
+
+  it "lets the same pid register an id again and append" do
+    registry.register("a", workspaces: ["w1"])
+    registry.register("a", workspaces: ["w2"])
+    expect(registry.entries["a"]["workspaces"]).to eq(["w1", "w2"])
+  end
+
+  describe "process start time" do
+    let(:started_at) { Time.utc(2026, 1, 2, 3, 4, 5) }
+
+    def registry_with(process_started)
+      described_class.new(dir, clock: clock, pid: 111, host: "h", process_started: process_started)
+    end
+
+    before { allow(Process).to receive(:kill).with(0, 111).and_return(1) }
+
+    it "counts an id stale when its pid was reused by a process started after registration" do
+      r = registry_with(->(_pid) { started_at + 3600 })
+      r.register("a")
+      expect(r.stale).to eq(["a"])
+    end
+
+    it "keeps an id whose process started before it was registered" do
+      r = registry_with(->(_pid) { started_at - 60 })
+      r.register("a")
+      expect(r.stale).to eq([])
+    end
+
+    it "keeps an id when the start time is unknown" do
+      r = registry_with(->(_pid) {})
+      r.register("a")
+      expect(r.stale).to eq([])
+    end
   end
 
   it "writes no file or directory in read-only mode" do

@@ -128,6 +128,50 @@ RSpec.describe Workspace::ITerm do
     end
   end
 
+  describe "#single_session_windows" do
+    def iterm_answering(text, timed_out: false)
+      runner = Class.new do
+        define_method(:initialize) { |t, o|
+          @t = t
+          @o = o
+        }
+        def timeout = 5
+
+        define_method(:call) { |_script| Workspace::OsascriptRunner::Result.new(@t, !@o, @o) }
+      end.new(text, timed_out)
+      described_class.new(config: config, output: output, osascript: runner)
+    end
+
+    let(:fs) { 31.chr }
+    let(:rs) { 30.chr }
+
+    it "parses one record per window" do
+      text = ["7", "u1", "/dev/ttys001", "hello\n"].join(fs) + rs + ["9", "u2", "/dev/ttys002", "bye"].join(fs) + rs
+
+      expect(iterm_answering(text).single_session_windows).to eq([
+        {window_id: 7, unique_id: "u1", tty: "/dev/ttys001", contents: "hello\n"},
+        {window_id: 9, unique_id: "u2", tty: "/dev/ttys002", contents: "bye"}
+      ])
+    end
+
+    it "cuts contents to the last tail_lines lines" do
+      text = ["7", "u1", "/dev/ttys001", "a\nb\nc\nd\n"].join(fs) + rs
+
+      expect(iterm_answering(text).single_session_windows(tail_lines: 2).first[:contents]).to eq("c\nd\n")
+    end
+
+    it "answers empty when there is no output" do
+      expect(iterm_answering("").single_session_windows).to eq([])
+    end
+
+    it "answers empty and reports a timeout when iTerm2 does not answer" do
+      iterm = iterm_answering("", timed_out: true)
+
+      expect(iterm.single_session_windows).to eq([])
+      expect(iterm.last_call_timed_out?).to be true
+    end
+  end
+
   describe "AppleScript injection safety" do
     let(:runner) { double("osascript", timeout: 5) }
     let(:iterm) { described_class.new(config: config, output: output, osascript: runner) }

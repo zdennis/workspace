@@ -1,4 +1,3 @@
-require "digest"
 require "fileutils"
 require "socket"
 
@@ -230,6 +229,7 @@ module Workspace
         raise ArgumentError, "invalid project key #{key.inspect}" if key.to_s.empty?
         slug = (name || key).to_s.gsub(/[^A-Za-z0-9_-]+/, "-").gsub(/-{2,}/, "-").gsub(/^-|-$/, "")
         slug = "namespace" if slug.empty?
+        require "digest"
         File.join(inbox_dir, "project", "#{slug}-#{Digest::SHA1.hexdigest(key.to_s)[0, 12]}.json")
       else
         raise ArgumentError, "unknown inbox scope kind #{kind.inspect}"
@@ -454,6 +454,7 @@ module Workspace
       path = File.join(dir, filename)
       return path if capped_bytesize(path, filename, component_only) <= limit
 
+      require "digest"
       hash = Digest::SHA256.hexdigest(name)[0, 10]
       min_filename = "workspace-#{hash}#{ext}"
       min_path = File.join(dir, min_filename)

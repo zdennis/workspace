@@ -1,0 +1,8 @@
+# The script the rpiv commit-loop golden plays: implement commits but leaves the plan open twice, so its retry fails
+# its require too and the implicit loop goes back to plan. plan (guard: config) runs again with the commit standing,
+# then implement passes and the run finishes.
+steps:
+  implement:
+    - {require: {plan_status: fail}}
+    - {require: {plan_status: fail}}
+    - {}

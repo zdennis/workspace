@@ -14,6 +14,9 @@ module DemoCalculator2
   # on the wrong commit would be scored against the wrong tests.
   class ForkCheckFailed < DemoCalculator::Refused; end
 
+  # A git command that the test-file ownership check needs failed, so the check could not tell whether lane B kept to its file.
+  class OwnershipCheckFailed < DemoCalculator::Refused; end
+
   # `run --lanes`: two workspaces deliver the goals at once. Lane A (the checkout the script sits in) runs 01-05 on the
   # run branch. Lane B, a second workspace that is running, idle and on main, is forked from the head lane A's goal 03
   # ended on and runs 06 and 07. When both queues drain, lane A merges lane B's branch and checks 1..7 with the plain
@@ -29,6 +32,9 @@ module DemoCalculator2
     # What joins a project name to a worktree suffix in a workspace name (Workspace::WorkspaceName::SEPARATOR).
     WORKTREE_SEPARATOR = ".worktree-"
     DRIVER_LINE = "LOOP DONE".freeze
+    TEST_DIR = "#{DEMO_DIR}/test/".freeze
+    # Lane B's own test file, which the prompt names; lane A leaves it alone and lane B touches no other file in {TEST_DIR}.
+    LANE_B_TEST_FILE = "#{TEST_DIR}lane_b_test.rb".freeze
 
     # @param root [String] lane A's checkout
     # @param workspace [String] the `workspace` program
@@ -137,6 +143,8 @@ module DemoCalculator2
     # @return [Hash, nil] a stop (`reason`, `item`) when waiting for integrate-branch stopped early
     def integrate(record)
       branch = record.dig("lanes", "b", "branch")
+      refused = ownership_stop(record)
+      return refused if refused
       integration = {"branch" => branch, "started_at" => @clock.call.utc.iso8601}
       record["integration"] = integration
       _, merged = git(@root, "merge", "--no-ff", "--no-edit", branch)
@@ -159,6 +167,55 @@ module DemoCalculator2
       integration["ended_at"] = @clock.call.utc.iso8601
       save(record)
       stop
+    end
+
+    # The test-file ownership check, run once at the top of {#integrate}, before the merge, so `run --wait` and an
+    # `integrate` re-run both get it. It records `lane_b_check` (`passed`, `checked_at`, `premerge_head`), replacing any
+    # earlier value. A violation is also printed, and the run stops with reason `ownership`.
+    #
+    # @param record [Hash] the run record, with a `fork`
+    # @return [Hash, nil] a stop (`reason`, `item`); nil when both lanes kept to their files
+    # @raise [OwnershipCheckFailed] when git could not answer
+    def ownership_stop(record)
+      a_head = ownership_a_head(record)
+      problem = ownership_problem(record, a_head)
+      check = {"passed" => problem.nil?, "checked_at" => @clock.call.utc.iso8601, "premerge_head" => a_head}
+      check["message"] = problem if problem
+      record["lane_b_check"] = check
+      save(record)
+      return nil unless problem
+      @err.puts "demo-calculator2: #{problem}"
+      {"reason" => "ownership", "item" => nil}
+    end
+
+    # The head of lane A that its own commits are read up to: the one the last passing check saw before the merge when the
+    # merge has happened (repair commits after it may edit lane B's file), else lane A's head now.
+    #
+    # @return [String] a commit sha
+    def ownership_a_head(record)
+      earlier = record["lane_b_check"]
+      return earlier["premerge_head"] if earlier.is_a?(Hash) && earlier["passed"] && earlier["premerge_head"] && record["integration"]
+      git!("rev-parse", "--verify", "HEAD").strip
+    end
+
+    # Lane B's own commits since the fork may touch only {LANE_B_TEST_FILE} under {TEST_DIR}; lane A's own commits since
+    # the fork, up to `a_head`, must not touch it. Both lanes are read the same way, so what a merge brought in is never blamed.
+    #
+    # @param a_head [String] lane A's head to read up to
+    # @return [String, nil] what broke the rule and what to change; nil when none did
+    def ownership_problem(record, a_head)
+      fork_sha = record.dig("fork", "sha")
+      raise OwnershipCheckFailed, "the run record has no fork sha to compare the lanes against" unless fork_sha
+      branch = record.dig("lanes", "b", "branch")
+      head = git!("rev-parse", "--verify", "#{branch}^{commit}").strip
+      stray = own_commit_files(fork_sha, head).select { |file| file.start_with?(TEST_DIR) && file != LANE_B_TEST_FILE }
+      return "lane B (#{branch}) changed #{stray.join(", ")}, which is not its file: put its tests in #{LANE_B_TEST_FILE} and leave the others as they were" unless stray.empty?
+      "lane A changed #{LANE_B_TEST_FILE}, which is lane B's: leave it to lane B" if own_commit_files(fork_sha, a_head).include?(LANE_B_TEST_FILE)
+    end
+
+    # @return [Array<String>] the files the first-parent, non-merge commits of `fork_sha..head` touch
+    def own_commit_files(fork_sha, head)
+      git!("log", "--first-parent", "--no-merges", "--no-renames", "--name-only", "--pretty=format:", "#{fork_sha}..#{head}").lines.map(&:strip).reject(&:empty?)
     end
 
     # The checks a fork must pass before lane B runs anything; each failure is a refusal.
@@ -345,6 +402,14 @@ module DemoCalculator2
     end
 
     def name_args(name) = name ? ["--name", name] : []
+
+    # @return [String] the output of one git command in lane A's checkout
+    # @raise [OwnershipCheckFailed] when it fails
+    def git!(*args)
+      out, ok = git(@root, *args)
+      raise OwnershipCheckFailed, "the test-file ownership check could not run: git #{args.join(" ")} failed in #{@root}" unless ok
+      out.to_s
+    end
 
     def git(dir, *args)
       out, ok = @exec.call(["git", *args], chdir: dir)

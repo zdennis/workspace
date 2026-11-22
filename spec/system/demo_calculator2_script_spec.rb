@@ -73,7 +73,7 @@ RSpec.describe "script/demo-calculator2" do
       calls = File.read(log).lines.map(&:strip)
       expect(calls.grep(/\Aconfig set workflows.sources /).first).to end_with("/demo/calculator2/workflows")
       expect(calls).to include("workflow install",
-        "config set --scope workspace --name ws commands.test ruby demo/calculator2/test/calc_test.rb",
+        "config set --scope workspace --name ws commands.test #{DemoCalculator2::TEST_COMMAND}",
         "config set --scope workspace --name ws commands.lint bundle exec standardrb demo/calculator2")
       adds = calls.grep(/\Awork-queue add workflow deliver-goal /)
       expect(adds.map { |line| line[%r{goals/(0\d-[a-z-]+)\.md}, 1] }).to eq(DemoCalculator2::GOALS)
@@ -105,7 +105,7 @@ RSpec.describe "script/demo-calculator2" do
       expect(File.exist?(log)).to be(false)
       expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("demo-branch")
       expect(git(work_dir, "for-each-ref", "refs/demo-calc2/")).to eq("")
-      expect(out.string).to include("+ git update-ref refs/demo-calc2/acceptance-base", "+ workspace config set --scope workspace --name ws commands.test ruby demo/calculator2/test/calc_test.rb")
+      expect(out.string).to include("+ git update-ref refs/demo-calc2/acceptance-base", "+ workspace config set --scope workspace --name ws commands.test #{DemoCalculator2::TEST_COMMAND}")
     end
   end
 
@@ -254,7 +254,7 @@ RSpec.describe "script/demo-calculator2" do
         echo "$@" >> #{log}
         if [ "$1" = "snapshot" ]; then cat #{snapshot}; fi
         if [ "$1 $2" = "work-queue list" ]; then echo '{"queues":[{"workspace":"x","state":"off","items":[]}]}'; fi
-        if [ "$1 $2" = "work-queue add" ]; then echo '{"results":[{"id":"item-'"$(echo "$@" | sed 's/.*calculator2-demo:([0-9]*).*/\1/')"'","outcome":"added"}]}'; fi
+        if [ "$1 $2" = "work-queue add" ]; then echo '{"results":[{"id":"item-'"$(echo "$@" | sed 's/.*calculator2-demo:\\([0-9]*\\).*/\\1/')"'","outcome":"added"}]}'; fi
         if [ "$1" = "capabilities" ]; then echo '{"version":"9.9.9","features":{"work_queue":2},"paths":{}}'; fi
       SH
       File.chmod(0o755, path)
@@ -596,5 +596,31 @@ RSpec.describe "script/demo-calculator2" do
       expect(series("--dry-run")).to eq(1)
       expect(err.string).to include("--id")
     end
+  end
+end
+
+RSpec.describe "DemoCalculator2::TEST_COMMAND" do
+  let(:dir) { Dir.mktmpdir }
+
+  after { FileUtils.rm_rf(dir) }
+
+  def run_command
+    Open3.capture2e("sh", "-c", DemoCalculator2::TEST_COMMAND, chdir: dir)
+  end
+
+  it "fails with a clear message when no test file matches" do
+    FileUtils.mkdir_p(File.join(dir, "demo/calculator2/test"))
+    out, status = run_command
+    expect(status.success?).to be(false)
+    expect(out).to include("no test files match demo/calculator2/test/*_test.rb")
+  end
+
+  it "runs every test file, and fails when one of them fails" do
+    FileUtils.mkdir_p(File.join(dir, "demo/calculator2/test"))
+    File.write(File.join(dir, "demo/calculator2/test/a_test.rb"), "puts 'a ran'\n")
+    File.write(File.join(dir, "demo/calculator2/test/b_test.rb"), "puts 'b ran'\nexit 1\n")
+    out, status = run_command
+    expect(out).to include("a ran", "b ran")
+    expect(status.success?).to be(false)
   end
 end

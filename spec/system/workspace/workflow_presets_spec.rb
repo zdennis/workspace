@@ -59,12 +59,15 @@ RSpec.describe "the shipped workflow presets" do
       end
     end
 
-    it "guards research and plan (and the reviewer steps and plan_review in rpiv-auto-approve) as unchanged, and nothing else" do
+    # The step implement's failure loops back into is config, so it reruns after implement's commit instead of
+    # stopping head_moved: plan in rpiv and v2, plan_review in rpiv-auto-approve.
+    it "guards research (and plan and the reviewer steps in rpiv-auto-approve) as unchanged, the step implement loops back into as config, and nothing else" do
       %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2].each do |id|
         guards = catalog.find(id).to_h["steps"].to_h { |step| [step["id"], step["guard"]] }
-        expect(guards.select { |_, guard| guard }).to eq({"research" => "unchanged", "plan" => "unchanged"}.merge((id == "rpiv-auto-approve") ? {
-          "review_supportive" => "unchanged", "review_skeptical" => "unchanged", "review_implementer" => "unchanged", "plan_review" => "unchanged"
-        } : {})), id
+        expect(guards.select { |_, guard| guard }).to eq((id == "rpiv-auto-approve") ? {
+          "research" => "unchanged", "plan" => "unchanged", "review_supportive" => "unchanged", "review_skeptical" => "unchanged",
+          "review_implementer" => "unchanged", "plan_review" => "config"
+        } : {"research" => "unchanged", "plan" => "config"}), id
       end
     end
 
@@ -144,7 +147,7 @@ RSpec.describe "the shipped workflow presets" do
     it "is listed by the catalog as a builtin and validates with no warnings" do
       expect(catalog.list.map { |row| [row["id"], row["source"]] }).to include(["rpiv-auto-approve-v2", "builtin"])
       expect(catalog.known?("rpiv-auto-approve-v2")).to be(true)
-      expect(definition.warnings.map { |w| [w["code"], w["step"]] }).to eq([["guard_unchanged_loop_back", "plan"]])
+      expect(definition.warnings).to eq([])
     end
 
     it "reviews the plan in place of the gate: skeptic plus one other, six rounds, caps from the design" do
@@ -176,10 +179,10 @@ RSpec.describe "the shipped workflow presets" do
       end
     end
 
-    it "leaves the files of rpiv and rpiv-auto-approve as they were" do
+    it "pins the sha256 of rpiv.yml and rpiv-auto-approve.yml, so an edit to either is made on purpose" do
       sha = ->(id) { Digest::SHA256.file(File.join(config.builtin_workflows_dir, "#{id}.yml")).hexdigest }
-      expect(sha.call("rpiv")).to eq("0e8a96e72473e9ff0c0e7c328cfeacb3420f302f42f67a01cce253ba1150d6be")
-      expect(sha.call("rpiv-auto-approve")).to eq("8b72065c72728f7e5ae4d09af7e1755335a10c55c9f84ebd6ea4c6100613e402")
+      expect(sha.call("rpiv")).to eq("c10ac03eac61667fa4c76e2451d3519acd32321c3cbb9f64d3d13cfd1f0398d0")
+      expect(sha.call("rpiv-auto-approve")).to eq("d94b07f2b777ba8ceb9095c16fcd515d01278c8f00e7917a892820cd747f0f8e")
     end
   end
 
@@ -240,12 +243,12 @@ RSpec.describe "the shipped workflow presets" do
       expect(data).not_to have_key("extends")
       expect(data["version"]).to eq(1)
       expect(data["use_when"]).to start_with("Experimental:").and include("commands.test_files").and include("step expect-fail")
-      expect(definition.warnings.map { |w| [w["code"], w["step"]] }).to eq([["guard_unchanged_loop_back", "reproduce"]])
+      expect(definition.warnings).to eq([])
     end
 
     it "proves the new test fails with failure.txt's text before the reproduce gate, with the checker timing out first" do
       reproduce = by_id["reproduce"]
-      expect(reproduce).to include("guard" => "unchanged", "gate" => "approve", "produces" => %w[repro.md failure.txt])
+      expect(reproduce).to include("guard" => "config", "gate" => "approve", "produces" => %w[repro.md failure.txt])
       exec = reproduce["require"].first
       expect(exec["exec"]).to eq(%w[workspace step expect-fail --timeout 840 --match-file {{artifacts}}/failure.txt -- {{changed.tests}}])
       expect(exec["timeout"]).to eq(900.0)

@@ -93,4 +93,12 @@ RSpec.describe Workspace::SessionWorkspace do
       server&.close
     end
   end
+
+  it "asks its project_config nothing but available_projects" do
+    names = double("names", available_projects: %w[lab-wc])
+    allow(tmux).to receive(:session_name_for).with("lab-wc").and_return("lab-wc")
+    resolver = described_class.new(tmux: tmux, project_config: names, config: config)
+
+    expect(resolver.call("lab-wc")).to eq("lab-wc")
+  end
 end

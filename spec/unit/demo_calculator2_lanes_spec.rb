@@ -78,6 +78,17 @@ RSpec.describe DemoCalculator2::Lanes do
                  "b" => {"workspace" => "ws-b", "path" => "/lane-b", "branch" => branch, "goals" => %w[06-json 07-repl], "items" => []}}}
   end
 
+  # Lane B's branch is at `head` and lane A's at `a_head`; lane B's own commits changed `b_files` and lane A's own commits
+  # changed `a_files` since the fork.
+  def script_lane_b(head: "b" * 40, a_head: "a" * 40, b_files: ["demo/calculator2/lib/calc.rb"], a_files: ["demo/calculator2/lib/calc.rb"])
+    on("git", "rev-parse", "--verify", "#{branch}^{commit}") { ["#{head}\n", true] }
+    on("git", "rev-parse", "--verify", "HEAD") { ["#{a_head}\n", true] }
+    on("git", "log", "--first-parent", "--no-merges", "--no-renames", "--name-only") do |argv|
+      files = argv.last.end_with?("..#{head}") ? b_files : a_files
+      ["#{files.join("\n\n")}\n", true]
+    end
+  end
+
   def saved = JSON.parse(File.read(record_path))
 
   def history = @history ||= {"ws" => [], "ws-b" => []}
@@ -224,6 +235,7 @@ RSpec.describe DemoCalculator2::Lanes do
       on("ws-bin", "work-queue", "enable") { ["", true] }
       on("ws-bin", "work-queue", "advance") { ["", true] }
       on("git", "merge") { ["", true] }
+      script_lane_b
       on("sh", "-c") { ["", true] }
       on(/acceptance_runner\z/) { ["", true] }
     end
@@ -233,12 +245,12 @@ RSpec.describe DemoCalculator2::Lanes do
       lanes.wait_run(record_path)
       expect(calls).to include(["git", "checkout", "-B", branch, "2" * 40])
       expect(calls.index(["git", "checkout", "-B", branch, "2" * 40])).to be < calls.index { |argv| argv[1, 2] == %w[work-queue add] }
-      expect(calls).to include(%w[ws-bin config set --scope workspace --name ws-b commands.test] + ["ruby demo/calculator2/test/calc_test.rb"],
+      expect(calls).to include(%w[ws-bin config set --scope workspace --name ws-b commands.test] + [DemoCalculator2::TEST_COMMAND],
         %w[ws-bin config set --scope workspace --name ws-b commands.lint] + ["bundle exec standardrb demo/calculator2"],
         %w[ws-bin work-queue enable --name ws-b], %w[ws-bin work-queue advance --name ws-b])
       adds = calls.select { |argv| argv[1, 2] == %w[work-queue add] }.select { |argv| argv.include?("--name") && argv.last == "ws-b" }
       expect(adds.map { |argv| argv[argv.index("--dedupe-key") + 1] }).to eq(%w[calculator2-demo:06-json calculator2-demo:07-repl])
-      expect(adds.map { |argv| argv[argv.index("--prompt") + 1] }).to all(include("Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05."))
+      expect(adds.map { |argv| argv[argv.index("--prompt") + 1] }).to all(include("Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05.", "demo/calculator2/test/lane_b_test.rb"))
       expect(adds.flat_map { |argv| argv.each_cons(2).filter_map { |key, value| value if key == "--input" } }).to include("acceptance=script/demo_calculator2/acceptance_runner_lanes")
       expect(saved["fork"]).to include("sha" => "2" * 40, "acceptance_base" => base, "goal" => "03-div-zero", "item" => "a3")
       expect(saved["fork"]["at"]).to match(/\A2026-11-21T/)
@@ -417,6 +429,7 @@ RSpec.describe DemoCalculator2::Lanes do
       on("sh", "-c") { ["", true] }
       on(/acceptance_runner\z/) { ["", true] }
       on("git", "merge", "--no-ff", "--no-edit", branch) { ["", true] }
+      script_lane_b
       on("ws-bin", "work-queue", "add") { [JSON.generate("results" => [{"id" => "int1"}]), true] }
       on("ws-bin", "work-queue", "enable") { ["", true] }
       on("ws-bin", "work-queue", "advance") { ["", true] }
@@ -479,7 +492,7 @@ RSpec.describe DemoCalculator2::Lanes do
     end
 
     it "stops on the first failing check and runs no later one" do
-      on("sh", "-c", "ruby demo/calculator2/test/calc_test.rb") { ["", false] }
+      on("sh", "-c", DemoCalculator2::TEST_COMMAND) { ["", false] }
       finished("int1")
       lanes.integrate_run(record_path)
       expect(saved["integration"]).to include("first_pass" => false, "test" => false)
@@ -536,6 +549,113 @@ RSpec.describe DemoCalculator2::Lanes do
       wall = out.string[/wall=(\d+)m(\d+)s/].then { |text| text.scan(/\d+/).then { |m, s| (m.to_i * 60) + s.to_i } }
       expect(wall).to be < Time.utc(2026, 11, 21, 5, 25, 0) - Time.utc(2026, 11, 21, 5, 0, 30)
       expect(wall).to be > Time.utc(2026, 11, 21, 5, 24, 0) - Time.utc(2026, 11, 21, 5, 0, 30) - 1
+    end
+
+    describe "the test-file ownership check" do
+      let(:lane_b_file) { "demo/calculator2/test/lane_b_test.rb" }
+      let(:shared_file) { "demo/calculator2/test/calc_test.rb" }
+
+      def merged? = calls.any? { |argv| argv[1] == "merge" }
+
+      def log_call = calls.index { |argv| argv[1, 2] == %w[log --first-parent] }
+
+      it "passes when lane B touches only its own test file and lane A leaves it alone" do
+        script_lane_b(b_files: ["demo/calculator2/lib/calc.rb", lane_b_file])
+        lanes.integrate_run(record_path)
+        expect(saved["integration"]).to include("merge" => "clean")
+        expect(saved["lane_b_check"]).to include("passed" => true, "premerge_head" => "a" * 40)
+        expect(saved["lane_b_check"]).not_to have_key("message")
+      end
+
+      it "runs before the merge" do
+        lanes.integrate_run(record_path)
+        expect(log_call).to be < calls.index { |argv| argv[1] == "merge" }
+      end
+
+      {"calc_test.rb" => ["demo/calculator2/test/calc_test.rb"],
+       "another test file" => ["demo/calculator2/test/other_test.rb"],
+       "a deleted test file" => ["demo/calculator2/test/helper.rb"],
+       "a rename out of calc_test.rb" => ["demo/calculator2/test/calc_test.rb", "demo/calculator2/test/renamed_test.rb"]}.each do |label, files|
+        it "stops the run, recording it, when lane B changed #{label}" do
+          script_lane_b(b_files: files)
+          record = lanes.integrate_run(record_path)
+          expect(record["wait"]).to include("reason" => "ownership")
+          expect(saved["wait"]).to include("reason" => "ownership")
+          expect(saved["lane_b_check"]).to include("passed" => false, "message" => /lane B .* changed #{Regexp.escape(files.first)}.*put its tests in demo\/calculator2\/test\/lane_b_test\.rb/)
+          expect(err.string).to match(/demo-calculator2: lane B .* changed/)
+          expect(merged?).to be(false)
+        end
+      end
+
+      it "stops the run when lane A touched lane B's test file" do
+        script_lane_b(a_files: [lane_b_file])
+        record = lanes.integrate_run(record_path)
+        expect(record["wait"]).to include("reason" => "ownership")
+        expect(saved["lane_b_check"]["message"]).to match(/lane A changed demo\/calculator2\/test\/lane_b_test\.rb/)
+        expect(merged?).to be(false)
+      end
+
+      {"rev-parse" => ["rev-parse", "--verify", "calc-demo/20261121T050000Z-b^{commit}"], "log" => %w[log --first-parent]}.each do |verb, prefix|
+        it "raises the infrastructure error, not a rejection, when git #{verb} fails" do
+          script_lane_b
+          on("git", *prefix) { ["fatal", false] }
+          expect { lanes.ownership_stop(JSON.parse(File.read(record_path))) }.to raise_error(DemoCalculator2::OwnershipCheckFailed, /could not run: git #{verb} /)
+          expect(saved).not_to have_key("lane_b_check")
+        end
+      end
+
+      it "ends the run with reason error and no rejection record when git fails" do
+        script_lane_b
+        on("git", "log", "--first-parent") { ["fatal", false] }
+        record = lanes.integrate_run(record_path)
+        expect(record["wait"]).to include("reason" => "error")
+        expect(saved).not_to have_key("lane_b_check")
+        expect(err.string).to match(/ownership check could not run/)
+      end
+
+      it "raises when the record names no fork sha" do
+        data = JSON.parse(File.read(record_path))
+        data["fork"].delete("sha")
+        expect { lanes.ownership_stop(data) }.to raise_error(DemoCalculator2::OwnershipCheckFailed, /no fork sha/)
+      end
+
+      it "is the same check when the queues drain through run --wait, before the merge" do
+        script_lane_b(b_files: [shared_file])
+        allow(lanes).to receive(:wait_loop).and_return(nil)
+        record = lanes.wait_run(record_path)
+        expect(record["wait"]).to include("reason" => "ownership")
+        expect(merged?).to be(false)
+        expect(calls.count { |argv| argv[1, 2] == %w[log --first-parent] }).to eq(1)
+      end
+
+      it "records a pass over a stale failure, as a fixed and resumed series" do
+        data = saved.merge("lane_b_check" => {"passed" => false, "message" => "old"})
+        File.write(record_path, JSON.generate(data))
+        script_lane_b
+        lanes.integrate_run(record_path)
+        expect(saved["lane_b_check"]).to include("passed" => true, "premerge_head" => "a" * 40, "checked_at" => String)
+        expect(saved["lane_b_check"]).not_to have_key("message")
+      end
+
+      it "reads lane A up to the head recorded before the merge when integrate runs again" do
+        data = saved.merge("integration" => {"merge" => "clean"},
+          "lane_b_check" => {"passed" => true, "premerge_head" => "p" * 40})
+        File.write(record_path, JSON.generate(data))
+        script_lane_b(a_head: "r" * 40)
+        lanes.integrate_run(record_path)
+        expect(calls.find { |argv| argv[1, 2] == %w[log --first-parent] && argv.last.end_with?("..#{"p" * 40}") }).not_to be_nil
+        expect(calls.none? { |argv| argv.last.to_s.end_with?("..#{"r" * 40}") }).to be(true)
+        expect(saved["lane_b_check"]).to include("passed" => true, "premerge_head" => "p" * 40)
+      end
+
+      it "reads lane A up to its head now when the earlier check failed, even if an integration is recorded" do
+        data = saved.merge("integration" => {"merge" => "clean"},
+          "lane_b_check" => {"passed" => false, "premerge_head" => "p" * 40})
+        File.write(record_path, JSON.generate(data))
+        script_lane_b(a_head: "r" * 40)
+        lanes.integrate_run(record_path)
+        expect(saved["lane_b_check"]).to include("passed" => true, "premerge_head" => "r" * 40)
+      end
     end
 
     it "refuses a record that has no fork" do

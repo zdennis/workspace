@@ -3,6 +3,7 @@ require "fileutils"
 require "json"
 require "open3"
 require "optparse"
+require "shellwords"
 
 require_relative "../demo_calculator/cost"
 require_relative "../demo_calculator/demo"
@@ -148,6 +149,8 @@ module DemoCalculator2
     # @param workspace [String] the workspace program
     # @param read_file [#call] `call(path)` answering the text, or nil when there is no such file
     # @param path_exists [#call] `call(path)` says whether a checkout or directory exists
+    # @param realpath [#call] `call(path)` answers a lane checkout's path with its symlinks resolved
+    # @param readable_dir [#call] `call(path)` says whether a `workflows.sources` entry is a directory this process can read
     # @param write_file [#call] `call(path, text)` writes a file, making its directory
     # @param run_logged [#call] `call(argv, chdir:, log:)` runs the run with its output appended to `log` and answers the exit status
     # @param clock [#call] seconds, for the idle wait's cap
@@ -156,11 +159,14 @@ module DemoCalculator2
     # @param command [String, nil] the series command line `command.txt` records (default: rebuilt from the options)
     def initialize(root:, options:, exec:, registry:, out: $stdout, err: $stderr, workspace: "workspace",
       read_file: ->(path) { File.file?(path) ? File.read(path) : nil }, path_exists: ->(path) { File.directory?(path) },
+      readable_dir: ->(path) { File.directory?(path) && File.readable?(path) }, realpath: ->(path) { File.exist?(path) ? File.realpath(path) : path },
       write_file: ->(path, text) { FileUtils.mkdir_p(File.dirname(path)) && File.write(path, text) }, run_logged: RUN_LOGGED,
       clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) },
       idle_wait: IDLE_WAIT, idle_poll: IDLE_POLL,
       copy_dir: ->(from, to) { FileUtils.mkdir_p(to) && FileUtils.cp_r(File.join(from, "."), to) }, command: nil)
       @copy_dir = copy_dir
+      @readable_dir = readable_dir
+      @realpath = realpath
       @command = command
       @write_file = write_file
       @run_logged = run_logged
@@ -184,6 +190,7 @@ module DemoCalculator2
     # @return [Integer] 0 when the run ends on `items=7/7`, 3 on a stop after step 2 began, 1 on a refusal before it. A dry run lists every
     #   refusal, prints the plan anyway and ends with 1 if there were any, else 0.
     def call
+      raise Refused, "--forget cannot be combined with --dry-run: forgetting copies evidence and deletes" if @options.forget && @options.dry_run
       return forget if @options.forget
       report = preflight
       say_report(report)
@@ -204,10 +211,12 @@ module DemoCalculator2
     def preflight
       @refusals = []
       collect { check_id }
+      collect { check_workflow }
       collect { check_unused }
       collect { check_base }
       collect { check_ci }
       collect { check_test_db }
+      collect { check_sources_readable }
       shared = collect { check_shared_values } || []
       check_definitions
       Report.new(shared: shared, stale: collect { @registry.stale } || [], refusals: @refusals)
@@ -495,13 +504,19 @@ module DemoCalculator2
       keys = parse(run_ok(@root, @workspace, "config", "show", "--json"))&.fetch("keys", nil)
       list = keys.is_a?(Array) ? keys.find { |key| key["key"] == SOURCES_KEY }&.fetch("effective", nil) : nil
       list = list.split(",").map(&:strip) if list.is_a?(String)
-      rest = Array(list).map(&:to_s) - [ours]
+      rest = Array(list).map(&:to_s).reject { |entry| source_path(entry) == source_path(ours) }
       return if rest.size == Array(list).size
       if rest.empty?
         run_ok(@root, @workspace, "config", "unset", SOURCES_KEY)
       else
         run_ok(@root, @workspace, "config", "set", SOURCES_KEY, rest.join(","))
       end
+    end
+
+    def source_path(entry)
+      text = entry.to_s.strip
+      text = File.join(Dir.home, text[2..]) if text.start_with?("~/")
+      text.sub(%r{(?<=.)/+\z}, "")
     end
 
     def info_path(file)
@@ -549,7 +564,11 @@ module DemoCalculator2
     # Step 2. The id is registered before the first start and each workspace is recorded as soon as its start answers, before the
     # next command runs.
     def start_lanes
-      @registry.register(id)
+      begin
+        @registry.register(id)
+      rescue SeriesRegistry::Refusal => e
+        raise Refused, e.message
+      end
       @concurrent = @registry.entries.size - 1
       @started = true
       [id, "#{id}-b"].each do |name|
@@ -558,6 +577,11 @@ module DemoCalculator2
         doc = {} unless doc.is_a?(Hash)
         @registry.record(id, workspaces: [doc["workspace"]]) if doc["workspace"]
         raise Stopped, "`workspace start calc2-demo-#{name}` failed" unless ok && doc["workspace"] && doc["path"]
+        # The lanes run's own `configure` adds its checkout's entry to the global list; the checkout dies at cleanup, so the entry is
+        # recorded as this id's own, to be dropped however the series ends. The run names its checkout by its realpath, which a
+        # symlinked path does not spell the same way, so both spellings are recorded.
+        entry = File.join(doc["path"], DEMO_DIR, "workflows")
+        @registry.record(id, sources: [entry, File.join(@realpath.call(doc["path"]), DEMO_DIR, "workflows")].uniq)
         @lanes << {workspace: doc["workspace"], path: doc["path"]}
       end
     end
@@ -670,6 +694,11 @@ module DemoCalculator2
       raise Refused, "id #{id.inspect} must be lowercase letters and digits starting with a letter, and not b"
     end
 
+    def check_workflow
+      return if GOAL_WORKFLOW_IDS.include?(@options.workflow)
+      raise Refused, "--workflow #{@options.workflow.inspect} must be one of #{GOAL_WORKFLOW_IDS.join(", ")}"
+    end
+
     def check_unused
       %W[#{id} #{id}-b].each do |name|
         _, found = read("git", "show-ref", "--verify", "--quiet", "refs/demo-calc2-runs/#{name}")
@@ -677,11 +706,11 @@ module DemoCalculator2
       end
       out = must_read("git", "worktree", "list", "--porcelain")
       paths = out.to_s.lines.filter_map { |line| line.chomp.delete_prefix("worktree ") if line.start_with?("worktree ") }
-      raise Refused, "id #{id} is used: a worktree calc2-demo-#{id} exists" if paths.any? { |path| File.basename(path).match?(/\Acalc2-demo-#{id}(-b)?\z/) }
+      raise Refused, "id #{id} is used: a worktree calc2-demo-#{id} exists" if paths.any? { |path| File.basename(path).match?(/\Acalc2-demo-#{Regexp.escape(id)}(-b)?\z/) }
       names = json(@workspace, "list", "--all", "--json")
       raise Refused, "`workspace list --all --json` did not print a list" unless names.is_a?(Array)
       names = names.map { |row| row.is_a?(Hash) ? row["name"].to_s : row.to_s }
-      raise Refused, "id #{id} is used: a workspace calc2-demo-#{id} exists" if names.any? { |name| name.match?(/(\A|\.worktree-|\.)calc2-demo-#{id}(-b)?\z/) }
+      raise Refused, "id #{id} is used: a workspace calc2-demo-#{id} exists" if names.any? { |name| name.match?(/(\A|\.worktree-|\.)calc2-demo-#{Regexp.escape(id)}(-b)?\z/) }
       raise Refused, "id #{id} is used: it is in the series registry (series --forget #{id})" if @registry.entries.key?(id)
     end
 
@@ -795,6 +824,18 @@ module DemoCalculator2
       list = keys.find { |key| key["key"] == SOURCES_KEY }&.fetch("effective", nil)
       list = list.split(",").map(&:strip) if list.is_a?(String)
       Array(list).map { |entry| entry.to_s.start_with?("~/") ? File.join(Dir.home, entry[2..]) : entry.to_s }
+    end
+
+    # `workflow install` reads every entry, so one that is not a readable directory (a deleted checkout's) fails every run.
+    def check_sources_readable
+      list = live_sources
+      bad = list.select { |entry| entry.start_with?("/") && !@readable_dir.call(entry) }
+      return if bad.empty?
+      rest = list - bad
+      fix = rest.empty? ? "#{@workspace} config unset #{SOURCES_KEY}" : "#{@workspace} config set #{SOURCES_KEY} #{Shellwords.escape(rest.join(","))}"
+      them = (bad.size == 1) ? "it" : "them"
+      raise Refused, "#{SOURCES_KEY} lists #{bad.join(", ")}, which #{(bad.size == 1) ? "is not a readable directory" : "are not readable directories"}; " \
+        "`workspace workflow install` fails on #{them}, and --take-over does not remove #{them}. Remove #{them}: #{fix}"
     end
 
     # Every definition the catalog would resolve must be the base's bytes; an id it does not resolve yet is ours to add.

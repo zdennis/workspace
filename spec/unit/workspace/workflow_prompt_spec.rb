@@ -25,6 +25,8 @@ RSpec.describe Workspace::WorkflowPrompt do
     )
   end
 
+  let(:unattended_text) { described_class::CHECKLIST_TEXT.sub(described_class::CHECKLIST_ASK, "If the brief itself is ambiguous, #{described_class::UNATTENDED_TEXT}") }
+
   def composed_with
     composer.calls.last.last
   end
@@ -44,14 +46,14 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(composed_with[:workflow]).to eq("name" => "flow", "include" => ["commits"], "text" => "Run wr_1.")
       expect(composed_with[:step]["text"]).to eq("Plan the fix on topic in wr_1.\n\nThis step is finished when your turn ends and these files " \
         "exist, written during this attempt: #{File.join(@dir, ".workflow", "wr_1", "plan.md")}.\n\n" \
-        "#{described_class::CHECKLIST_TEXT}\n\n#{described_class::STATUS_LINE_TEXT}")
+        "#{unattended_text}\n\n#{described_class::STATUS_LINE_TEXT}")
     end
 
     it "ends a minimal step's text with the generated status line, naming the format and every state" do
       prompt.compose(run, {"id" => "plan", "prompt" => "Plan.", "produces" => []}, [])
 
       text = composed_with[:step]["text"]
-      expect(text).to eq("Plan.\n\n#{described_class::CHECKLIST_TEXT}\n\n#{described_class::STATUS_LINE_TEXT}")
+      expect(text).to eq("Plan.\n\n#{unattended_text}\n\n#{described_class::STATUS_LINE_TEXT}")
       expect(text).to include(Workspace::WorkflowReportedStatus::FORMAT)
       Workspace::WorkflowReportedStatus::STATES.each { |state| expect(text).to include(state) }
     end
@@ -61,8 +63,72 @@ RSpec.describe Workspace::WorkflowPrompt do
 
       text = composed_with[:step]["text"]
       expect(described_class::CHECKLIST_TEXT).to include("re-read this step's brief and instructions", "each requirement", "evidence", "file:line", "report stuck with what is missing", "needs_input only for a question", "instead of done")
-      expect(text).to include("#{described_class::CHECKLIST_TEXT}\n\n#{described_class::STATUS_LINE_TEXT}")
+      expect(text).to include("#{unattended_text}\n\n#{described_class::STATUS_LINE_TEXT}")
       expect(described_class::CHECKLIST_TEXT.lines.size).to eq(1)
+    end
+
+    describe "the checklist" do
+      let(:gated) { Workspace::WorkflowRun.from_h(run.to_h.merge("definition" => run.definition.merge("steps" => [step.merge("gate" => "approve")]))) }
+      let(:requirements) { File.join(@dir, ".workflow", "wr_1", "requirements.md") }
+      let(:minimal) { {"id" => "plan", "prompt" => "Plan.", "produces" => []} }
+
+      def checklist_of(a_run)
+        prompt.compose(a_run, minimal, [])
+        composed_with[:step]["text"]
+      end
+
+      def write_requirements
+        FileUtils.mkdir_p(File.dirname(requirements))
+        File.write(requirements, "R1 it works\n")
+      end
+
+      it "substitutes fragments that are really in CHECKLIST_TEXT, so a drift cannot make the sub a no-op" do
+        expect(described_class::CHECKLIST_TEXT).to include(described_class::CHECKLIST_BRIEF, described_class::CHECKLIST_ASK)
+        expect(described_class::CHECKLIST_TEXT).to end_with(described_class::CHECKLIST_ASK)
+      end
+
+      it "replaces the ask clause, keeping the own-test sentence, with no requirements.md and no gate" do
+        expect(checklist_of(run)).to include(unattended_text)
+        expect(described_class::UNATTENDED_TEXT).to include("`workspace ask \"<question>\" --default \"<what you did>\"`", "carry on", "ask (needs_input) only when no sensible default fits")
+      end
+
+      it "is exactly today's text with no requirements.md and a gate" do
+        expect(checklist_of(gated)).to include("Plan.\n\n#{described_class::CHECKLIST_TEXT}\n\n#{described_class::STATUS_LINE_TEXT}")
+        expect(checklist_of(gated)).not_to include("workspace ask")
+      end
+
+      it "checks each R in requirements.md instead of re-reading the brief, keeping the own-test sentence, once the file exists" do
+        write_requirements
+
+        text = checklist_of(gated)
+        expect(text).to include("check each R in #{requirements} and list each requirement with the evidence")
+        expect(text).not_to include("re-read this step's brief")
+        expect(text).to include(described_class::CHECKLIST_TEXT.split("instead of done. ").last)
+        expect(text).not_to include("workspace ask")
+      end
+
+      it "counts a gate on a fan_out sibling as attended" do
+        fan = Workspace::WorkflowRun.from_h(run.to_h.merge("definition" => run.definition.merge("steps" => [
+          {"id" => "a", "group" => "checks", "prompt" => "A.", "produces" => []},
+          {"id" => "b", "group" => "checks", "prompt" => "B.", "produces" => [], "gate" => "approve"}
+        ])))
+
+        expect(checklist_of(fan)).to include("Plan.\n\n#{described_class::CHECKLIST_TEXT}\n\n")
+      end
+
+      it "treats a definition without steps as gateless instead of raising" do
+        bare = Workspace::WorkflowRun.from_h(run.to_h.merge("definition" => {"id" => "flow"}))
+
+        expect(checklist_of(bare)).to include(unattended_text)
+      end
+
+      it "gets both changes with requirements.md and no gate" do
+        write_requirements
+
+        text = checklist_of(run)
+        expect(text).to include("check each R in #{requirements}")
+        expect(text).to include(described_class::UNATTENDED_TEXT)
+      end
     end
 
     it "tells the agent to correct a plainly wrong expectation in a test its own run wrote, not to wait for a person" do
@@ -88,7 +154,7 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(context).to eq(["Fix it."])
       expect(composed_with[:skip]).to eq(["dev"])
       expect(composed_with[:step]["text"]).to include("exist as non-empty regular files (not links)")
-      expect(composed_with[:step]["text"]).to include("the runner checks the step with the project's own command; work until it would pass.\n\n#{described_class::CHECKLIST_TEXT}\n\n#{described_class::STATUS_LINE_TEXT}")
+      expect(composed_with[:step]["text"]).to include("the runner checks the step with the project's own command; work until it would pass.\n\n#{unattended_text}\n\n#{described_class::STATUS_LINE_TEXT}")
       expect(composed_with[:step]["text"]).to end_with(described_class::STATUS_LINE_TEXT)
     end
 

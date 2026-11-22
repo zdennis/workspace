@@ -6,7 +6,7 @@ module DemoCalculator2
   # every wait, started on the first one. When the follower cannot start or ends, each wait is a plain sleep.
   class EventWaiter
     TYPES = %w[work_queue_item_started work_queue_item_finished].freeze
-    ARGV = ["workspace", "events", "--follow", "--json", "--types", TYPES.join(",")].freeze
+    ARGS = ["events", "--follow", "--json", "--types", TYPES.join(",")].freeze
     FALLBACK_SLEEP = 3
 
     # @param line [String] one line of the follower's output
@@ -20,12 +20,14 @@ module DemoCalculator2
     end
 
     # @param workspaces [Array<String>] the lane workspace names a line must name, unless `call` is given its own
+    # @param workspace [String] the `workspace` program the follower runs
     # @param spawn [#call] `call(argv)` starts the follower and returns `[stdout, thread]`: a readable IO and the thread
     #   whose `pid` is the child and whose `join` reaps it
     # @param sleeper [#call] sleeps for the given seconds
     # @param clock [#call] returns the current Time
-    def initialize(workspaces: [], spawn: self.class.method(:popen), sleeper: ->(seconds) { sleep(seconds) }, clock: -> { Time.now })
+    def initialize(workspaces: [], workspace: "workspace", spawn: self.class.method(:popen), sleeper: ->(seconds) { sleep(seconds) }, clock: -> { Time.now })
       @workspaces = workspaces
+      @workspace_bin = workspace
       @spawn = spawn
       @sleeper = sleeper
       @clock = clock
@@ -84,7 +86,7 @@ module DemoCalculator2
     private
 
     def start
-      @stdout, @thread = @spawn.call(ARGV)
+      @stdout, @thread = @spawn.call([@workspace_bin, *ARGS])
     rescue SystemCallError
       @stdout = @thread = nil
       @fallback = true

@@ -82,7 +82,7 @@ module DemoCalculator2
     args[:id] = options[:id] if options[:id]
     args[:stub_ref] = options[:stub_ref] if options[:stub_ref]
     args[:goals] = pick_goals(options[:goals]) if options[:goals]
-    args[:waiter] = EventWaiter.new
+    args[:waiter] = EventWaiter.new(workspace: workspace)
     args[:idle_wait] = Float(ENV["DEMO_LANE_B_IDLE_WAIT"]) if ENV["DEMO_LANE_B_IDLE_WAIT"]
     Lanes.new(**args)
   end

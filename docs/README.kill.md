@@ -31,9 +31,11 @@ Removes the git worktree, cleans up the tmuxinator config, project settings and 
 5. Run the `post_kill` hook.
 6. Remove the tmuxinator config and project settings.
 7. Delete the local branch, and with `--delete-remote` the remote one (see [Branches](#branches)).
-8. Remove the state entry, then kill the tmux session.
+8. Remove the state entry, kill the tmux session, then close the iTerm2 window iTerm2 brings back for it (see [`stop`](README.stop.md#the-window-iterm2-brings-back)).
 
 The session is killed last because `kill` often runs inside that session, and killing it ends the `kill` process. Everything that has to be written is done by then. For the same reason, the `post_kill` hook runs before the session is killed, not after. It still sees the project's settings, but the worktree directory is already gone, so it runs in the directory you ran `kill` from.
+
+The window is closed after the kill, because iTerm2 only lists it then. A `kill` run from a pane inside the session it ends dies with that session, so that window stays open; close it by hand.
 
 Only works on worktree-based projects created by `workspace start`. For non-worktree projects, use `workspace stop` instead.
 

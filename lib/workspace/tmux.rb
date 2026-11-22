@@ -1,8 +1,5 @@
 require "open3"
-require "securerandom"
 require "shellwords"
-require "tmpdir"
-require "yaml"
 
 module Workspace
   # Manages tmux session operations for the workspace CLI.
@@ -227,6 +224,7 @@ module Workspace
       before = capture_screen(target)
       # tmux buffers are shared by every client of the server, so the name
       # must not repeat across processes or threads.
+      require "securerandom"
       buf = "ws_send_#{Process.pid}_#{SecureRandom.hex(8)}"
       begin
         return failed("tmux could not load the text into a paste buffer") unless tmux_load_buffer(buf, text)
@@ -1080,6 +1078,7 @@ module Workspace
     def start_headless(config_name)
       source = @config.config_path_for(config_name)
       content = File.read(source).gsub(/^tmux_options:(.*)$/) { without_control_mode(Regexp.last_match(1)) }
+      require "tmpdir"
       Dir.mktmpdir("workspace-headless") do |dir|
         path = File.join(dir, File.basename(source))
         File.write(path, content)
@@ -1159,6 +1158,7 @@ module Workspace
 
     # The value of a `name: ...` line read as YAML, else (an ERB tag, an unbalanced quote) the text after the key.
     def name_line_value(line)
+      require "yaml"
       value = YAML.safe_load(line)
       value = value["name"] if value.is_a?(Hash)
       return value.to_s if value.is_a?(String) || value.is_a?(Numeric)
