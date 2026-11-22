@@ -5,17 +5,24 @@ module DemoCalculator2
   GOALS = %w[01-add-sub 02-mul-div 03-div-zero 04-precedence 05-mod-pow 06-json 07-repl].freeze
   DEMO_DIR = "demo/calculator2".freeze
   ACCEPTANCE_REF = "refs/demo-calc2/acceptance-base".freeze
+  ACCEPTANCE_REF_PREFIX = "refs/demo-calc2/acceptance/".freeze
   ACCEPTANCE_RUNNER = "script/demo_calculator2/acceptance_runner".freeze
   LANES_ACCEPTANCE_RUNNER = "script/demo_calculator2/acceptance_runner_lanes".freeze
   WORKFLOW_ID = "deliver-goal".freeze
   INTEGRATE_WORKFLOW_ID = "integrate-branch".freeze
-  DEFINITION_IDS = [WORKFLOW_ID, "deliver-goal-fast", INTEGRATE_WORKFLOW_ID].freeze
-  # The workflows a goal's item may run as; integrate-branch is the lanes' merge repair, never a goal's.
-  GOAL_WORKFLOW_IDS = DEFINITION_IDS - [INTEGRATE_WORKFLOW_ID]
+  INTEGRATE_MERGED_WORKFLOW_ID = "integrate-merged".freeze
+  DEFINITION_IDS = [WORKFLOW_ID, "deliver-goal-fast", INTEGRATE_WORKFLOW_ID, INTEGRATE_MERGED_WORKFLOW_ID].freeze
+  # The workflows a goal's item may run as; integrate-branch and integrate-merged are the lanes' repairs, never a goal's.
+  GOAL_WORKFLOW_IDS = DEFINITION_IDS - [INTEGRATE_WORKFLOW_ID, INTEGRATE_MERGED_WORKFLOW_ID]
   # Lane A runs 01-05 and lane B 06 and 07, forked from lane A's head after goal 03 (`fork_after`).
   LANES = {a: %w[01-add-sub 02-mul-div 03-div-zero 04-precedence 05-mod-pow].freeze, b: %w[06-json 07-repl].freeze, fork_after: "03-div-zero"}.freeze
-  # Lane B's prompt names the goals "earlier" means, since its branch holds only 01-03. The goal documents are unchanged.
-  LANE_B_PROMPT = "Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05.".freeze
+  # Runs every test file of the demo (calc_test.rb and lane B's lane_b_test.rb) from the checkout root, and fails when none match.
+  TEST_COMMAND = %(ruby -e 'files = Dir["#{DEMO_DIR}/test/*_test.rb"].sort; abort "no test files match #{DEMO_DIR}/test/*_test.rb" if files.empty?; files.each { |file| require File.expand_path(file) }').freeze
+  # Lane B's prompt names the goals "earlier" means, since its branch holds only 01-03. Goals 06 and 07 name lane B's test file themselves.
+  LANE_B_PROMPT = "Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05. " \
+    "Another lane is adding them now, and it changes which expressions are supported, so do not write a test that asserts any arithmetic expression is unsupported or invalid (non-numeric input such as `abc` is fine). Put every test you write in `#{DEMO_DIR}/test/lane_b_test.rb`, a minitest file that starts with " \
+    "`require \"minitest/autorun\"` and `require_relative \"../lib/calc\"`, and never edit `#{DEMO_DIR}/test/calc_test.rb`. " \
+    "Run all the tests with `#{TEST_COMMAND}`.".freeze
 
   # @param spec [String] comma-separated goal numbers or names, such as `01,03`
   # @return [Array<String>] those goals in GOALS order
@@ -39,10 +46,11 @@ module DemoCalculator2
   end
 
   # @param branch [String] the branch to merge, lane B's
-  # @return [Array<String>] the argv of `work-queue add` for the integrate-branch run in lane A: the plain acceptance
+  # @param merged [Boolean] true when the merge is already committed, so the run is integrate-merged rather than integrate-branch
+  # @return [Array<String>] the argv of `work-queue add` for the repair run in lane A: the plain acceptance
   #   runner on 07-repl, so groups 1..7 run
-  def self.integrate_argv(branch, name_args)
-    ["work-queue", "add", "workflow", INTEGRATE_WORKFLOW_ID, "--prompt", "Merge #{branch} into this branch and make the tests, lint and acceptance pass.",
+  def self.integrate_argv(branch, name_args, merged: false)
+    ["work-queue", "add", "workflow", merged ? INTEGRATE_MERGED_WORKFLOW_ID : INTEGRATE_WORKFLOW_ID, "--prompt", "Merge #{branch} into this branch and make the tests, lint and acceptance pass.",
       "--input", "branch=#{branch}", "--input", "goal=#{DEMO_DIR}/goals/07-repl.md", "--input", "acceptance=#{ACCEPTANCE_RUNNER}",
       "--dedupe-key", "calculator2-demo:integrate", "--json", *name_args]
   end
@@ -62,20 +70,27 @@ module DemoCalculator2
     {covered: covered, integration_only: (1..7).to_a - covered}
   end
 
+  # @param id [String, nil] a run id, such as a series' id
+  # @return [String] the ref that holds that run's acceptance tests: one per id, or the fixed legacy ref for nil
+  def self.acceptance_ref_for(id)
+    id ? "#{ACCEPTANCE_REF_PREFIX}#{id}" : ACCEPTANCE_REF
+  end
+
   # @param stub_ref [String] the git ref that holds the stub `reset` and `run` restore
   # @param goals [Array<String>] the goals to queue, each one of GOALS, in order
   # @param workflow_id [String] the workflow each item runs
   # @param acceptance [String] the acceptance program each item's `acceptance` input names
   # @param prompt [String, nil] a sentence added to each item's prompt
   # @param extras [Hash] more keys for run.json
+  # @param id [String, nil] a run id; it picks the acceptance ref (see {acceptance_ref_for})
   # @return [DemoCalculator::Config] the calculator2 demo: one item per goal
-  def self.config(stub_ref: "main", goals: GOALS, workflow_id: WORKFLOW_ID, acceptance: ACCEPTANCE_RUNNER, prompt: nil, extras: {})
+  def self.config(stub_ref: "main", goals: GOALS, workflow_id: WORKFLOW_ID, acceptance: ACCEPTANCE_RUNNER, prompt: nil, extras: {}, id: nil)
     DemoCalculator::Config.new(demo_dir: DEMO_DIR, workflows_dir: "#{DEMO_DIR}/workflows", definition_ids: DEFINITION_IDS,
       queue_items: ->(name_args) { goals.map { |goal| [workflow_id, queue_argv(goal, name_args, workflow_id: workflow_id, acceptance: acceptance, prompt: prompt)] } },
       restored: %w[bin lib test], template_dir: nil, stub_ref: stub_ref,
       acceptance_dir: "#{DEMO_DIR}/acceptance", readme_path: "#{DEMO_DIR}/README.md", runs_dir: "tmp/demo-calculator2/runs",
-      test_command: "ruby #{DEMO_DIR}/test/calc_test.rb", lint_command: "bundle exec standardrb #{DEMO_DIR}",
-      acceptance_ref: ACCEPTANCE_REF, program: "demo-calculator2", record_extras: {"stub_ref" => stub_ref, "goals" => goals}.merge(extras))
+      test_command: TEST_COMMAND, lint_command: "bundle exec standardrb #{DEMO_DIR}",
+      acceptance_ref: acceptance_ref_for(id), program: "demo-calculator2", record_extras: {"stub_ref" => stub_ref, "goals" => goals}.merge(extras))
   end
 
   # @param lane [Symbol] :a or :b
@@ -86,9 +101,9 @@ module DemoCalculator2
   end
 
   # @return [DemoCalculator::Config] one lane's config: its goals under the lanes' acceptance runner, and lane B's prompt
-  def self.lane_config(lane, workflow_id:, stub_ref: "main", goals: GOALS, extras: {})
+  def self.lane_config(lane, workflow_id:, stub_ref: "main", goals: GOALS, extras: {}, id: nil)
     config(stub_ref: stub_ref, goals: lane_goals(lane, goals), workflow_id: workflow_id, acceptance: LANES_ACCEPTANCE_RUNNER,
-      prompt: (lane == :b) ? LANE_B_PROMPT : nil, extras: extras)
+      prompt: (lane == :b) ? LANE_B_PROMPT : nil, extras: extras, id: id)
   end
 
   # The goal lane A finishes before lane B forks: the last of lane A's goals in the run that does not come after the fork point.

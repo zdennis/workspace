@@ -15,10 +15,47 @@ require "optparse"
 require_relative "demo_calculator/demo"
 require_relative "demo_calculator2/config"
 require_relative "demo_calculator2/evaluation"
+require_relative "demo_calculator2/event_waiter"
 require_relative "demo_calculator2/lanes"
 require_relative "demo_calculator2/lanes_evaluation"
+require_relative "demo_calculator2/series"
 
 module DemoCalculator2
+  SERIES_HELP = <<~TEXT
+    Usage: script/demo-calculator2 series --id ID [--lanes 2] [--workflow ID] [--sonnet] [--base REF] [--keep] [--evidence-dir DIR]
+                                          [--scoreboard FILE] [--dry-run] [--take-over]
+           series --forget ID
+    Runs a whole lanes run: checks everything first, starts the two workspaces, shares the merge driver and the workflow definitions,
+    runs, saves the evidence, pins the heads and cleans up, then prints one scoreboard row.
+        --id ID               name the series: lowercase letters and digits, starting with a letter, not b (required unless --forget)
+        --lanes N             only 2 is supported (default 2)
+        --workflow ID         the workflow each goal runs as (default #{Series::DEFAULT_WORKFLOW})
+        --sonnet              run the agents on #{Series::SONNET_COMMAND}
+        --base REF            the ref to branch from (default main; main must equal origin/main, and the base's latest CI run must pass)
+        --keep                keep the workspaces, branches and shared values after the run
+        --evidence-dir DIR    where the evidence goes (default tmp/demo-calculator2/series/<id> in this checkout)
+        --scoreboard FILE     append the scoreboard row to FILE
+        --dry-run             print every step and every shared key with its state and what a series would do; changes nothing
+        --take-over           replace a shared value (merge driver, attributes line, workflows.sources entry) that another live checkout owns;
+                              allowed only when that owning checkout has no going run
+        --forget ID           clean up a series whose process is gone (a crash, or one run with --keep)
+    Exit codes: 0 the run ended with `LOOP DONE: ... items=7/7`; 3 it stopped after the workspaces started; 1 a refusal before anything started.
+    WORKSPACE_BIN names another `workspace` program.
+  TEXT
+
+  # `series`: builds the exec, the registry (read-only for --dry-run) and the Series, and answers its exit code.
+  def self.series(argv, workspace:, root:, out:, err:)
+    if argv.any? { |arg| %w[--help -h].include?(arg) }
+      out.puts SERIES_HELP
+      return 0
+    end
+    options = Series.parse(argv)
+    common, = Open3.capture2("git", "-C", root, "rev-parse", "--git-common-dir")
+    registry = SeriesRegistry.new(File.join(File.expand_path(common.strip, root), "demo-calc2"), read_only: options.dry_run)
+    Series.new(root: root, options: options, exec: Series::RealExec.new, registry: registry, out: out, err: err, workspace: workspace,
+      command: "script/demo-calculator2 series #{argv.join(" ")}").call
+  end
+
   # 0 unless `run --wait` stopped for any reason but a drained queue; then 3, with the reason and the item on err.
   def self.wait_exit(record, err)
     wait = record["wait"] if record.is_a?(Hash)
@@ -33,6 +70,7 @@ module DemoCalculator2
     args[:stub_ref] = options[:stub_ref] if options[:stub_ref]
     args[:goals] = pick_goals(options[:goals]) if options[:goals]
     args[:workflow_id] = options[:workflow] if options[:workflow]
+    args[:id] = options[:id] if options[:id]
     config(**args)
   end
 
@@ -41,8 +79,11 @@ module DemoCalculator2
     args = {root: root, workspace: workspace, lane_b: options[:lane_b], name: options[:name], dry_run: options[:dry_run], wait: options[:wait],
             base: options[:base], out_dir: options[:out_dir], out: out, err: err}
     args[:workflow] = options[:workflow] if options[:workflow]
+    args[:id] = options[:id] if options[:id]
     args[:stub_ref] = options[:stub_ref] if options[:stub_ref]
     args[:goals] = pick_goals(options[:goals]) if options[:goals]
+    args[:waiter] = EventWaiter.new(workspace: workspace)
+    args[:idle_wait] = Float(ENV["DEMO_LANE_B_IDLE_WAIT"]) if ENV["DEMO_LANE_B_IDLE_WAIT"]
     Lanes.new(**args)
   end
 
@@ -63,10 +104,15 @@ module DemoCalculator2
   def self.main(
     argv, out: $stdout, err: $stderr, root: File.expand_path("..", __dir__)
   )
-    options = {json: false, dry_run: false, name: nil, wait: false, run_dir: nil, base: nil, out_dir: nil, stub_ref: nil, goals: nil, lanes: false, lane_b: nil, workflow: nil}
+    if argv.first == "series"
+      return series(argv.drop(1), workspace: ENV["WORKSPACE_BIN"] || File.join(root, "bin", "workspace"), root: root, out: out, err: err)
+    end
+    options = {json: false, dry_run: false, name: nil, wait: false, run_dir: nil, base: nil, out_dir: nil, stub_ref: nil, goals: nil, lanes: false, lane_b: nil, workflow: nil, id: nil}
     parser = OptionParser.new do |o|
-      o.banner = "Usage: script/demo-calculator2 reset|run|eval|integrate [--name WORKSPACE] [--dry-run] [--wait]\n" \
-        "       run [--base REF] [--stub-ref REF] [--goals 01,02] [--workflow ID] [--out DIR] [--wait]\n" \
+      o.banner = "Usage: script/demo-calculator2 reset|run|eval|integrate|series [--name WORKSPACE] [--dry-run] [--wait]\n" \
+        "       series --id ID [--lanes 2] [--workflow ID] [--sonnet] [--base REF] [--keep] [--evidence-dir DIR] [--scoreboard FILE] [--dry-run] [--take-over]\n" \
+        "       series --forget ID\n" \
+        "       run [--base REF] [--stub-ref REF] [--goals 01,02] [--workflow ID] [--id ID] [--out DIR] [--wait]\n" \
         "       run --lanes --lane-b WORKSPACE [--workflow deliver-goal-fast] [--goals 01,06] [--wait]\n" \
         "       eval [--run DIR] [--json]\n" \
         "       integrate [--run DIR]\n" \
@@ -74,14 +120,15 @@ module DemoCalculator2
         "  run    on a new calc-demo/<stamp> branch: point refs/demo-calc2/acceptance-base at the run's base commit, empty the queue,\n" \
         "         drop the acceptance tests and README, install the workflow, set commands.test and commands.lint,\n" \
         "         queue the seven goals, start the first and write run.json; with --wait, watch the queue until it stops (exit 0 drained, 3 stopped)\n" \
-        "         with --lanes, goals 01-05 run here (lane A) and 06, 07 in the --lane-b workspace, which must be running and idle on main;\n" \
+        "         with --lanes, goals 01-05 run here (lane A) and 06, 07 in the --lane-b workspace, which must be running and idle on the --stub-ref (main by default);\n" \
         "         --wait forks lane B from the head goal 03 ends on, waits for both queues, merges lane B here and ends with one `LOOP DONE: ...` line\n" \
         "         (`wall=... integration=clean|integrate first_pass=... items=N/7` and exit 0, or `stopped reason=timeout|paused|disabled|held|fork_check|integrate_failed|error` and exit 3;\n" \
         "         a refusal before the queues start prints no LOOP DONE and exits 1)\n" \
-        "  integrate  merge lane B's branch into this branch for a recorded lanes run, check it, and queue integrate-branch when it needs repair; prints LOOP DONE too\n" \
+        "  integrate  merge lane B's branch into this branch for a recorded lanes run, check it, and queue integrate-branch (integrate-merged after a clean merge) when it needs repair; prints LOOP DONE too\n" \
         "  eval   score a recorded run: per goal attempts, review rounds, first-pass acceptance, acceptance loops,\n" \
         "         time, tokens and cost, each step's wall time, lint and leaks; written to eval.json beside run.json;\n" \
         "         a lanes run reads both workspaces and adds the critical path and the integration\n" \
+        "  series run a whole lanes run in one command (preflight, two workspaces, run, evidence, cleanup); `series --help` lists its options and exit codes\n" \
         "Run it from a clean worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
       o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory); with --lanes, lane A") { |v| options[:name] = v }
       o.on("--base REF", "run: the ref to branch from (default HEAD)") { |v| options[:base] = v }
@@ -90,10 +137,14 @@ module DemoCalculator2
         options[:stub_ref] = v
       }
       o.on("--lanes", "run: two lanes, A (goals 01-05, this workspace) and B (06, 07, the --lane-b workspace)") { options[:lanes] = true }
-      o.on("--lane-b WORKSPACE", "run --lanes: lane B's workspace, running and idle on main") { |v| options[:lane_b] = v }
+      o.on("--lane-b WORKSPACE", "run --lanes: lane B's workspace, running and idle on the --stub-ref (default main)") { |v| options[:lane_b] = v }
       o.on("--workflow ID", "run: the workflow each goal runs as (#{GOAL_WORKFLOW_IDS.join(", ")}; default #{WORKFLOW_ID})") { |v|
         raise OptionParser::InvalidArgument, "needs one of #{GOAL_WORKFLOW_IDS.join(", ")}, not #{v}" unless GOAL_WORKFLOW_IDS.include?(v)
         options[:workflow] = v
+      }
+      o.on("--id ID", "run: name this run: branch calc-demo/<stamp>-ID and acceptance ref refs/demo-calc2/acceptance/ID (lowercase letters and digits, starting with a letter; not b)") { |v|
+        raise OptionParser::InvalidArgument, "needs lowercase letters and digits starting with a letter, and not b: #{v}" unless v.match?(/\A[a-z][a-z0-9]*\z/) && v != "b"
+        options[:id] = v
       }
       o.on("--goals LIST", "run: queue only these goals, such as 01,03 (default all seven)") { |v| options[:goals] = v }
       o.on("--out DIR", "run: where to write run.json (default tmp/demo-calculator2/runs/<stamp>)") { |v| options[:out_dir] = v }
@@ -128,7 +179,7 @@ module DemoCalculator2
       return wait_exit(build_lanes(options, workspace: workspace, root: root, out: out, err: err).run, err)
     end
     record = DemoCalculator::Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out, err: err,
-      base: options[:base], out_dir: options[:out_dir], wait: options[:wait], config: build_config(options)).public_send(verb)
+      base: options[:base], out_dir: options[:out_dir], wait: options[:wait], config: build_config(options), id: options[:id]).public_send(verb)
     wait_exit(record, err)
   rescue DemoCalculator::Refused, DemoCalculator::Evaluation::Error, OptionParser::ParseError => e
     err.puts "demo-calculator2: #{e.message}"

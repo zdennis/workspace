@@ -115,12 +115,12 @@ module DemoCalculator2
       {verify_fixes: rows.sum { |row| row[:verify_fixes].to_i }, review_rejections: rows.sum { |row| row[:review_rejections].to_i }}
     end
 
-    # The integrate-branch run loaded like an item, or nil when the integration needed none or its run is not found.
+    # The repair run (integrate-branch or integrate-merged) loaded like an item, or nil when the integration needed none or its run is not found.
     def integrate_loaded(integration, ids, state_dir)
       item = integration&.dig("integrate_run", "item")
       run_id = item && (ids[item] || integration.dig("integrate_run", "run_id"))
       return nil unless run_id
-      loaded = load_run(run_id, File.join(state_dir, ".workflows"), DemoCalculator2::INTEGRATE_WORKFLOW_ID)
+      loaded = load_run(run_id, File.join(state_dir, ".workflows"), integration["repair_workflow"] || DemoCalculator2::INTEGRATE_WORKFLOW_ID)
       loaded[:run] ? loaded : nil
     end
 

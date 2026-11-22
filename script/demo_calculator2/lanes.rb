@@ -5,11 +5,17 @@ require "shellwords"
 require "time"
 require_relative "../demo_calculator/demo"
 require_relative "config"
+require_relative "event_waiter"
+require_relative "shared_values"
+require_relative "test_names"
 
 module DemoCalculator2
   # Lane B's fork failed one of its three checks (HEAD, the acceptance base ref, ancestry); the run stops, since a lane
   # on the wrong commit would be scored against the wrong tests.
   class ForkCheckFailed < DemoCalculator::Refused; end
+
+  # A git command that the test-file ownership check needs failed, so the check could not tell whether lane B kept to its file.
+  class OwnershipCheckFailed < DemoCalculator::Refused; end
 
   # `run --lanes`: two workspaces deliver the goals at once. Lane A (the checkout the script sits in) runs 01-05 on the
   # run branch. Lane B, a second workspace that is running, idle and on main, is forked from the head lane A's goal 03
@@ -19,14 +25,16 @@ module DemoCalculator2
   # Every command goes through the injected `exec`, so the fork and the integrate decision run in specs without git
   # or `workspace`.
   class Lanes
-    MERGE_DRIVER = "calc-demo-tests".freeze
-    ATTRIBUTES_LINE = "#{DEMO_DIR}/test/calc_test.rb merge=#{MERGE_DRIVER}".freeze
-    DRIVER_SCRIPT = File.expand_path("merge_test_methods", __dir__).freeze
+    MERGE_DRIVER = SharedValues::MERGE_DRIVER
+    ATTRIBUTES_LINE = SharedValues::ATTRIBUTES_LINE
     # Queue outcomes that count as a goal delivered.
     SUCCESS = %w[succeeded completed].freeze
     # What joins a project name to a worktree suffix in a workspace name (Workspace::WorkspaceName::SEPARATOR).
     WORKTREE_SEPARATOR = ".worktree-"
     DRIVER_LINE = "LOOP DONE".freeze
+    TEST_DIR = "#{DEMO_DIR}/test/".freeze
+    # Lane B's own test file, which the prompt names; lane A leaves it alone and lane B touches no other file in {TEST_DIR}.
+    LANE_B_TEST_FILE = "#{TEST_DIR}lane_b_test.rb".freeze
 
     # @param root [String] lane A's checkout
     # @param workspace [String] the `workspace` program
@@ -37,12 +45,16 @@ module DemoCalculator2
     # @param exec [#call] `call(argv, chdir:)` runs one command and returns `[stdout, success]`
     # @param clock [#call] returns the current Time
     # @param sleeper [#call] sleeps for the given seconds
-    # @param poll [Numeric] seconds between polls
+    # @param waiter [#call, nil] `call(seconds, workspaces:)` returns when a queue event arrives or the seconds pass (and may answer `close`); nil sleeps with `sleeper`
+    # @param poll [Numeric] the longest seconds one wait lasts
     # @param timeout [Numeric] seconds `--wait` may run in all
     # @param held_limit [Numeric] seconds an item may stay held
+    # @param idle_wait [Numeric] the longest seconds lane B may take to show an idle agent pane before the run is refused
+    # @param idle_poll [Numeric] seconds between snapshots while waiting for lane B to go idle
+    # @param id [String, nil] a run id: the run branches end in `-<id>` (lane B `-<id>-b`) and the acceptance ref is per id
     def initialize(root:, workspace:, lane_b: nil, workflow: WORKFLOW_ID, name: nil, goals: GOALS, stub_ref: "main", base: nil, out_dir: nil,
       dry_run: false, wait: false, out: $stdout, err: $stderr, clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) },
-      poll: 15, timeout: 14_400, held_limit: 1200,
+      waiter: nil, poll: 5, timeout: 14_400, held_limit: 1200, idle_wait: 300, idle_poll: 5, id: nil,
       exec: ->(argv, chdir:) {
         out, status = Open3.capture2(*argv, chdir: chdir)
         [out, status.success?]
@@ -62,9 +74,13 @@ module DemoCalculator2
       @err = err
       @clock = clock
       @sleeper = sleeper
+      @waiter = waiter || ->(seconds, workspaces: nil) { sleeper.call(seconds) }
       @poll = poll
       @timeout = timeout
       @held_limit = held_limit
+      @idle_wait = idle_wait
+      @idle_poll = idle_poll
+      @id = id
       @exec = exec
     end
 
@@ -81,18 +97,21 @@ module DemoCalculator2
       say_coverage(a_goals, b_goals)
       started = @clock.call
       stamp = started.utc.strftime("%Y%m%dT%H%M%SZ")
-      branch_b = "#{DemoCalculator::RUN_BRANCH_PREFIX}#{stamp}-b"
+      branch_b = "#{DemoCalculator::RUN_BRANCH_PREFIX}#{stamp}#{"-#{@id}" if @id}-b"
       path_b = prepare_lane_b
+      items_b = stage_lane_b(b_goals)
       extras = {"lanes" => {"workflow" => @workflow, "started_at" => started.utc.iso8601, "fork_after" => fork_goal,
-                            "a" => {"workspace" => @name, "goals" => a_goals}, "b" => {"workspace" => @lane_b, "path" => path_b, "branch" => branch_b, "goals" => b_goals, "items" => []}}}
-      config = DemoCalculator2.lane_config(:a, workflow_id: @workflow, stub_ref: @stub_ref, goals: @goals, extras: extras)
+                            "a" => {"workspace" => @name, "goals" => a_goals}, "b" => {"workspace" => @lane_b, "path" => path_b, "branch" => branch_b, "goals" => b_goals, "items" => items_b}}}
+      config = DemoCalculator2.lane_config(:a, workflow_id: @workflow, stub_ref: @stub_ref, goals: @goals, extras: extras, id: @id)
       demo = DemoCalculator::Demo.new(root: @root, workspace: @workspace, name: @name, dry_run: @dry_run, out: @out, err: @err, base: @base,
-        out_dir: @out_dir, clock: -> { started }, config: config)
-      record = demo.run
-      write_attributes(demo.record_path)
-      write_out_exclude(demo.record_path)
+        out_dir: @out_dir, clock: -> { started }, config: config, id: @id)
+      record = demo.run(before_start: -> {
+        write_attributes(demo.record_path)
+        write_out_exclude(demo.record_path)
+      })
       if @dry_run
-        say "would wait for lane A's #{fork_goal}, then in lane B: git checkout -B #{branch_b} <#{fork_goal}'s final head>, queue #{b_goals.join(", ")} and enable its queue"
+        say "would set lane B's commands and queue #{b_goals.join(", ")} there now, its queue staying off"
+        say "would wait for lane A's #{fork_goal}, then in lane B: git checkout -B #{branch_b} <#{fork_goal}'s final head>, check the fork, enable its queue and advance it"
         say "would then merge #{branch_b} in lane A and run the tests, lint and the plain acceptance runner on 07-repl (groups 1..7)"
         return nil
       end
@@ -118,12 +137,14 @@ module DemoCalculator2
 
     # Merges lane B's branch in lane A and decides first pass: a clean merge, then the test command, lint and the plain
     # 07-repl acceptance run, one attempt each. A conflict (merge aborted) or a failure of any of them records
-    # `first_pass: false` and queues `integrate-branch` in lane A, then waits for it; its result is recorded apart.
+    # `first_pass: false` and queues `integrate-branch` (`integrate-merged` after a clean merge) in lane A, then waits for it; its result is recorded apart.
     #
     # @param record [Hash] the run record; gets an `integration` block and is written back
     # @return [Hash, nil] a stop (`reason`, `item`) when waiting for integrate-branch stopped early
     def integrate(record)
       branch = record.dig("lanes", "b", "branch")
+      refused = ownership_stop(record)
+      return refused if refused
       integration = {"branch" => branch, "started_at" => @clock.call.utc.iso8601}
       record["integration"] = integration
       _, merged = git(@root, "merge", "--no-ff", "--no-edit", branch)
@@ -139,7 +160,7 @@ module DemoCalculator2
         integration["first_pass"] = false
       end
       save(record)
-      # A clean merge whose checks failed stays committed on lane A's branch: integrate-branch starts from it and merges nothing more.
+      # A clean merge whose checks failed stays committed on lane A's branch: integrate-merged starts from it and merges nothing more.
       stop = integration["first_pass"] ? nil : repair(record, integration, branch)
       head, = git(@root, "rev-parse", "HEAD")
       integration["head"] = head.to_s.strip
@@ -148,46 +169,111 @@ module DemoCalculator2
       stop
     end
 
+    # The test-file ownership check, run once at the top of {#integrate}, before the merge, so `run --wait` and an
+    # `integrate` re-run both get it. It records `lane_b_check` (`passed`, `checked_at`, `premerge_head`), replacing any
+    # earlier value. A violation is also printed, and the run stops with reason `ownership`.
+    #
+    # @param record [Hash] the run record, with a `fork`
+    # @return [Hash, nil] a stop (`reason`, `item`); nil when both lanes kept to their files
+    # @raise [OwnershipCheckFailed] when git could not answer
+    def ownership_stop(record)
+      a_head = ownership_a_head(record)
+      problem = ownership_problem(record, a_head)
+      check = {"passed" => problem.nil?, "checked_at" => @clock.call.utc.iso8601, "premerge_head" => a_head}
+      check["message"] = problem if problem
+      record["lane_b_check"] = check
+      save(record)
+      return nil unless problem
+      @err.puts "demo-calculator2: #{problem}"
+      {"reason" => "ownership", "item" => nil}
+    end
+
+    # The head of lane A that its own commits are read up to: the one the last passing check saw before the merge when the
+    # merge has happened (repair commits after it may edit lane B's file), else lane A's head now.
+    #
+    # @return [String] a commit sha
+    def ownership_a_head(record)
+      earlier = record["lane_b_check"]
+      return earlier["premerge_head"] if earlier.is_a?(Hash) && earlier["passed"] && earlier["premerge_head"] && record["integration"]
+      git!("rev-parse", "--verify", "HEAD").strip
+    end
+
+    # Lane B's own commits since the fork may touch only {LANE_B_TEST_FILE} under {TEST_DIR}; lane A's own commits since
+    # the fork, up to `a_head`, must not touch it. Both lanes are read the same way, so what a merge brought in is never blamed.
+    #
+    # @param a_head [String] lane A's head to read up to
+    # @return [String, nil] what broke the rule and what to change; nil when none did
+    def ownership_problem(record, a_head)
+      fork_sha = record.dig("fork", "sha")
+      raise OwnershipCheckFailed, "the run record has no fork sha to compare the lanes against" unless fork_sha
+      branch = record.dig("lanes", "b", "branch")
+      head = git!("rev-parse", "--verify", "#{branch}^{commit}").strip
+      stray = own_commit_files(fork_sha, head).select { |file| file.start_with?(TEST_DIR) && file != LANE_B_TEST_FILE }
+      return "lane B (#{branch}) changed #{stray.join(", ")}, which is not its file: put its tests in #{LANE_B_TEST_FILE} and leave the others as they were" unless stray.empty?
+      "lane A changed #{LANE_B_TEST_FILE}, which is lane B's: leave it to lane B" if own_commit_files(fork_sha, a_head).include?(LANE_B_TEST_FILE)
+    end
+
+    # @return [Array<String>] the files the first-parent, non-merge commits of `fork_sha..head` touch
+    def own_commit_files(fork_sha, head)
+      git!("log", "--first-parent", "--no-merges", "--no-renames", "--name-only", "--pretty=format:", "#{fork_sha}..#{head}").lines.map(&:strip).reject(&:empty?)
+    end
+
     # The checks a fork must pass before lane B runs anything; each failure is a refusal.
     #
     # @param lane_b_path [String] lane B's checkout
     # @param branch [String] the branch to create there
     # @param sha [String] the full sha lane A's fork goal ended on
-    # @param acceptance_base [String] the sha lane A's run recorded for refs/demo-calc2/acceptance-base
+    # @param acceptance_base [String] the sha lane A's run recorded for the acceptance ref
+    # @param ref [String] the acceptance ref the record names (the fixed ref for a record that names none)
     # @return [void]
     # @raise [ForkCheckFailed] when checking out fails, HEAD is not sha, the acceptance ref is missing or differs, or it is not an ancestor of sha
-    def fork_check!(lane_b_path, branch, sha, acceptance_base)
+    def fork_check!(lane_b_path, branch, sha, acceptance_base, ref: ACCEPTANCE_REF)
       _, ok = git(lane_b_path, "checkout", "-B", branch, sha)
       raise ForkCheckFailed, "git checkout -B #{branch} #{sha} failed in #{lane_b_path}" unless ok
       head, = git(lane_b_path, "rev-parse", "HEAD")
       raise ForkCheckFailed, "lane B's HEAD is #{head.to_s.strip[0, 12]}, not the fork point #{sha[0, 12]}" unless head.to_s.strip == sha
-      ref, found = git(lane_b_path, "rev-parse", ACCEPTANCE_REF)
-      raise ForkCheckFailed, "lane B cannot see #{ACCEPTANCE_REF}" unless found
-      raise ForkCheckFailed, "#{ACCEPTANCE_REF} is #{ref.strip[0, 12]} in lane B, not #{acceptance_base.to_s[0, 12]} as lane A's run recorded" unless ref.strip == acceptance_base
-      _, ancestor = git(lane_b_path, "merge-base", "--is-ancestor", ACCEPTANCE_REF, sha)
-      raise ForkCheckFailed, "#{ACCEPTANCE_REF} is not an ancestor of the fork point #{sha[0, 12]}" unless ancestor
+      found_sha, found = git(lane_b_path, "rev-parse", ref)
+      raise ForkCheckFailed, "lane B cannot see #{ref}" unless found
+      raise ForkCheckFailed, "#{ref} is #{found_sha.strip[0, 12]} in lane B, not #{acceptance_base.to_s[0, 12]} as lane A's run recorded" unless found_sha.strip == acceptance_base
+      _, ancestor = git(lane_b_path, "merge-base", "--is-ancestor", ref, sha)
+      raise ForkCheckFailed, "#{ref} is not an ancestor of the fork point #{sha[0, 12]}" unless ancestor
     end
 
-    # Adds `calc_test.rb merge=calc-demo-tests` to `info/attributes` in the shared git dir, once, and sets `merge.calc-demo-tests.name`
+    # Adds `calc_test.rb merge=calc-demo-tests` to `info/attributes` in the shared git dir, and sets `merge.calc-demo-tests.name`
     # and `.driver` in that repository's local config. Every goal appends test methods to that file, and the driver
-    # (`merge_test_methods`) keeps both lanes' added methods whole, where `merge=union` interleaved their `end` lines. The driver is
-    # named by the absolute path of this checkout's copy of the script (lane A's, where the merge runs), so it resolves from any directory.
-    # The file and the config are shared by every worktree and are part of no diff. The run record gets `merge_driver` with what was written (the line and the config section), for whoever removes them; nothing in the harness removes them.
+    # (`merge_test_methods`) keeps both lanes' added methods whole, where `merge=union` interleaved their `end` lines. The driver
+    # command names no path (`$(git rev-parse --show-toplevel)`), so every checkout writes the same value and a killed worktree cannot leave it dangling.
+    # Each value is classified first ({SharedValues}): written when absent or dangling, left when equal, and a driver that belongs to
+    # another live checkout refuses the run. The file and the config are shared by every worktree and are part of no diff. The run
+    # record gets `merge_driver` with what was written (the line and the config section), whether anything was, and the driver value it replaced.
     #
     # @param record_path [String, nil] the run.json to record what was written in
     # @return [void]
+    # @raise [DemoCalculator::Refused] when the driver config names another live checkout
     def write_attributes(record_path = nil)
-      path = append_info_line("attributes", ATTRIBUTES_LINE)
-      command = "ruby #{Shellwords.escape(DRIVER_SCRIPT)} %O %A %B"
-      config = {"merge.#{MERGE_DRIVER}.name" => "calc_test.rb: keep both lanes' added test methods", "merge.#{MERGE_DRIVER}.driver" => command}
+      config = {"merge.#{MERGE_DRIVER}.name" => SharedValues::NAME_VALUE, "merge.#{MERGE_DRIVER}.driver" => SharedValues::DRIVER_COMMAND}
+      live = config.keys.to_h { |key| [key, live_config(key)] }
+      states = config.to_h { |key, value| [key, shared_state("git-config:#{key}", live[key], value)] }
+      driver_key = "merge.#{MERGE_DRIVER}.driver"
+      if states[driver_key] == :foreign_live
+        value = live[driver_key]
+        raise DemoCalculator::Refused, SharedValues.refusal(SharedValues::DRIVER_KEY, value, SharedValues.owner_path(SharedValues::DRIVER_KEY, value))
+      end
+      line_state = shared_state("attributes:#{ATTRIBUTES_LINE}", live_attributes_line, ATTRIBUTES_LINE)
+      path = (line_state == :equal) ? attributes_path : append_info_line("attributes", ATTRIBUTES_LINE)
+      written = line_state != :equal
       config.each do |key, value|
+        next if states[key] == :equal
+        written = true
         say "+ git config --local #{key} #{value.inspect}"
         git(@root, "config", "--local", key, value) unless @dry_run
       end
       return if @dry_run || record_path.nil?
+      replaced = (states[driver_key] == :dangling) ? live[driver_key] : nil
       @record_path = record_path
       record = JSON.parse(File.read(record_path))
-      save(record.merge("merge_driver" => {"attributes_path" => path, "attributes_line" => ATTRIBUTES_LINE, "config_section" => "merge.#{MERGE_DRIVER}", "driver" => command}))
+      save(record.merge("merge_driver" => {"attributes_path" => path, "attributes_line" => ATTRIBUTES_LINE, "config_section" => "merge.#{MERGE_DRIVER}",
+                                           "driver" => SharedValues::DRIVER_COMMAND, "written" => written, "replaced" => replaced}))
     end
 
     # Adds an anchored line for the run's own output directory (`--out`, else the default under `tmp/`) to `info/exclude` in the shared git dir, once, so no process that
@@ -200,7 +286,7 @@ module DemoCalculator2
       dir = record_path ? File.dirname(record_path) : @out_dir && File.expand_path(@out_dir, @root)
       rel = DemoCalculator.out_dir_relative(@root, dir)
       return unless rel
-      line = "/#{rel}/"
+      line = SharedValues.exclude_line(rel)
       path = append_info_line("exclude", line)
       return if @dry_run || record_path.nil?
       @record_path = record_path
@@ -208,10 +294,31 @@ module DemoCalculator2
       save(record.merge("out_exclude" => {"path" => path, "line" => line}))
     end
 
-    def append_info_line(file, line)
+    def info_path(file)
       dir, ok = git(@root, "rev-parse", "--git-common-dir")
       raise DemoCalculator::Refused, "cannot find the shared git dir in #{@root}" unless ok
-      path = File.join(File.expand_path(dir.strip, @root), "info", file)
+      File.join(File.expand_path(dir.strip, @root), "info", file)
+    end
+
+    def attributes_path = info_path("attributes")
+
+    def live_config(key)
+      out, ok = git(@root, "config", "--local", "--get", key)
+      (ok && !out.to_s.strip.empty?) ? out.to_s.strip : nil
+    end
+
+    def live_attributes_line
+      path = attributes_path
+      return nil unless File.exist?(path)
+      File.readlines(path, chomp: true).map(&:strip).reverse.find { |line| line.start_with?("#{DEMO_DIR}/test/calc_test.rb ") }
+    end
+
+    def shared_state(key, live, wanted)
+      SharedValues.classify(key, live: live, wanted: wanted, path_exists: ->(path) { File.directory?(path) })
+    end
+
+    def append_info_line(file, line)
+      path = info_path(file)
       say "+ add `#{line}` to #{path}"
       return path if @dry_run
       existing = File.exist?(path) ? File.read(path) : ""
@@ -243,6 +350,43 @@ module DemoCalculator2
       format("%dm%02ds", whole / 60, whole % 60)
     end
 
+    # Lane B must be running, with an idle agent pane, a clean checkout reachable from the stub ref and an empty,
+    # disabled queue; the queue is emptied and disabled here.
+    #
+    # @return [String, nil] lane B's checkout path; nil under dry_run
+    def prepare_lane_b
+      if @dry_run
+        say "would check that lane B (#{@lane_b}) is running, has an idle agent pane and a clean checkout on #{@stub_ref}, then empty and disable its queue"
+        return nil
+      end
+      member = wait_for_idle_lane_b
+      path = member["path"].to_s
+      raise DemoCalculator::Refused, "lane B's checkout is not a directory: #{path}" unless File.directory?(path)
+      status, = git(path, "status", "--porcelain", *DemoCalculator.out_dir_exclude(path, @out_dir && File.expand_path(@out_dir, @root)))
+      raise DemoCalculator::Refused, "lane B's checkout has uncommitted changes" unless status.to_s.strip.empty?
+      _, on_stub = git(path, "merge-base", "--is-ancestor", "HEAD", @stub_ref)
+      raise DemoCalculator::Refused, "lane B's HEAD is not on #{@stub_ref}: it must start from #{@stub_ref}, not a run branch" unless on_stub
+      clear_lane_b_queue
+      path
+    end
+
+    # Sets lane B's `commands.test` and `commands.lint` and queues its goals, ahead of the fork. Its queue is still off
+    # (see {#prepare_lane_b}), so adding starts nothing; `fork!` enables it only after the fork check passes.
+    #
+    # @param b_goals [Array<String>] lane B's goals
+    # @return [Array<Hash>] the queued items (`workflow`, `id`, `goal`); empty under dry_run
+    def stage_lane_b(b_goals)
+      return [] if @dry_run
+      b_name = name_args(@lane_b)
+      config = DemoCalculator2.lane_config(:b, workflow_id: @workflow, stub_ref: @stub_ref, goals: b_goals, id: @id)
+      workspace_do("config", "set", "--scope", "workspace", *b_name, "commands.test", config.test_command)
+      workspace_do("config", "set", "--scope", "workspace", *b_name, "commands.lint", config.lint_command)
+      config.queue_items.call(b_name).zip(b_goals).map do |(workflow, argv), goal|
+        say "+ workspace #{argv.join(" ")}"
+        {"workflow" => workflow, "id" => workspace_json(*argv).dig("results", 0, "id"), "goal" => goal}
+      end
+    end
+
     private
 
     def say(line) = @out.puts(line)
@@ -258,6 +402,14 @@ module DemoCalculator2
     end
 
     def name_args(name) = name ? ["--name", name] : []
+
+    # @return [String] the output of one git command in lane A's checkout
+    # @raise [OwnershipCheckFailed] when it fails
+    def git!(*args)
+      out, ok = git(@root, *args)
+      raise OwnershipCheckFailed, "the test-file ownership check could not run: git #{args.join(" ")} failed in #{@root}" unless ok
+      out.to_s
+    end
 
     def git(dir, *args)
       out, ok = @exec.call(["git", *args], chdir: dir)
@@ -283,29 +435,24 @@ module DemoCalculator2
       File.write(@record_path, JSON.pretty_generate(record) + "\n")
     end
 
-    # Lane B must be running, with an idle agent pane, a clean checkout reachable from the stub ref and an empty,
-    # disabled queue; the queue is emptied and disabled here.
-    #
-    # @return [String, nil] lane B's checkout path; nil under dry_run
-    def prepare_lane_b
-      if @dry_run
-        say "would check that lane B (#{@lane_b}) is running, has an idle agent pane and a clean checkout on #{@stub_ref}, then empty and disable its queue"
-        return nil
+    # Lane B's snapshot member once it is running with an idle agent pane. Only a missing idle pane is waited on, every
+    # `idle_poll` seconds up to `idle_wait`; any other problem refuses at once.
+    def wait_for_idle_lane_b
+      deadline = nil
+      loop do
+        doc = workspace_json("snapshot", "--json", "--name", @lane_b)
+        member = (doc["projects"] || []).flat_map { |project| project["members"] || [] }.find { |each| same_workspace?(each["workspace"], @lane_b) }
+        raise DemoCalculator::Refused, "no workspace named #{@lane_b} (lane B): start it first" unless member
+        raise DemoCalculator::Refused, "lane B (#{@lane_b}) is not running" unless member["running"]
+        return member if Array(member["panes"]).any? { |pane| pane["kind"] == "claude" && %w[idle done].include?(pane["state"]) }
+        now = @clock.call
+        unless deadline
+          deadline = now + @idle_wait
+          say "waiting up to #{@idle_wait}s for lane B (#{@lane_b}) to have an idle Claude Code pane"
+        end
+        raise DemoCalculator::Refused, "lane B (#{@lane_b}) has no idle Claude Code pane" if now + @idle_poll > deadline
+        @sleeper.call(@idle_poll)
       end
-      doc = workspace_json("snapshot", "--json", "--name", @lane_b)
-      member = (doc["projects"] || []).flat_map { |project| project["members"] || [] }.find { |each| same_workspace?(each["workspace"], @lane_b) }
-      raise DemoCalculator::Refused, "no workspace named #{@lane_b} (lane B): start it first" unless member
-      raise DemoCalculator::Refused, "lane B (#{@lane_b}) is not running" unless member["running"]
-      idle = Array(member["panes"]).any? { |pane| pane["kind"] == "claude" && %w[idle done].include?(pane["state"]) }
-      raise DemoCalculator::Refused, "lane B (#{@lane_b}) has no idle Claude Code pane" unless idle
-      path = member["path"].to_s
-      raise DemoCalculator::Refused, "lane B's checkout is not a directory: #{path}" unless File.directory?(path)
-      status, = git(path, "status", "--porcelain", *DemoCalculator.out_dir_exclude(path, @out_dir && File.expand_path(@out_dir, @root)))
-      raise DemoCalculator::Refused, "lane B's checkout has uncommitted changes" unless status.to_s.strip.empty?
-      _, on_stub = git(path, "merge-base", "--is-ancestor", "HEAD", @stub_ref)
-      raise DemoCalculator::Refused, "lane B's HEAD is not on #{@stub_ref}: it must start from main, not a run branch" unless on_stub
-      clear_lane_b_queue
-      path
     end
 
     # Whether a workspace name the CLI reports is the one the person passed: the same name, or a worktree workspace whose
@@ -341,6 +488,8 @@ module DemoCalculator2
     rescue DemoCalculator::Refused, SystemCallError, JSON::ParserError, ArgumentError, TypeError => e
       @err.puts "demo-calculator2: #{e.message}"
       stop_run(record, {"reason" => "error", "item" => nil})
+    ensure
+      @waiter.close if @waiter.respond_to?(:close)
     end
 
     def stop_run(record, stop)
@@ -440,28 +589,24 @@ module DemoCalculator2
         rows.zip(watch).each do |row, (_, name)|
           workspace_do("work-queue", "advance", *name_args(name)) if DemoCalculator::Wait.advance?(row, work_queue_feature: feature)
         end
-        @sleeper.call(@poll)
+        @waiter.call(@poll, workspaces: [@name, @lane_b].compact.uniq)
       end
     end
 
     # Forks lane B at the head lane A's fork goal ended on (never lane A's HEAD, which a later goal may have moved),
-    # checks the fork, sets lane B's commands, queues its goals and starts its queue.
+    # checks the fork, then starts lane B's queue. Its commands and items were staged by {#stage_lane_b}; a record without
+    # them (an older run) gets them here, before the queue is enabled.
     def fork!(record, entry)
       run_id = entry.dig("result", "run_id")
       raise ForkCheckFailed, "the fork goal's queue entry names no run" unless run_id
       sha = resolve(final_head(run_id))
-      fork_check!(record.dig("lanes", "b", "path"), record.dig("lanes", "b", "branch"), sha, record.dig("acceptance_ref", "sha"))
+      fork_check!(record.dig("lanes", "b", "path"), record.dig("lanes", "b", "branch"), sha, record.dig("acceptance_ref", "sha"),
+        ref: record.dig("acceptance_ref", "name") || ACCEPTANCE_REF)
       record["fork"] = {"at" => @clock.call.utc.iso8601, "sha" => sha, "acceptance_base" => record.dig("acceptance_ref", "sha"),
         "goal" => record.dig("lanes", "fork_after"), "item" => entry["id"], "run_id" => run_id}
       b_name = name_args(@lane_b)
-      config = DemoCalculator2.lane_config(:b, workflow_id: @workflow, stub_ref: @stub_ref, goals: record.dig("lanes", "b", "goals"))
-      workspace_do("config", "set", "--scope", "workspace", *b_name, "commands.test", config.test_command)
-      workspace_do("config", "set", "--scope", "workspace", *b_name, "commands.lint", config.lint_command)
-      goals = record.dig("lanes", "b", "goals")
-      record.dig("lanes", "b")["items"] = config.queue_items.call(b_name).zip(goals).map do |(workflow, argv), goal|
-        say "+ workspace #{argv.join(" ")}"
-        {"workflow" => workflow, "id" => workspace_json(*argv).dig("results", 0, "id"), "goal" => goal}
-      end
+      # A record from before staging has no items: queue them now, still before the queue is enabled.
+      record.dig("lanes", "b")["items"] = stage_lane_b(record.dig("lanes", "b", "goals")) if Array(record.dig("lanes", "b", "items")).empty?
       save(record)
       DemoCalculator::Demo.starting(name_args: b_name).each { |argv| workspace_do(*argv) }
     end
@@ -482,8 +627,10 @@ module DemoCalculator2
       full.strip
     end
 
-    # One attempt each at the test command, lint and the plain acceptance runner on 07-repl, stopping at the first failure.
+    # The duplicate test-name scan of the merged calc_test.rb, then one attempt each at the test command, lint and the plain acceptance runner on 07-repl, stopping at the first failure.
     def first_pass_checks(integration)
+      return false unless test_names_clean?(integration)
+
       config = DemoCalculator2.config
       commands = {
         "test" => ["sh", "-c", config.test_command],
@@ -502,9 +649,20 @@ module DemoCalculator2
       true
     end
 
-    # Queues integrate-branch in lane A, waits for it and records its outcome apart from the first pass.
+    def test_names_clean?(integration)
+      path = File.join(@root, DEMO_DIR, "test", "calc_test.rb")
+      duplicates = File.exist?(path) ? MergeTestMethods.duplicate_names(File.read(path)) : []
+      integration["test_names"] = {"ok" => duplicates.empty?, "duplicates" => duplicates}
+      say "first-pass check test_names failed: duplicate test methods in #{DEMO_DIR}/test/calc_test.rb: #{duplicates.join(", ")}" unless duplicates.empty?
+      duplicates.empty?
+    end
+
+    # Queues the repair in lane A, waits for it and records its outcome apart from the first pass: integrate-merged after a
+    # clean merge (nothing left to merge), integrate-branch after a conflict or a failed merge.
     def repair(record, integration, branch)
-      argv = DemoCalculator2.integrate_argv(branch, name_args(@name))
+      merged = integration["merge"] == "clean"
+      argv = DemoCalculator2.integrate_argv(branch, name_args(@name), merged: merged)
+      integration["repair_workflow"] = argv[3]
       say "+ workspace #{argv.join(" ")}"
       id = workspace_json(*argv).dig("results", 0, "id")
       integration["integrate_run"] = {"item" => id, "queued_at" => @clock.call.utc.iso8601}

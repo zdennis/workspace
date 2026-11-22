@@ -14,6 +14,26 @@ RSpec.describe DemoCalculator2::Lanes do
   let(:err) { StringIO.new }
   let(:calls) { [] }
   let(:slept) { [] }
+  let(:waited) { [] }
+  let(:waiter) do
+    Class.new do
+      attr_reader :closed
+
+      def initialize(waited)
+        @waited = waited
+        @workspaces = []
+      end
+
+      def call(seconds, workspaces: nil)
+        @waited << seconds
+        @workspaces << workspaces
+      end
+
+      attr_reader :workspaces
+
+      def close = @closed = true
+    end.new(waited)
+  end
   let(:rules) { [] }
   let(:now) { [Time.utc(2026, 11, 21, 5, 24, 0)] }
   let(:clock) { -> { now[0] += 10 } }
@@ -31,7 +51,7 @@ RSpec.describe DemoCalculator2::Lanes do
   end
   let(:lanes) do
     described_class.new(root: tmp, workspace: "ws-bin", lane_b: "ws-b", name: "ws", workflow: "deliver-goal-fast", out: out, err: err, clock: clock,
-      sleeper: ->(seconds) { slept << seconds }, exec: exec, held_limit: 0, timeout: 10**9)
+      sleeper: ->(seconds) { slept << seconds }, waiter: waiter, exec: exec, held_limit: 0, timeout: 10**9)
   end
 
   before do
@@ -58,12 +78,86 @@ RSpec.describe DemoCalculator2::Lanes do
                  "b" => {"workspace" => "ws-b", "path" => "/lane-b", "branch" => branch, "goals" => %w[06-json 07-repl], "items" => []}}}
   end
 
+  # Lane B's branch is at `head` and lane A's at `a_head`; lane B's own commits changed `b_files` and lane A's own commits
+  # changed `a_files` since the fork.
+  def script_lane_b(head: "b" * 40, a_head: "a" * 40, b_files: ["demo/calculator2/lib/calc.rb"], a_files: ["demo/calculator2/lib/calc.rb"])
+    on("git", "rev-parse", "--verify", "#{branch}^{commit}") { ["#{head}\n", true] }
+    on("git", "rev-parse", "--verify", "HEAD") { ["#{a_head}\n", true] }
+    on("git", "log", "--first-parent", "--no-merges", "--no-renames", "--name-only") do |argv|
+      files = argv.last.end_with?("..#{head}") ? b_files : a_files
+      ["#{files.join("\n\n")}\n", true]
+    end
+  end
+
   def saved = JSON.parse(File.read(record_path))
 
   def history = @history ||= {"ws" => [], "ws-b" => []}
 
   def finished(*ids, lane: "ws", outcome: "succeeded")
     ids.each { |id| history[lane] << {"id" => id, "outcome" => outcome, "result" => {"run_id" => "run-#{id}"}} }
+  end
+
+  describe "#prepare_lane_b: the idle pane wait" do
+    let(:lane_dir) { Dir.mktmpdir }
+    let(:no_idle) { {"kind" => "claude", "state" => "working"} }
+    let(:idle) { {"kind" => "claude", "state" => "idle"} }
+
+    def snapshot(panes, running: true)
+      JSON.generate("projects" => [{"members" => [{"workspace" => "ws-b", "running" => running, "path" => lane_dir, "panes" => panes}]}])
+    end
+
+    def script_snapshots(*docs)
+      queue = docs.dup
+      on("ws-bin", "snapshot") { [(queue.size > 1) ? queue.shift : queue.first, true] }
+    end
+
+    def script_ready_checkout(dirty: false, on_stub: true)
+      on("git", "status") { [dirty ? " M a.rb\n" : "", true] }
+      on("git", "merge-base", "--is-ancestor", "HEAD") { ["", on_stub] }
+      on("ws-bin", "work-queue") { ["", true] }
+      on("ws-bin", "work-queue", "list") { [JSON.generate("queues" => [{"state" => "off", "items" => []}]), true] }
+    end
+
+    it "takes the idle pane that shows up on the second snapshot, sleeping one poll between" do
+      script_snapshots(snapshot([no_idle]), snapshot([idle]))
+      script_ready_checkout
+      expect(lanes.prepare_lane_b).to eq(lane_dir)
+      expect(slept).to eq([5])
+      expect(out.string).to include("waiting up to 300s")
+    end
+
+    it "refuses with the usual message when no pane is idle at the cap" do
+      script_snapshots(snapshot([no_idle]))
+      expect { lanes.prepare_lane_b }.to raise_error(DemoCalculator::Refused, "lane B (ws-b) has no idle Claude Code pane")
+      expect(slept.size).to be_between(25, 60)
+      expect(slept.uniq).to eq([5])
+    end
+
+    it "refuses at once, without sleeping, when lane B is not running" do
+      script_snapshots(snapshot([no_idle], running: false))
+      expect { lanes.prepare_lane_b }.to raise_error(DemoCalculator::Refused, /is not running/)
+      expect(slept).to be_empty
+    end
+
+    it "refuses at once, without sleeping, when the checkout is dirty" do
+      script_snapshots(snapshot([idle]))
+      script_ready_checkout(dirty: true)
+      expect { lanes.prepare_lane_b }.to raise_error(DemoCalculator::Refused, /uncommitted changes/)
+      expect(slept).to be_empty
+    end
+
+    it "refuses at once, without sleeping, when HEAD is off the stub ref" do
+      script_snapshots(snapshot([idle]))
+      script_ready_checkout(on_stub: false)
+      expect { lanes.prepare_lane_b }.to raise_error(DemoCalculator::Refused, /not on main/)
+      expect(slept).to be_empty
+    end
+
+    it "refuses at once, without sleeping, when the workspace is missing" do
+      script_snapshots(JSON.generate("projects" => []))
+      expect { lanes.prepare_lane_b }.to raise_error(DemoCalculator::Refused, /no workspace named ws-b/)
+      expect(slept).to be_empty
+    end
   end
 
   describe "#fork_check!" do
@@ -79,6 +173,24 @@ RSpec.describe DemoCalculator2::Lanes do
       expect { lanes.fork_check!("/lane-b", branch, sha, base) }.not_to raise_error
       expect(calls.first).to eq(["git", "checkout", "-B", branch, sha])
       expect(calls.map { |argv| argv[1] }).to eq(%w[checkout rev-parse rev-parse merge-base])
+    end
+
+    it "checks the ref a record names, not the fixed one" do
+      named = "refs/demo-calc2/acceptance/x"
+      on("git", "checkout", "-B", branch, sha) { ["", true] }
+      on("git", "rev-parse", "HEAD") { ["#{sha}\n", true] }
+      on("git", "rev-parse", named) { ["#{base}\n", true] }
+      on("git", "merge-base", "--is-ancestor", named, sha) { ["", true] }
+      expect { lanes.fork_check!("/lane-b", branch, sha, base, ref: named) }.not_to raise_error
+      expect(calls.flatten).not_to include(DemoCalculator2::ACCEPTANCE_REF)
+    end
+
+    it "names the recorded ref when lane B cannot see it" do
+      named = "refs/demo-calc2/acceptance/x"
+      on("git", "checkout", "-B", branch, sha) { ["", true] }
+      on("git", "rev-parse", "HEAD") { ["#{sha}\n", true] }
+      on("git", "rev-parse", named) { ["", false] }
+      expect { lanes.fork_check!("/lane-b", branch, sha, base, ref: named) }.to raise_error(DemoCalculator2::ForkCheckFailed, %r{cannot see refs/demo-calc2/acceptance/x})
     end
 
     it "stops the run when the checkout fails" do
@@ -123,25 +235,78 @@ RSpec.describe DemoCalculator2::Lanes do
       on("ws-bin", "work-queue", "enable") { ["", true] }
       on("ws-bin", "work-queue", "advance") { ["", true] }
       on("git", "merge") { ["", true] }
+      script_lane_b
       on("sh", "-c") { ["", true] }
       on(/acceptance_runner\z/) { ["", true] }
     end
 
-    it "forks lane B at the head the fork goal's run ended on, not at lane A's HEAD, then queues 06 and 07 with lane B's prompt" do
+    it "forks lane B at the head the fork goal's run ended on, not at lane A's HEAD, then (an old record with no staged items) queues 06 and 07 with lane B's prompt" do
       finished("a1", "a2", "a3")
       lanes.wait_run(record_path)
       expect(calls).to include(["git", "checkout", "-B", branch, "2" * 40])
       expect(calls.index(["git", "checkout", "-B", branch, "2" * 40])).to be < calls.index { |argv| argv[1, 2] == %w[work-queue add] }
-      expect(calls).to include(%w[ws-bin config set --scope workspace --name ws-b commands.test] + ["ruby demo/calculator2/test/calc_test.rb"],
+      expect(calls).to include(%w[ws-bin config set --scope workspace --name ws-b commands.test] + [DemoCalculator2::TEST_COMMAND],
         %w[ws-bin config set --scope workspace --name ws-b commands.lint] + ["bundle exec standardrb demo/calculator2"],
         %w[ws-bin work-queue enable --name ws-b], %w[ws-bin work-queue advance --name ws-b])
       adds = calls.select { |argv| argv[1, 2] == %w[work-queue add] }.select { |argv| argv.include?("--name") && argv.last == "ws-b" }
       expect(adds.map { |argv| argv[argv.index("--dedupe-key") + 1] }).to eq(%w[calculator2-demo:06-json calculator2-demo:07-repl])
-      expect(adds.map { |argv| argv[argv.index("--prompt") + 1] }).to all(include("Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05."))
+      expect(adds.map { |argv| argv[argv.index("--prompt") + 1] }).to all(include("Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05.", "demo/calculator2/test/lane_b_test.rb"))
       expect(adds.flat_map { |argv| argv.each_cons(2).filter_map { |key, value| value if key == "--input" } }).to include("acceptance=script/demo_calculator2/acceptance_runner_lanes")
       expect(saved["fork"]).to include("sha" => "2" * 40, "acceptance_base" => base, "goal" => "03-div-zero", "item" => "a3")
       expect(saved["fork"]["at"]).to match(/\A2026-11-21T/)
       expect(saved.dig("lanes", "b", "items").map { |item| item["goal"] }).to eq(%w[06-json 07-repl])
+    end
+
+    it "checks the fork against the ref the record names" do
+      named = "refs/demo-calc2/acceptance/x"
+      data = JSON.parse(File.read(record_path))
+      data["acceptance_ref"]["name"] = named
+      File.write(record_path, JSON.generate(data))
+      on("git", "rev-parse", named) { ["#{base}\n", true] }
+      finished("a1", "a2", "a3")
+      lanes.wait_run(record_path)
+      expect(calls).to include(["git", "rev-parse", named])
+      expect(calls).not_to include(["git", "rev-parse", DemoCalculator2::ACCEPTANCE_REF])
+      expect(saved["fork"]).to include("acceptance_base" => base)
+    end
+
+    it "checks the fixed ref for an old record that names none" do
+      data = JSON.parse(File.read(record_path))
+      data["acceptance_ref"].delete("name")
+      File.write(record_path, JSON.generate(data))
+      finished("a1", "a2", "a3")
+      lanes.wait_run(record_path)
+      expect(calls).to include(["git", "rev-parse", DemoCalculator2::ACCEPTANCE_REF])
+      expect(saved["fork"]).to include("sha" => "2" * 40)
+    end
+
+    context "with lane B's items staged before the fork" do
+      before do
+        data = JSON.parse(File.read(record_path))
+        data["lanes"]["b"]["items"] = [{"workflow" => "deliver-goal-fast", "id" => "b-06", "goal" => "06-json"}, {"workflow" => "deliver-goal-fast", "id" => "b-07", "goal" => "07-repl"}]
+        File.write(record_path, JSON.generate(data))
+        finished("a1", "a2", "a3")
+      end
+
+      it "queues nothing and sets no commands at the fork, and enables lane B only after the fork check" do
+        lanes.wait_run(record_path)
+        expect(calls.select { |argv| argv[1, 2] == %w[work-queue add] }).to be_empty
+        expect(calls.select { |argv| argv[1, 2] == %w[config set] }).to be_empty
+        checkout = calls.index { |argv| argv[0, 2] == %w[git checkout] }
+        enable = calls.index { |argv| argv[1, 2] == %w[work-queue enable] && argv.last == "ws-b" }
+        advance = calls.index { |argv| argv[1, 2] == %w[work-queue advance] && argv.last == "ws-b" }
+        expect([checkout, enable, advance]).to eq([checkout, enable, advance].sort)
+        expect(saved.dig("lanes", "b", "items").map { |item| item["id"] }).to eq(%w[b-06 b-07])
+      end
+
+      it "leaves lane B's queue disabled, with its items still staged, when the fork check fails" do
+        on("git", "rev-parse", DemoCalculator2::ACCEPTANCE_REF) { ["#{"9" * 40}\n", true] }
+        record = lanes.wait_run(record_path)
+        expect(record["wait"]).to include("reason" => "fork_check")
+        expect(calls.select { |argv| argv[1, 2] == %w[work-queue enable] && argv.last == "ws-b" }).to be_empty
+        expect(calls.select { |argv| argv[1, 2] == %w[work-queue advance] && argv.last == "ws-b" }).to be_empty
+        expect(saved.dig("lanes", "b", "items").size).to eq(2)
+      end
     end
 
     it "keeps polling while the fork goal's item is unfinished, then forks" do
@@ -156,7 +321,10 @@ RSpec.describe DemoCalculator2::Lanes do
       end
       on("ws-bin", "work-queue", "list") { [JSON.generate("queues" => [(calls.any? { |argv| argv[1] == "checkout" }) ? {"state" => "on", "items" => []} : queue_state]), true] }
       lanes.wait_run(record_path)
-      expect(slept).to eq([15])
+      expect(waited).to eq([5])
+      expect(waiter.workspaces).to eq([%w[ws ws-b]])
+      expect(slept).to be_empty
+      expect(waiter.closed).to be(true)
       expect(calls).to include(["git", "checkout", "-B", branch, "2" * 40])
     end
 
@@ -172,7 +340,7 @@ RSpec.describe DemoCalculator2::Lanes do
       on("ws-bin", "work-queue", "list") { [JSON.generate("queues" => [{"state" => "on", "items" => []}]), true] }
       lanes.wait_run(record_path)
       expect(calls).to include(["git", "checkout", "-B", branch, "2" * 40])
-      expect(slept).to be_empty
+      expect(waited).to be_empty
     end
 
     it "stops with fork_check when lane A drains and the fork goal's item never shows in the history" do
@@ -217,6 +385,8 @@ RSpec.describe DemoCalculator2::Lanes do
       queue_state["items"] = [{"id" => "a3", "state" => "held"}]
       lanes.wait_run(record_path)
       expect(out.string).to include("LOOP DONE: stopped reason=held item=a3")
+      expect(waited).to be_empty
+      expect(waiter.closed).to be(true)
     end
 
     it "stops on the timeout" do
@@ -225,6 +395,15 @@ RSpec.describe DemoCalculator2::Lanes do
       limited = described_class.new(root: tmp, workspace: "ws-bin", lane_b: "ws-b", name: "ws", out: out, err: err, clock: clock, sleeper: ->(_) {}, exec: exec, timeout: 5)
       limited.wait_run(record_path)
       expect(out.string).to include("LOOP DONE: stopped reason=timeout")
+    end
+
+    it "sleeps with the sleeper for the poll when no waiter is given" do
+      finished("a1", "a2")
+      queue_state["items"] = [{"id" => "a3", "state" => "active"}]
+      polls = 0
+      on("ws-bin", "work-queue", "list") { [JSON.generate("queues" => [((polls += 1) > 2) ? {"state" => "on", "items" => [], "paused" => true} : queue_state]), true] }
+      described_class.new(root: tmp, workspace: "ws-bin", lane_b: "ws-b", name: "ws", out: out, err: err, clock: clock, sleeper: ->(seconds) { slept << seconds }, exec: exec, held_limit: 0, timeout: 10**9).wait_run(record_path)
+      expect(slept).to all(eq(5))
     end
 
     it "ends a clean run with one LOOP DONE line that carries the wall, the integration and the items" do
@@ -250,6 +429,7 @@ RSpec.describe DemoCalculator2::Lanes do
       on("sh", "-c") { ["", true] }
       on(/acceptance_runner\z/) { ["", true] }
       on("git", "merge", "--no-ff", "--no-edit", branch) { ["", true] }
+      script_lane_b
       on("ws-bin", "work-queue", "add") { [JSON.generate("results" => [{"id" => "int1"}]), true] }
       on("ws-bin", "work-queue", "enable") { ["", true] }
       on("ws-bin", "work-queue", "advance") { ["", true] }
@@ -273,6 +453,7 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(calls).to include(%w[git merge --abort])
       expect(saved["integration"]).to include("merge" => "conflict", "conflict" => true, "first_pass" => false)
       expect(saved["integration"]["integrate_run"]).to include("item" => "int1", "passed" => true, "outcome" => "succeeded")
+      expect(saved["integration"]).to include("repair_workflow" => "integrate-branch")
       queued = calls.find { |argv| argv[1, 4] == %w[work-queue add workflow integrate-branch] }
       expect(queued).to include("branch=#{branch}", "goal=demo/calculator2/goals/07-repl.md", "acceptance=script/demo_calculator2/acceptance_runner", "--name", "ws")
       expect(calls).not_to include(a_collection_starting_with("sh", "-c"))
@@ -288,16 +469,18 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(saved["integration"]).to include("merge" => "failed", "conflict" => false, "first_pass" => false)
     end
 
-    it "makes a failing acceptance run on a clean merge not a first pass, keeping the merge and queueing integrate-branch" do
+    it "makes a failing acceptance run on a clean merge not a first pass, keeping the merge and queueing integrate-merged" do
       on(/acceptance_runner\z/) { ["", false] }
       finished("int1")
       lanes.integrate_run(record_path)
       expect(calls).not_to include(%w[git merge --abort])
       expect(saved["integration"]).to include("merge" => "clean", "first_pass" => false, "test" => true, "lint" => true, "acceptance" => false)
-      expect(calls.any? { |argv| argv[1, 4] == %w[work-queue add workflow integrate-branch] }).to be(true)
+      expect(calls.any? { |argv| argv[1, 4] == %w[work-queue add workflow integrate-merged] }).to be(true)
+      expect(calls.any? { |argv| argv[1, 4] == %w[work-queue add workflow integrate-branch] }).to be(false)
+      expect(saved["integration"]).to include("repair_workflow" => "integrate-merged")
     end
 
-    it "prints the failing command and the last 40 lines of its output before queueing integrate-branch" do
+    it "prints the failing command and the last 40 lines of its output before queueing integrate-merged" do
       output = (1..60).map { |n| "line #{n}\n" }.join
       on(/acceptance_runner\z/) { [output, false] }
       finished("int1")
@@ -305,15 +488,38 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(out.string).to match(/first-pass check acceptance failed: .*acceptance_runner .*07-repl\.md/)
       expect(out.string).to include("line 21\n", "line 60\n")
       expect(out.string).not_to include("line 20\n")
-      expect(out.string.index("first-pass check acceptance failed")).to be < out.string.index("+ workspace work-queue add workflow integrate-branch")
+      expect(out.string.index("first-pass check acceptance failed")).to be < out.string.index("+ workspace work-queue add workflow integrate-merged")
     end
 
     it "stops on the first failing check and runs no later one" do
-      on("sh", "-c", "ruby demo/calculator2/test/calc_test.rb") { ["", false] }
+      on("sh", "-c", DemoCalculator2::TEST_COMMAND) { ["", false] }
       finished("int1")
       lanes.integrate_run(record_path)
       expect(saved["integration"]).to include("first_pass" => false, "test" => false)
       expect(saved["integration"]).not_to have_key("lint")
+    end
+
+    def write_calc_test(*names)
+      path = File.join(tmp, "demo/calculator2/test/calc_test.rb")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, names.map { |name| "  def #{name}\n  end\n" }.join("\n"))
+    end
+
+    it "makes a duplicated test method name not a first pass and runs no test command after it" do
+      write_calc_test("test_add", "test_sub", "test_add")
+      finished("int1")
+      lanes.integrate_run(record_path)
+      expect(saved["integration"]).to include("merge" => "clean", "first_pass" => false, "test_names" => {"ok" => false, "duplicates" => ["test_add"]})
+      expect(saved["integration"]).not_to have_key("test")
+      expect(calls).not_to include(a_collection_starting_with("sh", "-c"))
+      expect(calls.none? { |argv| argv.first.to_s.end_with?("acceptance_runner") }).to be(true)
+      expect(out.string).to include("first-pass check test_names failed", "test_add")
+    end
+
+    it "records a clean test-name scan and goes on to the test command" do
+      write_calc_test("test_add", "test_sub")
+      lanes.integrate_run(record_path)
+      expect(saved["integration"]).to include("first_pass" => true, "test_names" => {"ok" => true, "duplicates" => []}, "test" => true)
     end
 
     it "records a repair that did not pass apart from the first pass, and stops when integrate-branch is held" do
@@ -343,6 +549,113 @@ RSpec.describe DemoCalculator2::Lanes do
       wall = out.string[/wall=(\d+)m(\d+)s/].then { |text| text.scan(/\d+/).then { |m, s| (m.to_i * 60) + s.to_i } }
       expect(wall).to be < Time.utc(2026, 11, 21, 5, 25, 0) - Time.utc(2026, 11, 21, 5, 0, 30)
       expect(wall).to be > Time.utc(2026, 11, 21, 5, 24, 0) - Time.utc(2026, 11, 21, 5, 0, 30) - 1
+    end
+
+    describe "the test-file ownership check" do
+      let(:lane_b_file) { "demo/calculator2/test/lane_b_test.rb" }
+      let(:shared_file) { "demo/calculator2/test/calc_test.rb" }
+
+      def merged? = calls.any? { |argv| argv[1] == "merge" }
+
+      def log_call = calls.index { |argv| argv[1, 2] == %w[log --first-parent] }
+
+      it "passes when lane B touches only its own test file and lane A leaves it alone" do
+        script_lane_b(b_files: ["demo/calculator2/lib/calc.rb", lane_b_file])
+        lanes.integrate_run(record_path)
+        expect(saved["integration"]).to include("merge" => "clean")
+        expect(saved["lane_b_check"]).to include("passed" => true, "premerge_head" => "a" * 40)
+        expect(saved["lane_b_check"]).not_to have_key("message")
+      end
+
+      it "runs before the merge" do
+        lanes.integrate_run(record_path)
+        expect(log_call).to be < calls.index { |argv| argv[1] == "merge" }
+      end
+
+      {"calc_test.rb" => ["demo/calculator2/test/calc_test.rb"],
+       "another test file" => ["demo/calculator2/test/other_test.rb"],
+       "a deleted test file" => ["demo/calculator2/test/helper.rb"],
+       "a rename out of calc_test.rb" => ["demo/calculator2/test/calc_test.rb", "demo/calculator2/test/renamed_test.rb"]}.each do |label, files|
+        it "stops the run, recording it, when lane B changed #{label}" do
+          script_lane_b(b_files: files)
+          record = lanes.integrate_run(record_path)
+          expect(record["wait"]).to include("reason" => "ownership")
+          expect(saved["wait"]).to include("reason" => "ownership")
+          expect(saved["lane_b_check"]).to include("passed" => false, "message" => /lane B .* changed #{Regexp.escape(files.first)}.*put its tests in demo\/calculator2\/test\/lane_b_test\.rb/)
+          expect(err.string).to match(/demo-calculator2: lane B .* changed/)
+          expect(merged?).to be(false)
+        end
+      end
+
+      it "stops the run when lane A touched lane B's test file" do
+        script_lane_b(a_files: [lane_b_file])
+        record = lanes.integrate_run(record_path)
+        expect(record["wait"]).to include("reason" => "ownership")
+        expect(saved["lane_b_check"]["message"]).to match(/lane A changed demo\/calculator2\/test\/lane_b_test\.rb/)
+        expect(merged?).to be(false)
+      end
+
+      {"rev-parse" => ["rev-parse", "--verify", "calc-demo/20261121T050000Z-b^{commit}"], "log" => %w[log --first-parent]}.each do |verb, prefix|
+        it "raises the infrastructure error, not a rejection, when git #{verb} fails" do
+          script_lane_b
+          on("git", *prefix) { ["fatal", false] }
+          expect { lanes.ownership_stop(JSON.parse(File.read(record_path))) }.to raise_error(DemoCalculator2::OwnershipCheckFailed, /could not run: git #{verb} /)
+          expect(saved).not_to have_key("lane_b_check")
+        end
+      end
+
+      it "ends the run with reason error and no rejection record when git fails" do
+        script_lane_b
+        on("git", "log", "--first-parent") { ["fatal", false] }
+        record = lanes.integrate_run(record_path)
+        expect(record["wait"]).to include("reason" => "error")
+        expect(saved).not_to have_key("lane_b_check")
+        expect(err.string).to match(/ownership check could not run/)
+      end
+
+      it "raises when the record names no fork sha" do
+        data = JSON.parse(File.read(record_path))
+        data["fork"].delete("sha")
+        expect { lanes.ownership_stop(data) }.to raise_error(DemoCalculator2::OwnershipCheckFailed, /no fork sha/)
+      end
+
+      it "is the same check when the queues drain through run --wait, before the merge" do
+        script_lane_b(b_files: [shared_file])
+        allow(lanes).to receive(:wait_loop).and_return(nil)
+        record = lanes.wait_run(record_path)
+        expect(record["wait"]).to include("reason" => "ownership")
+        expect(merged?).to be(false)
+        expect(calls.count { |argv| argv[1, 2] == %w[log --first-parent] }).to eq(1)
+      end
+
+      it "records a pass over a stale failure, as a fixed and resumed series" do
+        data = saved.merge("lane_b_check" => {"passed" => false, "message" => "old"})
+        File.write(record_path, JSON.generate(data))
+        script_lane_b
+        lanes.integrate_run(record_path)
+        expect(saved["lane_b_check"]).to include("passed" => true, "premerge_head" => "a" * 40, "checked_at" => String)
+        expect(saved["lane_b_check"]).not_to have_key("message")
+      end
+
+      it "reads lane A up to the head recorded before the merge when integrate runs again" do
+        data = saved.merge("integration" => {"merge" => "clean"},
+          "lane_b_check" => {"passed" => true, "premerge_head" => "p" * 40})
+        File.write(record_path, JSON.generate(data))
+        script_lane_b(a_head: "r" * 40)
+        lanes.integrate_run(record_path)
+        expect(calls.find { |argv| argv[1, 2] == %w[log --first-parent] && argv.last.end_with?("..#{"p" * 40}") }).not_to be_nil
+        expect(calls.none? { |argv| argv.last.to_s.end_with?("..#{"r" * 40}") }).to be(true)
+        expect(saved["lane_b_check"]).to include("passed" => true, "premerge_head" => "p" * 40)
+      end
+
+      it "reads lane A up to its head now when the earlier check failed, even if an integration is recorded" do
+        data = saved.merge("integration" => {"merge" => "clean"},
+          "lane_b_check" => {"passed" => false, "premerge_head" => "p" * 40})
+        File.write(record_path, JSON.generate(data))
+        script_lane_b(a_head: "r" * 40)
+        lanes.integrate_run(record_path)
+        expect(saved["lane_b_check"]).to include("passed" => true, "premerge_head" => "r" * 40)
+      end
     end
 
     it "refuses a record that has no fork" do
@@ -382,38 +695,177 @@ RSpec.describe DemoCalculator2::Lanes do
 
   describe "#write_attributes" do
     let(:dir) { File.join(tmp, "common") }
-    let(:driver) { "ruby #{Shellwords.escape(described_class::DRIVER_SCRIPT)} %O %A %B" }
+    let(:driver) { DemoCalculator2::SharedValues::DRIVER_COMMAND }
+    let(:driver_key) { "merge.calc-demo-tests.driver" }
+    let(:line) { "demo/calculator2/test/calc_test.rb merge=calc-demo-tests" }
+    let(:live) { {} }
 
     before do
       on("git", "rev-parse", "--git-common-dir") { ["#{dir}\n", true] }
-      on("git", "config") { ["", true] }
+      on("git", "config", "--local", "--get") { |argv| live.key?(argv.last) ? ["#{live[argv.last]}\n", true] : ["", false] }
+      on("git", "config", "--local", /\Amerge/) { ["", true] }
     end
 
-    it "adds the driver line to the shared git dir's info/attributes once and sets the driver in the local config" do
+    def config_writes = calls.select { |argv| argv[0, 3] == %w[git config --local] && argv[3] != "--get" }
+
+    it "adds the path-agnostic driver line and config on a repository with none, and writes it once" do
       2.times { lanes.write_attributes }
-      expect(File.read(File.join(dir, "info", "attributes"))).to eq("demo/calculator2/test/calc_test.rb merge=calc-demo-tests\n")
-      expect(calls).to include(["git", "config", "--local", "merge.calc-demo-tests.driver", driver])
-      expect(calls.map { |argv| argv[0, 4] }).to include(%w[git config --local merge.calc-demo-tests.name])
+      expect(File.read(File.join(dir, "info", "attributes"))).to eq("#{line}\n")
+      expect(driver).not_to include(tmp)
+      expect(config_writes).to include(["git", "config", "--local", driver_key, driver])
+      expect(config_writes.map { |argv| argv[3] }).to include("merge.calc-demo-tests.name")
     end
 
     it "keeps a line already there and puts its own on a new line" do
       FileUtils.mkdir_p(File.join(dir, "info"))
       File.write(File.join(dir, "info", "attributes"), "*.txt -text")
       lanes.write_attributes
-      expect(File.read(File.join(dir, "info", "attributes"))).to eq("*.txt -text\ndemo/calculator2/test/calc_test.rb merge=calc-demo-tests\n")
+      expect(File.read(File.join(dir, "info", "attributes"))).to eq("*.txt -text\n#{line}\n")
     end
 
     it "records what it wrote in run.json so cleanup can remove it" do
       lanes.write_attributes(record_path)
-      expect(saved["merge_driver"]).to eq("attributes_path" => File.join(dir, "info", "attributes"), "attributes_line" => "demo/calculator2/test/calc_test.rb merge=calc-demo-tests",
-        "config_section" => "merge.calc-demo-tests", "driver" => driver)
+      expect(saved["merge_driver"]).to eq("attributes_path" => File.join(dir, "info", "attributes"), "attributes_line" => line,
+        "config_section" => "merge.calc-demo-tests", "driver" => driver, "written" => true, "replaced" => nil)
+    end
+
+    it "rewrites a driver that names a checkout that no longer exists and records the old value" do
+      old = "ruby #{Shellwords.escape(File.join(tmp, "gone"))}/script/demo_calculator2/merge_test_methods %O %A %B"
+      live[driver_key] = old
+      lanes.write_attributes(record_path)
+      expect(config_writes).to include(["git", "config", "--local", driver_key, driver])
+      expect(saved["merge_driver"]).to include("written" => true, "replaced" => old)
+    end
+
+    it "writes nothing when the line and both config values are already ours" do
+      FileUtils.mkdir_p(File.join(dir, "info"))
+      File.write(File.join(dir, "info", "attributes"), "#{line}\n")
+      live["merge.calc-demo-tests.name"] = "calc_test.rb: keep both lanes' added test methods"
+      live[driver_key] = driver
+      lanes.write_attributes(record_path)
+      expect(config_writes).to be_empty
+      expect(saved["merge_driver"]).to include("written" => false, "replaced" => nil)
+    end
+
+    it "refuses a driver that names another checkout that exists, naming the key, the value and the owner" do
+      other = File.join(tmp, "other")
+      FileUtils.mkdir_p(other)
+      old = "ruby #{Shellwords.escape(other)}/script/demo_calculator2/merge_test_methods %O %A %B"
+      live[driver_key] = old
+      expect { lanes.write_attributes(record_path) }.to raise_error(DemoCalculator::Refused) { |error|
+        expect(error.message).to include("git-config:merge.calc-demo-tests.driver", old.inspect, other)
+      }
+      expect(config_writes).to be_empty
+      expect(File.exist?(File.join(dir, "info", "attributes"))).to be(false)
     end
 
     it "writes nothing on a dry run" do
       dry = described_class.new(root: tmp, workspace: "ws-bin", lane_b: "ws-b", name: "ws", out: out, err: err, clock: clock, sleeper: ->(_) {}, exec: exec, dry_run: true)
       dry.write_attributes(record_path)
-      expect(calls.grep(%w[git config])).to be_empty
+      expect(config_writes).to be_empty
       expect(File.exist?(File.join(dir, "info", "attributes"))).to be(false)
+    end
+  end
+
+  describe "#run: info files before the queue starts" do
+    let(:dir) { File.join(tmp, "common") }
+    let(:driver_key) { "merge.calc-demo-tests.driver" }
+    let(:live) { {} }
+    let(:record_path) { File.join(tmp, "runs", "w01", "run.json").tap { |path| FileUtils.mkdir_p(File.dirname(path)) } }
+    let(:at_enable) { {} }
+    let(:demo) do
+      instance_double(DemoCalculator::Demo, record_path: record_path).tap do |fake|
+        allow(fake).to receive(:run) do |before_start: nil|
+          before_start&.call
+          at_enable["exclude"] = File.exist?(File.join(dir, "info", "exclude")) && File.read(File.join(dir, "info", "exclude"))
+          calls << ["ws-bin", "work-queue", "enable", "--name", "ws"]
+          record
+        end
+      end
+    end
+
+    before do
+      FileUtils.mkdir_p(File.join(tmp, "demo", "calculator2"))
+      allow(DemoCalculator::Demo).to receive(:new).and_return(demo)
+      on("git", "rev-parse", "--git-common-dir") { ["#{dir}\n", true] }
+      on("git", "config", "--local", "--get") { |argv| live.key?(argv.last) ? ["#{live[argv.last]}\n", true] : ["", false] }
+      on("git", "config", "--local", /\Amerge/) { ["", true] }
+      on("ws-bin", "workflow", "status") { ["", true] }
+      on("ws-bin", "config", "get") { ["", true] }
+      on("ws-bin", "config", "set") { ["", true] }
+      on("ws-bin", "work-queue", "add") { |argv| [JSON.generate("results" => [{"id" => "b-#{argv[argv.index("--dedupe-key") + 1][/\d\d/]}"}]), true] }
+      allow(lanes).to receive(:prepare_lane_b).and_return(tmp)
+    end
+
+    it "writes info/attributes, the driver config and the exclude before work-queue enable" do
+      lanes.run
+      enable = calls.index { |argv| argv[1, 2] == %w[work-queue enable] }
+      driver = calls.index { |argv| argv[0, 3] == %w[git config --local] && argv[3] == driver_key }
+      expect(enable).not_to be_nil
+      expect(driver).to be < enable
+      expect(File.read(File.join(dir, "info", "attributes"))).to include("merge=calc-demo-tests")
+      expect(at_enable["exclude"]).to include("/runs/w01/")
+    end
+
+    it "sets lane B's commands and queues its items before work-queue enable, and records them in lanes.b.items" do
+      lanes.run
+      enable = calls.index { |argv| argv[1, 2] == %w[work-queue enable] }
+      b_config = calls.each_index.select { |i| calls[i][1, 2] == %w[config set] && calls[i].include?("ws-b") }
+      b_adds = calls.each_index.select { |i| calls[i][1, 2] == %w[work-queue add] && calls[i].last == "ws-b" }
+      expect(b_config.size).to eq(2)
+      expect(b_adds.size).to eq(2)
+      expect(b_config + b_adds).to all(be < enable)
+      expect(calls.map { |argv| argv[1, 2] }).not_to include(%w[work-queue advance])
+      expect(calls.select { |argv| argv[0, 2] == %w[git checkout] }).to be_empty
+    end
+
+    it "passes the staged items to the run record" do
+      captured = nil
+      allow(DemoCalculator::Demo).to receive(:new) do |**kwargs|
+        captured = kwargs[:config].record_extras["lanes"]
+        demo
+      end
+      lanes.run
+      expect(captured.dig("b", "items").map { |item| item.values_at("id", "goal") }).to eq([%w[b-06 06-json], %w[b-07 07-repl]])
+    end
+
+    context "with an id" do
+      let(:lanes) do
+        described_class.new(root: tmp, workspace: "ws-bin", lane_b: "ws-b", name: "ws", workflow: "deliver-goal-fast", out: out, err: err, clock: clock,
+          sleeper: ->(seconds) { slept << seconds }, waiter: waiter, exec: exec, held_limit: 0, timeout: 10**9, id: "x")
+      end
+
+      it "gives lane B the branch <stamp>-<id>-b, lane A's config the per-id ref and the run its id" do
+        captured = nil
+        allow(DemoCalculator::Demo).to receive(:new) do |**kwargs|
+          captured = kwargs
+          demo
+        end
+        lanes.run
+        expect(captured[:id]).to eq("x")
+        expect(captured[:config].acceptance_ref).to eq("refs/demo-calc2/acceptance/x")
+        expect(captured[:config].record_extras.dig("lanes", "b", "branch")).to match(%r{\Acalc-demo/\d{8}T\d{6}Z-x-b\z})
+      end
+    end
+
+    it "keeps lane B's plain <stamp>-b branch and the fixed ref without an id" do
+      captured = nil
+      allow(DemoCalculator::Demo).to receive(:new) do |**kwargs|
+        captured = kwargs
+        demo
+      end
+      lanes.run
+      expect(captured[:id]).to be_nil
+      expect(captured[:config].acceptance_ref).to eq(DemoCalculator2::ACCEPTANCE_REF)
+      expect(captured[:config].record_extras.dig("lanes", "b", "branch")).to match(%r{\Acalc-demo/\d{8}T\d{6}Z-b\z})
+    end
+
+    it "runs no work-queue enable when a foreign-live driver refuses" do
+      other = File.join(tmp, "other")
+      FileUtils.mkdir_p(other)
+      live[driver_key] = "ruby #{Shellwords.escape(other)}/script/demo_calculator2/merge_test_methods %O %A %B"
+      expect { lanes.run }.to raise_error(DemoCalculator::Refused, /git-config:merge.calc-demo-tests.driver/)
+      expect(calls.select { |argv| argv[1, 2] == %w[work-queue enable] }).to be_empty
     end
   end
 end
