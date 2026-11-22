@@ -14,8 +14,8 @@ RSpec.describe "script/hook-latency" do
     JSON.generate("type" => type, "at" => at, "pane_id" => pane, "tool" => tool, "tool_use_id" => id)
   end
 
-  def run_script(*args)
-    out, err, status = Open3.capture3(RbConfig.ruby, script, *args)
+  def run_script(*args, env: {})
+    out, err, status = Open3.capture3(env, RbConfig.ruby, script, *args)
     [out, err, status.exitstatus]
   end
 
@@ -94,5 +94,27 @@ RSpec.describe "script/hook-latency" do
     out, _, code = run_script("--process", "2", "--bin", stub, "--json")
     expect(code).to eq(0)
     expect(JSON.parse(out)).to include("n" => 2, "mode" => "process")
+  end
+
+  it "reads --workspace's log under XDG_STATE_HOME when it is set" do
+    events = File.join(dir, "workspace", ".events")
+    FileUtils.mkdir_p(events)
+    File.write(File.join(events, "ws.jsonl"), line("tool_started", "a", "2026-11-21T10:00:00.000Z") + "\n" + line("tool_finished", "a", "2026-11-21T10:00:00.200Z") + "\n")
+    out, _, code = run_script("--workspace", "ws", env: {"XDG_STATE_HOME" => dir})
+    expect([out.strip, code]).to eq(["n=1 median=0.200s p90=0.200s", 0])
+  end
+
+  it "exits 2 with a message, not a backtrace, when --file is a directory" do
+    _, err, code = run_script("--file", dir)
+    expect(code).to eq(2)
+    expect(err.lines.size).to eq(1)
+    expect(err).to match(/directory/i)
+  end
+
+  %w[0 -1].each do |n|
+    it "refuses --process #{n}" do
+      _, err, code = run_script("--process", n)
+      expect([code, err]).to eq([2, "invalid argument: --process #{n}: N must be at least 1\n"])
+    end
   end
 end

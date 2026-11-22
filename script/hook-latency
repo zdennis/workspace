@@ -91,7 +91,7 @@ module HookLatency
       o.on("--tool NAME", "Only this tool (e.g. Read)") { |v| opts[:tool] = v }
       o.on("--pane ID", "Only events from this tmux pane (e.g. %12)") { |v| opts[:pane] = v }
       o.on("--since TIME", "Only pairs started at or after this ISO8601 time") { |v| opts[:since] = Time.iso8601(v) }
-      o.on("--process N", Integer, "Time `session-event` N times with a PreToolUse Read payload (TMUX_PANE unset, throwaway HOME: touches no real state)") { |v| opts[:process] = v }
+      o.on("--process N", Integer, "Time `session-event` N times with a PreToolUse Read payload (TMUX_PANE unset, throwaway HOME: touches no real state)") { |v| opts[:process] = v.positive? ? v : raise(OptionParser::InvalidArgument, "#{v}: N must be at least 1") }
       o.on("--bin PATH", "workspace executable for --process (default: this checkout's bin/workspace)") { |v| opts[:bin] = v }
       o.on("--json", "Print JSON") { opts[:json] = true }
     end
@@ -102,7 +102,7 @@ module HookLatency
       result = summary(times).merge("mode" => "process")
       result.delete("p90") if times.size < 2
     else
-      path = opts[:file] || (opts[:workspace] && File.join(Dir.home, ".local/state/workspace/.events", "#{opts[:workspace]}.jsonl"))
+      path = opts[:file] || (opts[:workspace] && File.join(File.expand_path(ENV.fetch("XDG_STATE_HOME", "~/.local/state")), "workspace/.events", "#{opts[:workspace]}.jsonl"))
       unless path
         err.puts parser.help
         return 2
@@ -118,7 +118,7 @@ module HookLatency
       out.puts "n=#{result["n"]} median=#{fmt.call(result["median"])} p90=#{fmt.call(result["p90"])}"
     end
     0
-  rescue OptionParser::ParseError, ArgumentError => e
+  rescue OptionParser::ParseError, ArgumentError, SystemCallError => e
     err.puts e.message
     2
   end
