@@ -399,7 +399,7 @@ RSpec.describe DemoCalculator2::Series do
     let(:sleeps) { [] }
     let(:now) { [0] }
     let(:options) { described_class.parse(["--id", id, "--base", base, *("--take-over" if take_over), *extra_args]) }
-    let(:extra_args) { [] }
+    let(:extra_args) { ["--keep"] }
     let(:snapshot_states) { [] }
     let(:run_output) { ["LOOP DONE: wall=1m integration=clean first_pass=true items=7/7\n", 0] }
     let(:tmux_command) { "claude-sonnet --dangerously-skip-permissions --continue || claude-sonnet --dangerously-skip-permissions" }
@@ -510,7 +510,7 @@ RSpec.describe DemoCalculator2::Series do
     end
 
     context "with --sonnet" do
-      let(:extra_args) { ["--sonnet"] }
+      let(:extra_args) { ["--keep", "--sonnet"] }
 
       it "sets the launcher per lane, applies the template with a relaunch and reads the pane command back" do
         expect(full.call).to eq(0)
@@ -549,7 +549,7 @@ RSpec.describe DemoCalculator2::Series do
         expect(err.string).to match(/no idle Claude Code pane in .* after 300s/)
         expect(config_writes).to be_empty
         expect(runs).to be_empty
-        expect(written).to be_empty
+        expect(written.keys).to eq(["/wt/a/runs/s1/command.txt"])
       end
     end
 
@@ -584,7 +584,7 @@ RSpec.describe DemoCalculator2::Series do
           expect(full.call).to eq(0)
           expect(config_writes).to be_empty
           expect(calls("workspace", "config", "set", "workflows.sources")).to be_empty
-          expect(written).to be_empty
+          expect(written.keys).to eq(["/wt/a/runs/s1/command.txt"])
           expect(live_registry.shared.values.map { |entry| entry["added_by"] }.uniq).to eq(["preexisting"])
         end
       end
@@ -630,7 +630,7 @@ RSpec.describe DemoCalculator2::Series do
     describe "the run" do
       it "gives the run's log to the runner, which appends to it as the run goes, instead of capturing the output" do
         full.call
-        expect(calls(*runs.first[:argv].first(1))).to be_empty
+        expect(calls(*runs.first[:argv].first(2))).to be_empty
       end
 
       it "runs lane A's script from its worktree with the lane, id, out and wait arguments, and keeps the log" do
@@ -672,6 +672,380 @@ RSpec.describe DemoCalculator2::Series do
 
         it "returns 3" do
           expect(full.call).to eq(3)
+        end
+      end
+    end
+    describe "steps 7 to 9 (evidence, pin, clean, report)" do
+      let(:extra_args) { [] }
+      let(:written) { files }
+      let(:copies) { [] }
+      let(:existing) { ["/live", "/wt/a/runs/s1"] }
+      let(:run_dir) { "/wt/a/runs/s1" }
+      let(:branch_a) { "calc-demo/20260101T000000Z-s1" }
+      let(:branch_b) { "calc-demo/20260101T000000Z-s1-b" }
+      let(:run_json) do
+        {"stamp" => "20260101T000000Z", "branch" => branch_a, "base_sha" => "aaa", "fork" => {"run_id" => "wr_fork"},
+         "lanes" => {"workflow" => "deliver-goal-fast", "a" => {"workspace" => lane_a}, "b" => {"workspace" => lane_b, "branch" => branch_b}}}
+      end
+      let(:eval_json) do
+        {"header" => {"model" => "sonnet"}, "leak" => {"hook" => 0, "transcript" => {"/t/a" => 0, "/t/b" => 0}},
+         "rows" => %w[01-add 02-sub 03-mul 04-div 05-pow 06-mod 07-repl].each_with_index.map { |goal, index| {"goal" => goal, "ran" => true, "wall" => 60.0 * (index + 1)} },
+         "totals" => {"items" => 7, "items_run" => 7, "states" => {"completed" => 7}, "first_pass" => 7, "accept_loops" => 1, "review_rounds" => 2, "cost_usd" => 4.5, "lint" => 0, "partial" => []},
+         "lanes" => {"wall" => 600.0, "sequential" => 900.0, "critical_path" => {"span" => 500.0}, "integration" => {"merge" => "clean", "first_pass" => true, "wall" => 30.0}}}
+      end
+      let(:full) do
+        described_class.new(root: root, options: options, exec: exec, registry: live_registry, out: out, err: err,
+          read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) },
+          write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, clock: -> { now[0] }, sleeper: ->(s) { now[0] += s },
+          copy_dir: ->(from, to) {
+            exec.calls << ["copy", from, to]
+            copies << [from, to]
+          })
+      end
+
+      before do
+        files["#{run_dir}/run.json"] = JSON.generate(run_json)
+        files["#{run_dir}/eval.json"] = JSON.generate(eval_json)
+        exec
+          .on(["/wt/a/script/demo-calculator2", "eval"], "the eval table\n")
+          .on(%w[workspace work-queue history list], {"entries" => [{"result" => {"run_id" => "wr_1"}}]}.to_json)
+          .on(%w[workspace workflow attempts], {"attempts" => []}.to_json)
+          .on(%w[workspace workflow trace], {"transitions" => []}.to_json)
+          .on(["git", "rev-parse", branch_a], "head-a\n")
+          .on(["git", "rev-parse", branch_b], "head-b\n")
+          .on(%w[git update-ref], "")
+          .on(%w[git branch -D], "")
+          .on(%w[workspace kill], "{}")
+          .on(%w[workspace config unset], "")
+          .on(%w[workspace config show], -> { {"keys" => [{"key" => "workflows.sources", "effective" => sources_now}]}.to_json })
+      end
+
+      def sources_now = (exec.calls.any? { |argv| argv.first(4) == %w[workspace config set workflows.sources] }) ? [sources] : []
+
+      def index_of(*prefix) = exec.calls.index { |argv| argv.first(prefix.size) == prefix }
+
+      context "when the run stopped" do
+        let(:run_output) { ["LOOP DONE: stopped reason=timeout\n", 3] }
+
+        it "still saves the evidence in lane A's runs directory" do
+          expect(full.call).to eq(3)
+          expect(files.keys).to include("#{run_dir}/eval.txt", "#{run_dir}/work-queue-history-a.json", "#{run_dir}/work-queue-history-b.json",
+            "#{run_dir}/attempts-wr_1.json", "#{run_dir}/trace-wr_1.json", "#{run_dir}/attempts-wr_fork.json", "#{run_dir}/command.txt")
+          expect(files["#{run_dir}/command.txt"]).to include("series --id s1")
+          expect(calls("/wt/a/script/demo-calculator2").first).to eq(["/wt/a/script/demo-calculator2", "eval", "--run", run_dir])
+        end
+
+        it "pins both lane heads, then copies the evidence, then kills, then deletes the branches and the acceptance ref" do
+          full.call
+          expect(calls("git", "update-ref", "refs/demo-calc2-runs/s1")).to eq([["git", "update-ref", "refs/demo-calc2-runs/s1", "head-a"]])
+          expect(calls("git", "update-ref", "refs/demo-calc2-runs/s1-b")).to eq([["git", "update-ref", "refs/demo-calc2-runs/s1-b", "head-b"]])
+          expect(copies).to eq([[run_dir, "/repo/tmp/demo-calculator2/series/s1"]])
+          order = [index_of("git", "update-ref", "refs/demo-calc2-runs/s1-b"), index_of("copy"), index_of("workspace", "kill"), index_of("git", "branch", "-D"), index_of("git", "update-ref", "-d")]
+          expect(order).to eq(order.sort)
+          expect(order).not_to include(nil)
+        end
+
+        it "kills only the workspaces in the registry entry and deletes only the recorded branches" do
+          full.call
+          expect(calls("workspace", "kill")).to eq([["workspace", "kill", "--name", lane_a, "--force", "--json"], ["workspace", "kill", "--name", lane_b, "--force", "--json"]])
+          expect(calls("git", "branch")).to eq([["git", "branch", "-D", branch_a], ["git", "branch", "-D", branch_b]])
+          expect(calls("git", "update-ref", "-d")).to eq([["git", "update-ref", "-d", "refs/demo-calc2/acceptance/s1"]])
+        end
+
+        it "deregisters the id and ends on one LOOP DONE line" do
+          full.call
+          expect(live_registry.entries).to eq({})
+          expect(out.string.lines.last).to eq("LOOP DONE: series s1 stopped reason=timeout\n")
+          expect(out.string.scan("LOOP DONE").size).to eq(1)
+        end
+      end
+
+      context "when the registry becomes unreadable during the run" do
+        let(:run_output) { ["LOOP DONE: stopped reason=timeout\n", 3] }
+        let(:run_logged) do
+          lambda do |argv, chdir:, log:|
+            File.write(File.join(registry_dir, "series.json"), "not json")
+            files[log] = run_output[0]
+            run_output[1]
+          end
+        end
+
+        it "still returns 3, saves, copies, kills nothing it cannot prove is its own and ends on one LOOP DONE line" do
+          expect(full.call).to eq(3)
+          expect(err.string).to include("is not valid JSON")
+          expect(copies.size).to eq(1)
+          expect(calls("workspace", "kill")).to be_empty
+          expect(out.string.scan("LOOP DONE").size).to eq(1)
+        end
+      end
+
+      context "when the stop reason spans several lines" do
+        it "keeps the first line, stripped" do
+          exec.on(%w[workspace start calc2-demo-s1-b], -> { raise "  first line \nsecond line" })
+          expect(full.call).to eq(3)
+          expect(out.string.lines.last).to eq("LOOP DONE: series s1 stopped reason=first line\n")
+        end
+      end
+
+      context "when eval fails" do
+        before { exec.on(["/wt/a/script/demo-calculator2", "eval"], "", false) }
+
+        it "reports it, still saves the rest and still copies run.json and driver.log" do
+          expect(full.call).to eq(0)
+          expect(err.string).to include("eval failed")
+          expect(files.keys).to include("#{run_dir}/attempts-wr_1.json", "#{run_dir}/command.txt")
+          expect(files.keys).not_to include("#{run_dir}/eval.txt")
+          expect(copies).to eq([[run_dir, "/repo/tmp/demo-calculator2/series/s1"]])
+          expect(files["#{run_dir}/run.json"]).not_to be_nil
+          expect(files["#{run_dir}/driver.log"]).to include("LOOP DONE")
+          expect(calls("workspace", "kill").size).to eq(2)
+        end
+      end
+
+      context "when an evidence command fails" do
+        before { exec.on(%w[workspace work-queue history list], "", false) }
+
+        it "reports it and goes on with the rest" do
+          full.call
+          expect(err.string).to include("work-queue history of #{lane_a} failed")
+          expect(files.keys).to include("#{run_dir}/trace-wr_fork.json", "#{run_dir}/command.txt")
+        end
+      end
+
+      context "when the copy fails" do
+        let(:full) do
+          described_class.new(root: root, options: options, exec: exec, registry: live_registry, out: out, err: err,
+            read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) },
+            write_file: ->(path, text) { written[path] = text }, run_logged: run_logged, sleeper: ->(_) {}, copy_dir: ->(*) { raise Errno::ENOSPC })
+        end
+
+        it "kills nothing and keeps the id registered" do
+          full.call
+          expect(calls("workspace", "kill")).to be_empty
+          expect(calls("git", "branch")).to be_empty
+          expect(live_registry.entries).to have_key("s1")
+          expect(err.string).to include("the evidence was not copied")
+          expect(out.string.lines.last).to start_with("LOOP DONE: series s1")
+        end
+      end
+
+      context "with --evidence-dir" do
+        let(:extra_args) { ["--evidence-dir", "/elsewhere/s1"] }
+
+        it "copies there" do
+          full.call
+          expect(copies).to eq([[run_dir, "/elsewhere/s1"]])
+        end
+      end
+
+      context "with --keep" do
+        let(:extra_args) { ["--keep"] }
+
+        it "kills nothing, deletes nothing, keeps the id and still saves the evidence" do
+          expect(full.call).to eq(0)
+          expect(calls("workspace", "kill")).to be_empty
+          expect(calls("git", "branch")).to be_empty
+          expect(calls("git", "update-ref")).to be_empty
+          expect(copies).to be_empty
+          expect(live_registry.entries).to have_key("s1")
+          expect(files.keys).to include("#{run_dir}/eval.txt")
+          expect(out.string).to include("the id stays registered")
+          expect(out.string.lines.last).to start_with("LOOP DONE: series s1 wall=1m")
+        end
+      end
+
+      context "when run.json names a workspace or branch this series did not record" do
+        let(:run_json) { super().merge("branch" => "calc-demo/20260101T000000Z-other").tap { |doc| doc["lanes"] = doc["lanes"].merge("a" => {"workspace" => "workspace.worktree-calc2-demo-other"}) } }
+
+        it "refuses the kill and the branch delete, and goes on" do
+          full.call
+          expect(err.string).to include("workspace.worktree-calc2-demo-other is not in series s1's registry entry")
+          expect(err.string).to include("calc-demo/20260101T000000Z-other is not a calc-demo/<stamp>-s1[-b] branch of this series")
+          expect(calls("workspace", "kill").map { |argv| argv[3] }).to eq([lane_a, lane_b])
+          expect(calls("git", "branch")).to eq([["git", "branch", "-D", branch_b]])
+        end
+      end
+
+      context "when a branch could not be pinned" do
+        before { exec.on(["git", "update-ref", "refs/demo-calc2-runs/s1-b"], "", false) }
+
+        it "does not delete that branch" do
+          full.call
+          expect(calls("git", "branch")).to eq([["git", "branch", "-D", branch_a]])
+        end
+      end
+
+      describe "the undo of the shared values" do
+        let(:exclude) { "/runs/s1/" }
+
+        it "always removes its own exclude line" do
+          files["/repo/.git/info/exclude"] = "mine\n"
+          DemoCalculator2::SeriesRegistry.new(registry_dir, pid: 1, host: "h").register("other")
+          full.call
+          expect(files["/repo/.git/info/exclude"]).to eq("mine\n")
+        end
+
+        it "leaves the attributes line, the driver config and the sources entry while another id is registered" do
+          DemoCalculator2::SeriesRegistry.new(registry_dir, pid: 1, host: "h").register("other")
+          full.call
+          expect(files["/repo/.git/info/attributes"]).to eq("#{described_class::ATTRIBUTES_LINE}\n")
+          expect(calls("git", "config", "--local", "--unset")).to be_empty
+          expect(calls("workspace", "config", "unset")).to be_empty
+          expect(calls("workspace", "config", "set", "workflows.sources").size).to eq(1)
+          expect(live_registry.entries.keys).to eq(["other"])
+        end
+
+        it "removes the registry-added values when it is the last id" do
+          full.call
+          expect(files["/repo/.git/info/attributes"]).to eq("")
+          expect(calls("git", "config", "--local", "--unset").map(&:last)).to contain_exactly("merge.calc-demo-tests.driver", "merge.calc-demo-tests.name")
+          expect(calls("workspace", "config", "unset")).to eq([%w[workspace config unset workflows.sources]])
+          expect(live_registry.shared).to eq({})
+        end
+
+        it "drops only its own entry from a longer sources list" do
+          exec.on(%w[workspace config show], -> { {"keys" => [{"key" => "workflows.sources", "effective" => ["/other/demo/calculator2/workflows", sources]}]}.to_json })
+          exec.on(%w[workspace config show], -> { {"keys" => [{"key" => "workflows.sources", "effective" => (sources_now.empty? ? [] : ["/other/demo/calculator2/workflows", sources])}]}.to_json })
+          full.call
+          expect(calls("workspace", "config", "set", "workflows.sources").last).to eq(%w[workspace config set workflows.sources /other/demo/calculator2/workflows])
+        end
+
+        context "when it replaced a driver whose checkout is gone" do
+          before { exec.on(%w[git config --local --get merge.calc-demo-tests.driver], absolute_driver("/gone")) }
+
+          it "unsets the driver" do
+            full.call
+            expect(calls("git", "config", "--local", "--unset").map(&:last)).to include("merge.calc-demo-tests.driver")
+            expect(calls("git", "config", "--local", "merge.calc-demo-tests.driver", absolute_driver("/gone"))).to be_empty
+          end
+        end
+
+        context "when it took over a driver whose checkout exists" do
+          let(:take_over) { true }
+
+          before { exec.on(%w[git config --local --get merge.calc-demo-tests.driver], absolute_driver("/live")) }
+
+          it "restores the old driver" do
+            full.call
+            expect(calls("git", "config", "--local", "merge.calc-demo-tests.driver").last).to eq(["git", "config", "--local", "merge.calc-demo-tests.driver", absolute_driver("/live")])
+            expect(calls("git", "config", "--local", "--unset").map(&:last)).not_to include("merge.calc-demo-tests.driver")
+          end
+        end
+
+        context "when the attributes line and the driver were already there" do
+          before do
+            files["/repo/.git/info/attributes"] = "#{described_class::ATTRIBUTES_LINE}\n"
+            exec.on(%w[git config --local --get merge.calc-demo-tests.driver], wanted_driver)
+          end
+
+          it "leaves them" do
+            full.call
+            expect(files["/repo/.git/info/attributes"]).to eq("#{described_class::ATTRIBUTES_LINE}\n")
+            expect(calls("git", "config", "--local", "--unset").map(&:last)).to eq(["merge.calc-demo-tests.name"])
+          end
+        end
+      end
+
+      describe "the scoreboard" do
+        let(:columns) { ["id", "git sha (base)", "date (UTC)", "wall (series)", "01", "02", "03", "04", "05", "06", "07", "first_pass", "items", "cost", "leaks", "nudges", "failure class(es)", "evidence"] }
+
+        def cells(row) = row.chomp.delete_prefix("| ").delete_suffix(" |").split(" | ")
+
+        it "prints a Markdown row when no file is given" do
+          full.call
+          row = out.string.lines.find { |line| line.start_with?("| s1 ") }
+          expect(cells(row).size).to eq(columns.size)
+          expect(cells(row)).to eq(["s1", "aaa", "2026-01-01 00:00", "10m00s", "1m00s", "2m00s", "3m00s", "4m00s", "5m00s", "6m00s", "7m00s",
+            "yes (7/7 goals; integration yes)", "7/7", "≈$4.50", "0 confirmed", "?", "concurrent=0", "/repo/tmp/demo-calculator2/series/s1"])
+        end
+
+        context "with --scoreboard and another series running" do
+          let(:extra_args) { ["--scoreboard", "board.md"] }
+
+          it "appends one row to the file with the concurrent count" do
+            files["/repo/board.md"] = "| header |\n"
+            DemoCalculator2::SeriesRegistry.new(registry_dir, pid: 1, host: "h").register("other")
+            full.call
+            lines = files["/repo/board.md"].lines
+            expect(lines.first).to eq("| header |\n")
+            expect(cells(lines.last)).to include("s1", "concurrent=1")
+            expect(out.string).not_to include("| s1 ")
+          end
+        end
+
+        it "builds the row from fixture documents" do
+          row = described_class.scoreboard_row(eval_json, run_json, concurrent: 2, id: "w9", evidence: "e/w9")
+          expect(cells(row)).to include("w9", "concurrent=2", "e/w9", "yes (7/7 goals; integration yes)")
+        end
+
+        it "says no when integration did not pass first time, and marks a partial cost" do
+          doc = eval_json.merge("totals" => eval_json["totals"].merge("partial" => ["cost_usd"]), "lanes" => {"wall" => 60.0, "integration" => {"first_pass" => false}})
+          expect(cells(described_class.scoreboard_row(doc, run_json, concurrent: 0))).to include("no (7/7 goals; integration no)", "≥$4.50")
+        end
+
+        it "does not call an unreadable transcript a zero" do
+          leaks = lambda do |transcript|
+            cells(described_class.scoreboard_row(eval_json.merge("leak" => {"hook" => 1, "transcript" => transcript}), run_json, concurrent: 0))[14]
+          end
+          expect(leaks.call({"/a" => 2, "/b" => nil})).to eq("3 confirmed (1 of 2 unreadable)")
+          expect(leaks.call({"/a" => nil})).to eq("?")
+          expect(leaks.call({})).to eq("1 confirmed")
+        end
+
+        it "uses ? for everything eval and run.json do not have" do
+          row = cells(described_class.scoreboard_row(nil, nil, concurrent: 0))
+          expect(row.size).to eq(columns.size)
+          expect(row.values_at(0, 1, 2, 3, 4, 10, 11, 12, 13, 14, 15, 17)).to eq(["?"] * 5 + ["?", "? (? goals; integration ?)", "?", "?", "?", "?", "?"])
+          expect(row[16]).to eq("concurrent=0")
+        end
+      end
+
+      describe "--forget" do
+        let(:options) { described_class.parse(%w[--forget s1]) }
+        let(:alive) { false }
+        let(:live_registry) { DemoCalculator2::SeriesRegistry.new(registry_dir, alive: ->(*) { alive }) }
+
+        before do
+          live_registry.register("s1", workspaces: [lane_a, lane_b])
+          exec.on(%w[git worktree list], "worktree /repo\n\nworktree /wt/a/../a\n".sub("/wt/a/../a", "/x/.worktrees/calc2-demo-s1"))
+          files["/x/.worktrees/calc2-demo-s1/runs/s1/run.json"] = JSON.generate(run_json)
+          existing << "/x/.worktrees/calc2-demo-s1/runs/s1"
+        end
+
+        context "when the series' process is still alive" do
+          let(:alive) { true }
+
+          it "refuses with exit 1 and touches nothing" do
+            expect(full.call).to eq(1)
+            expect(err.string).to include("series s1 is still running")
+            expect(calls("workspace", "kill")).to be_empty
+            expect(live_registry.entries).to have_key("s1")
+            expect(out.string).not_to include("LOOP DONE")
+          end
+        end
+
+        it "adds no scoreboard row and says so" do
+          forgetting = described_class.new(root: root, options: described_class.parse(%w[--forget s1 --scoreboard board.md]), exec: exec, registry: live_registry, out: out, err: err,
+            read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, write_file: ->(path, text) { files[path] = text }, copy_dir: ->(*) {})
+          expect(forgetting.call).to eq(0)
+          expect(files).not_to have_key("/repo/board.md")
+          expect(out.string).not_to include("| s1 ")
+          expect(out.string.lines.last).to include("no scoreboard row")
+        end
+
+        it "runs steps 8 and 9 for the registered entry and returns 0" do
+          expect(full.call).to eq(0)
+          expect(calls("workspace", "kill").map { |argv| argv[3] }).to eq([lane_a, lane_b])
+          expect(calls("workspace", "work-queue")).to be_empty
+          expect(copies.first.first).to eq("/x/.worktrees/calc2-demo-s1/runs/s1")
+          expect(live_registry.entries).to eq({})
+          expect(out.string.lines.last).to start_with("LOOP DONE: series s1 stopped reason=forgotten")
+        end
+
+        it "refuses an id that is not registered" do
+          live_registry.remove("s1")
+          expect(full.call).to eq(1)
+          expect(err.string).to include("s1 is not in the series registry")
         end
       end
     end

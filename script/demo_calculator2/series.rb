@@ -150,11 +150,16 @@ module DemoCalculator2
     # @param run_logged [#call] `call(argv, chdir:, log:)` runs the run with its output appended to `log` and answers the exit status
     # @param clock [#call] seconds, for the idle wait's cap
     # @param sleeper [#call] `call(seconds)`
+    # @param copy_dir [#call] `call(from, to)` copies a directory's contents into `to`, making it
+    # @param command [String, nil] the series command line `command.txt` records (default: rebuilt from the options)
     def initialize(root:, options:, exec:, registry:, out: $stdout, err: $stderr, workspace: "workspace",
       read_file: ->(path) { File.file?(path) ? File.read(path) : nil }, path_exists: ->(path) { File.directory?(path) },
       write_file: ->(path, text) { FileUtils.mkdir_p(File.dirname(path)) && File.write(path, text) }, run_logged: RUN_LOGGED,
       clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) },
-      idle_wait: IDLE_WAIT, idle_poll: IDLE_POLL)
+      idle_wait: IDLE_WAIT, idle_poll: IDLE_POLL,
+      copy_dir: ->(from, to) { FileUtils.mkdir_p(to) && FileUtils.cp_r(File.join(from, "."), to) }, command: nil)
+      @copy_dir = copy_dir
+      @command = command
       @write_file = write_file
       @run_logged = run_logged
       @clock = clock
@@ -176,6 +181,7 @@ module DemoCalculator2
     # @return [Integer] 0 when the run ends on `items=7/7`, 3 on a stop after step 2 began, 1 on a refusal before it. A dry run ends
     #   after preflight with 0.
     def call
+      return forget if @options.forget
       report = preflight
       say_report(report)
       return 0 if @options.dry_run
@@ -199,9 +205,89 @@ module DemoCalculator2
       Report.new(shared: shared, stale: @registry.stale)
     end
 
+    # One row of the scoreboard, from what eval and the run record say. Every field is nil when its source is missing.
+    # @param eval_doc [Hash, nil] eval.json
+    # @param run [Hash, nil] run.json
+    # @param concurrent [Integer] the other series registered when this one started
+    # @param id [String, nil] the series id
+    # @param evidence [String, nil] where the evidence is
+    # @return [String] one Markdown table row, in the column order of the build-loop scoreboard; `?` for a value eval does not have.
+    #   The concurrent count goes in the failure-class column as `concurrent=N`, because eval does not classify failures.
+    def self.scoreboard_row(eval_doc, run, concurrent:, id: nil, evidence: nil)
+      doc = eval_doc.is_a?(Hash) ? eval_doc : {}
+      run = run.is_a?(Hash) ? run : {}
+      totals = doc["totals"] || {}
+      lanes = doc["lanes"] || {}
+      unknown = DemoCalculator::Fmt::UNKNOWN
+      goal_walls = %w[01 02 03 04 05 06 07].map do |number|
+        row = Array(doc["rows"]).find { |each| each["goal"].to_s.start_with?(number) && each["ran"] }
+        DemoCalculator::Fmt.duration(row && row["wall"])
+      end
+      integration = lanes.dig("integration", "first_pass")
+      integration_text = yes_no(integration)
+      goals_pass = totals["first_pass"]
+      goals_text = goals_pass.nil? ? unknown : "#{goals_pass}/#{totals["items"]}"
+      overall = if goals_pass.nil? || integration.nil? then unknown
+      elsif goals_pass == totals["items"] && integration then "yes"
+      else "no"
+      end
+      completed = totals.dig("states", "completed")
+      cost = totals["cost_usd"]
+      bound = Array(totals["partial"]).include?("cost_usd") ? "≥" : "≈"
+      cost_text = cost.nil? ? unknown : format("%s$%.2f", bound, cost)
+      leak = doc["leak"]
+      leaks = leak ? leaks_text(leak) : unknown
+      cells = [
+        id || unknown, run["base_sha"] ? run["base_sha"][0, 8] : unknown, date_text(run["stamp"]), DemoCalculator::Fmt.duration(lanes["wall"]),
+        *goal_walls, "#{overall} (#{goals_text} goals; integration #{integration_text})",
+        completed.nil? ? unknown : "#{completed}/#{totals["items"]}", cost_text, leaks, unknown, "concurrent=#{concurrent}", evidence || unknown
+      ]
+      "| #{cells.map { |cell| cell.to_s.gsub("|", "\\|").tr("\n", " ") }.join(" | ")} |"
+    end
+
+    # The wording of EvalReport.leak_line: an unreadable transcript is not a zero.
+    def self.leaks_text(leak)
+      counts = Hash(leak["transcript"]).values
+      unreadable = counts.count(&:nil?)
+      return DemoCalculator::Fmt::UNKNOWN if unreadable > 0 && unreadable == counts.size
+      text = "#{leak["hook"].to_i + counts.compact.sum} confirmed"
+      (unreadable > 0) ? "#{text} (#{unreadable} of #{counts.size} unreadable)" : text
+    end
+
+    def self.yes_no(value)
+      return DemoCalculator::Fmt::UNKNOWN if value.nil?
+      value ? "yes" : "no"
+    end
+
+    # @return [String] a run stamp like `20261121T150800Z` as `2026-11-21 15:08`, or `?`
+    def self.date_text(stamp)
+      match = /\A(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/.match(stamp.to_s)
+      match ? "#{match[1]}-#{match[2]}-#{match[3]} #{match[4]}:#{match[5]}" : DemoCalculator::Fmt::UNKNOWN
+    end
+
     private
 
-    def id = @options.id
+    def id = @options.forget || @options.id
+
+    # `--forget ID`: steps 8 and 9 for an id the registry still holds (a series that crashed or ran with `--keep`).
+    def forget
+      raise Refused, "#{id} is not in the series registry" unless @registry.entries.key?(id)
+      raise Refused, "series #{id} is still running (its process is alive); `--forget` only cleans up a series whose process is gone" unless @registry.stale.include?(id)
+      @started = true
+      @lanes = []
+      @stop_reason = "forgotten"
+      a_path = worktree_path(id)
+      @lanes << {workspace: nil, path: a_path} if a_path
+      finish
+      0
+    end
+
+    # The checkout of the worktree `calc2-demo-<name>`, from git's own list.
+    def worktree_path(name)
+      out, ok = @exec.call(%w[git worktree list --porcelain], chdir: @root)
+      return nil unless ok
+      out.to_s.lines.filter_map { |line| line.chomp.delete_prefix("worktree ") if line.start_with?("worktree ") }.find { |path| File.basename(path).match?(/\Acalc2-demo-#{Regexp.escape(name)}\z/) }
+    end
 
     # Steps 2 to 6. Once step 2 registered the id, any stop is exit 3 and {#finish} runs for what exists.
     def run_steps
@@ -216,6 +302,7 @@ module DemoCalculator2
         run_lanes
       rescue => e
         raise unless @started
+        @stop_reason ||= e.message
         @err.puts "demo-calculator2: series #{id} stopped: #{e.message}#{" (#{e.class})" unless e.is_a?(Stopped) || e.is_a?(Refused)}"
         3
       ensure
@@ -223,14 +310,239 @@ module DemoCalculator2
       end
     end
 
-    # The hook for steps 7 to 9 (evidence, pin, cleanup, report), which run for whatever step 2 created, however the steps ended.
+    # Steps 7 to 9 (evidence, pin and clean, report), which run for whatever step 2 created, however the steps ended. Each
+    # sub-step is independent: one that fails is reported and the rest go on.
     def finish
+      @concurrent ||= (registry_entries.keys - [id]).size
+      a_path = @lanes.first && @lanes.first[:path]
+      keep = @options.keep && !@options.forget
+      @run_dir = a_path && File.join(a_path, "runs", id)
+      attempt("reading run.json") { @run = parse(@read_file.call(File.join(@run_dir, "run.json"))) } if @run_dir
+      save_evidence unless @options.forget
+      attempt("reading eval.json") { @eval_doc = parse(@read_file.call(File.join(@run_dir, "eval.json"))) } if @run_dir
+      cleaned = keep ? false : pin_and_clean
+      report(keep, cleaned)
+    end
+
+    # The registered series, or none when the registry cannot be read: cleanup goes on and kills nothing it cannot prove is its own.
+    def registry_entries
+      @registry.entries
+    rescue SeriesRegistry::Corrupt => e
+      @err.puts "demo-calculator2: series #{id}: #{e.message}"
+      {}
+    end
+
+    # Step 7: everything lands in lane A's `runs/<id>/`.
+    def save_evidence
+      return unless @run_dir
+      script = File.join(@lanes.first[:path], "script", "demo-calculator2")
+      attempt("eval") { @write_file.call(File.join(@run_dir, "eval.txt"), run_ok(@lanes.first[:path], script, "eval", "--run", @run_dir)) }
+      run_ids = []
+      run_ids.concat([@run&.dig("fork", "run_id"), @run&.dig("integration", "integrate_run", "run_id")].compact) if @run.is_a?(Hash)
+      @lanes.each_with_index do |lane, index|
+        attempt("work-queue history of #{lane[:workspace]}") do
+          text = run_ok(@root, @workspace, "work-queue", "history", "list", "--json", "--name", lane[:workspace])
+          @write_file.call(File.join(@run_dir, "work-queue-history-#{index.zero? ? "a" : "b"}.json"), text)
+          doc = parse(text)
+          run_ids.concat(Array(doc["entries"]).filter_map { |entry| entry.dig("result", "run_id") }) if doc.is_a?(Hash)
+        end
+      end
+      run_ids.uniq.each do |run_id|
+        %w[attempts trace].each do |verb|
+          attempt("workflow #{verb} #{run_id}") { @write_file.call(File.join(@run_dir, "#{verb}-#{run_id}.json"), run_ok(@root, @workspace, "workflow", verb, run_id, "--json")) }
+        end
+      end
+      attempt("command.txt") { @write_file.call(File.join(@run_dir, "command.txt"), "#{command_line}\n") }
+    end
+
+    def command_line
+      return @command if @command
+      o = @options
+      words = ["script/demo-calculator2", "series", "--id", id, "--base", o.base, "--workflow", o.workflow]
+      words << "--sonnet" if o.sonnet
+      words << "--take-over" if o.take_over
+      words << "--keep" if o.keep
+      words.push("--evidence-dir", o.evidence_dir) if o.evidence_dir
+      words.push("--scoreboard", o.scoreboard) if o.scoreboard
+      words.join(" ")
+    end
+
+    # Step 8. Pins first, copies the evidence before anything is killed, then kills, deletes and deregisters, and each of those
+    # only for a name the registry entry or run.json records. A copy that failed stops the kills, so the evidence is not lost with
+    # the checkout; the id stays registered for `series --forget`.
+    # @return [Boolean] whether the series was deregistered
+    def pin_and_clean
+      entry = registry_entries[id] || {}
+      pinned = pin_heads
+      copied = copy_evidence
+      unless copied
+        @err.puts "demo-calculator2: series #{id}: the evidence was not copied, so nothing is killed and the id stays registered (series --forget #{id} tries again)"
+        return false
+      end
+      kill_workspaces(entry)
+      delete_branches(entry, pinned)
+      attempt("deleting refs/demo-calc2/acceptance/#{id}") { run_ok(@root, "git", "update-ref", "-d", "refs/demo-calc2/acceptance/#{id}") }
+      deregister
+    end
+
+    def run_branches
+      return [] unless @run.is_a?(Hash)
+      [@run["branch"], @run.dig("lanes", "b", "branch")].compact
+    end
+
+    # @return [Array<String>] the branches whose head is now pinned under `refs/demo-calc2-runs/`
+    def pin_heads
+      pinned = []
+      branches = [[id, @run&.fetch("branch", nil)], ["#{id}-b", @run&.dig("lanes", "b", "branch")]]
+      branches.each_with_index do |(name, branch), index|
+        attempt("pinning refs/demo-calc2-runs/#{name}") do
+          path = @lanes[index] && @lanes[index][:path]
+          sha = if branch
+            run_ok(@root, "git", "rev-parse", branch).strip
+          elsif path
+            run_ok(path, "git", "rev-parse", "HEAD").strip
+          end
+          next if sha.nil? || sha.empty?
+          run_ok(@root, "git", "update-ref", "refs/demo-calc2-runs/#{name}", sha)
+          @registry.record(id, refs: ["refs/demo-calc2-runs/#{name}"], branches: [branch].compact)
+          pinned << branch if branch
+        end
+      end
+      pinned
+    end
+
+    # @return [Boolean] false when a copy was needed and failed
+    def copy_evidence
+      return true unless @run_dir && @path_exists.call(@run_dir)
+      attempt("copying #{@run_dir} to #{evidence_target}") { @copy_dir.call(@run_dir, evidence_target) }
+    end
+
+    def evidence_target
+      File.expand_path(@options.evidence_dir || File.join("tmp", "demo-calculator2", "series", id), @root)
+    end
+
+    def kill_workspaces(entry)
+      recorded = Array(entry["workspaces"])
+      wanted = (recorded + [@run&.dig("lanes", "a", "workspace"), @run&.dig("lanes", "b", "workspace")]).compact.uniq
+      wanted.each do |name|
+        attempt("killing #{name}") do
+          raise "#{name} is not in series #{id}'s registry entry; it is not killed" unless recorded.include?(name)
+          run_ok(@root, @workspace, "kill", "--name", name, "--force", "--json")
+        end
+      end
+    end
+
+    def delete_branches(entry, pinned)
+      (run_branches | Array(entry["branches"])).each do |branch|
+        attempt("deleting #{branch}") do
+          raise "#{branch} is not a #{DemoCalculator::RUN_BRANCH_PREFIX}<stamp>-#{id}[-b] branch of this series; it is not deleted" unless branch.match?(/\Acalc-demo\/\d{8}T\d{6}Z-#{Regexp.escape(id)}(-b)?\z/)
+          raise "#{branch} was not pinned; it is not deleted" unless pinned.include?(branch)
+          run_ok(@root, "git", "branch", "-D", branch)
+        end
+      end
+    end
+
+    # Drops the id and undoes what the registry hands back. Each undo is independent.
+    # @return [Boolean]
+    def deregister
+      undo = nil
+      return false unless attempt("deregistering") { undo = @registry.remove(id) }
+      @driver_gone = false
+      undo.each { |item| attempt("undoing #{item["key"]}") { undo_shared(item) } }
+      true
+    end
+
+    def undo_shared(item)
+      key = item["key"]
+      replaced = item["replaced"]
+      case key
+      when /\Aexclude:(.+)\z/ then drop_info_line("exclude", $1)
+      when /\Aattributes:(.+)\z/ then drop_info_line("attributes", $1)
+      when /\Agit-config:(.+)\z/ then undo_git_config(key, $1, replaced)
+      when /\Aworkflows\.sources:(.+)\z/ then drop_source($1)
+      end
+    end
+
+    def undo_git_config(key, name, replaced)
+      old = replaced && replaced["value"]
+      path = (key == SharedValues::DRIVER_KEY) ? SharedValues.driver_path(old) : nil
+      alive = old && (path.nil? ? (key != SharedValues::DRIVER_KEY && !@driver_gone) : @path_exists.call(path))
+      @driver_gone = true if key == SharedValues::DRIVER_KEY && replaced && !alive
+      if alive
+        run_ok(@root, "git", "config", "--local", name, old)
+      else
+        run_ok(@root, "git", "config", "--local", "--unset", name)
+      end
+    end
+
+    def drop_info_line(file, line)
+      path = info_path(file)
+      text = @read_file.call(path)
+      return if text.nil?
+      kept = text.lines.reject { |each| each.strip == line }
+      @write_file.call(path, kept.join) unless kept.size == text.lines.size
+    end
+
+    def drop_source(ours)
+      keys = parse(run_ok(@root, @workspace, "config", "show", "--json"))&.fetch("keys", nil)
+      list = keys.is_a?(Array) ? keys.find { |key| key["key"] == SOURCES_KEY }&.fetch("effective", nil) : nil
+      list = list.split(",").map(&:strip) if list.is_a?(String)
+      rest = Array(list).map(&:to_s) - [ours]
+      return if rest.size == Array(list).size
+      if rest.empty?
+        run_ok(@root, @workspace, "config", "unset", SOURCES_KEY)
+      else
+        run_ok(@root, @workspace, "config", "set", SOURCES_KEY, rest.join(","))
+      end
+    end
+
+    def info_path(file)
+      File.join(File.expand_path(run_ok(@root, "git", "rev-parse", "--git-common-dir").strip, @root), "info", file)
+    end
+
+    # Step 9: the scoreboard row, then the closing line.
+    def report(keep, cleaned)
+      evidence = keep ? @run_dir : evidence_target
+      line = self.class.scoreboard_row(@eval_doc, @run, concurrent: @concurrent, id: id, evidence: evidence)
+      if @options.forget
+        # The series wrote its own row when it ended; a second one would count the run twice.
+      elsif @options.scoreboard
+        attempt("appending to #{@options.scoreboard}") do
+          path = File.expand_path(@options.scoreboard, @root)
+          existing = @read_file.call(path).to_s
+          @write_file.call(path, existing + ((existing.empty? || existing.end_with?("\n")) ? "" : "\n") + line + "\n")
+        end
+      else
+        @out.puts line
+      end
+      @out.puts "series #{id}: kept; nothing killed and the id stays registered (series --forget #{id})" if keep
+      @out.puts "series #{id}: deregistered" if cleaned
+      reason = @stop_reason.to_s.lines.first.to_s.strip
+      reason = "no run" if reason.empty?
+      detail = @driver_done ? @driver_done.sub(/\A.*?#{LOOP_DONE}:?\s*/o, "") : "stopped reason=#{reason}"
+      detail += " (no scoreboard row: --forget does not add one)" if @options.forget
+      @out.puts "#{LOOP_DONE}: series #{id} #{detail}"
+    end
+
+    def attempt(what)
+      yield
+      true
+    rescue => e
+      @err.puts "demo-calculator2: series #{id}: #{what} failed: #{e.message}"
+      false
+    end
+
+    def run_ok(chdir, *argv)
+      out, ok = @exec.call(argv, chdir: chdir)
+      raise "`#{argv.join(" ")}` failed" unless ok
+      out
     end
 
     # Step 2. The id is registered before the first start and each workspace is recorded as soon as its start answers, before the
     # next command runs.
     def start_lanes
       @registry.register(id)
+      @concurrent = @registry.entries.size - 1
       @started = true
       [id, "#{id}-b"].each do |name|
         out, ok = @exec.call([@workspace, "start", "calc2-demo-#{name}", "--base", @options.base, "--headless", "--yes", "--json"], chdir: @root)
@@ -331,7 +643,9 @@ module DemoCalculator2
       log = File.join(lane_a[:path], "runs", id, "driver.log")
       status = @run_logged.call(argv, chdir: lane_a[:path], log: log)
       done = @read_file.call(log).to_s.lines.reverse.find { |line| line.include?(LOOP_DONE) }
+      @driver_done = done&.strip
       return 0 if status == 0 && done&.match?(/items=7\/7/)
+      @stop_reason = done ? done.strip : "no LOOP DONE line"
       @err.puts "demo-calculator2: series #{id}: the run stopped (#{done ? done.strip : "no LOOP DONE line"}); see runs/#{id}/driver.log"
       3
     end
