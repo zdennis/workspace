@@ -110,7 +110,9 @@ module Workspace
     # @raise [Workspace::Error] code `gate_not_waiting`, `attempts_spent`, `budget_spent`, `run_timed_out`, and what +guard+ raises
     # @raise [Workspace::UsageError] when +to+ is not the gated step or one before it
     def reject(run_id, actor:, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
-      @change.call(run_id, actor: actor, cause: "reject") do |read, ctx|
+      follow = nil
+      run = @change.call(run_id, actor: actor, cause: "reject") do |read, ctx|
+        follow = ctx
         stored = WorkflowTransitions.at_step(read.thawed, step)
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
@@ -129,12 +131,15 @@ module Workspace
         spend_limits(stored, extra_tokens, extra_seconds)
         gate.merge!("state" => "rejected", "at" => now_iso, "note" => note, "attempt" => step_state(stored)["attempts"].last&.fetch("n", nil))
         gated = stored["current"]
+        # The window the gated step holds (a warm one, or one a rejected round kept) closes with the step the run leaves.
+        stored.replace(@progress.end_round(stored, how: "rejected", ctx: ctx).thawed) if target != gated && step_state(stored)["review_window"].is_a?(Hash)
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
         WorkflowRun.add_context(stored, target, "The #{stored["current"]} step was rejected at its gate: #{note}")
         stored["current"] = target
         # A gate outside a group sent back into one runs the whole group again; a sibling's own gate, only itself.
         @dispatch.dispatch(stored, ctx: ctx, cause: "gate_rejected", entering: !WorkflowRun.step_scoped?(stored, gated))
       end
+      @evaluation.finish_follow_ups(run_id, follow, run)
     end
 
     # Gets a run that is not moving going again: asks for its lock again, runs a failed or undelivered step

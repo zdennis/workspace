@@ -26,7 +26,22 @@ RSpec.describe Workspace::WorkflowEngine, "warm review window" do
   let(:lock_namespace) { instance_double(Workspace::LockNamespace) }
   let(:resources) { Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: liveness, wall_clock: -> { now.first.to_i }) }
   let(:panes) { InterruptibleWorkflowPanes.new }
-  let(:review_panes) { RecordingWorkflowPanes.new }
+  # Closes by the mark as WorkflowPanes#close_review does, so a close the engine registers kills the window over FakeTmux.
+  let(:closing_panes) do
+    Class.new(RecordingWorkflowPanes) do
+      attr_accessor :fake_tmux
+
+      def close_review(workspace, run_id, step: nil, round: nil)
+        super
+        fake_tmux.review_windows("app").filter_map do |window|
+          run, marked_step, marked_round = Workspace::WorkflowPanes.parse_review_mark(window[:review])
+          next if run != run_id || (step && marked_step != step) || (round.is_a?(Integer) && marked_round > round)
+          window[:window] if fake_tmux.kill_window(window[:window])
+        end
+      end
+    end
+  end
+  let(:review_panes) { closing_panes.new.tap { |panes| panes.fake_tmux = tmux } }
   # Runs +before_open+ once, just before the next window opens, and +after_open+ once, just after, so a spec can put
   # the run where a race leaves it.
   let(:racing_tmux) do
@@ -220,5 +235,104 @@ RSpec.describe Workspace::WorkflowEngine, "warm review window" do
     expect(run["current"]).to eq("build")
     expect(tmux.killed_windows).to eq(["@100"])
     expect(slot).to be_nil
+  end
+  describe "a run that ends or leaves the step without its round" do
+    def marked = tmux.review_windows("app").map { |each| each[:window] }
+
+    it "closes the warm window when the run is cancelled while the plan step runs" do
+      start
+      expect(marked).to eq(["@100"])
+
+      engine.cancel("wr_1", actor: "person")
+
+      expect(run["state"]).to eq("cancelled")
+      expect(tmux.killed_windows).to eq(["@100"])
+      expect(marked).to be_empty
+    end
+
+    it "closes the warm window of a step the plan failed out of when the run then completes" do
+      start
+      expect(marked).to eq(["@100"])
+      # The plan step failed and the run is on build, whose attempt runs; the warm window of plan is still marked.
+      edit_run(store, "wr_1") do |stored|
+        stored["steps"]["plan"]["state"] = "failed"
+        stored["steps"]["build"].merge!("state" => "running", "attempts" => [{"n" => 1, "started_at" => "2026-11-14T12:00:00Z"}])
+        stored["current"] = "build"
+      end
+
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+
+      expect(run["state"]).to eq("completed")
+      expect(marked).to be_empty
+      expect(tmux.killed_windows).to eq(["@100"])
+    end
+
+    it "closes the warm window when `resume --from` goes to another step" do
+      start
+      edit_run(store, "wr_1") { |stored| stored["current"] = "build" }
+
+      engine.resume("wr_1", actor: "person", from: "build")
+
+      expect(run["current"]).to eq("build")
+      expect(marked).to be_empty
+      expect(slot).to be_nil
+    end
+
+    it "keeps the warm window when the step fails and loops to itself" do
+      start
+      edit_run(store, "wr_1") do |stored|
+        stored["steps"]["plan"]["state"] = "failed"
+        stored["state"] = "waiting"
+        stored["reason"] = {"code" => "waiting_you", "since" => "2026-11-14T12:00:00Z", "details" => {"kind" => "dispatch", "step" => "plan"}}
+      end
+      engine.resume("wr_1", actor: "person")
+
+      expect(run["steps"]["plan"]["attempts"].size).to eq(2)
+      expect(marked).to eq(["@100"])
+      expect(tmux.killed_windows).to be_empty
+      expect(slot).to include("window" => "@100", "warm" => true)
+    end
+
+    describe "`reject --to` an earlier step" do
+      let(:gated) do
+        Workspace::WorkflowDefinition.parse(<<~YAML, id: "gated", source: "global", path: "/defs/gated.yml")
+          max_attempts: 5
+          reviewers:
+            skeptic: {prompt: Find what is wrong.}
+          steps:
+            plan:
+              prompt: Plan it.
+            build:
+              prompt: Build it.
+              review: [skeptic]
+              gate: approve
+        YAML
+      end
+
+      # The run sits at build's gate, build holding a window in its `review_window` slot.
+      def at_gate(warm:)
+        engine.start(actor: "person", definition: gated, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+        edit_run(store, "wr_1") do |stored|
+          expect(stored["current"]).to eq("build")
+          stored["steps"]["build"]["state"] = "passed"
+          stored["steps"]["build"]["gate"] = {"state" => "waiting", "since" => "2026-11-14T12:00:00Z"}
+          stored["steps"]["build"]["review_window"].delete("warm") unless warm
+        end
+      end
+
+      [true, false].each do |warm|
+        it "closes the #{warm ? "warm" : "kept"} window of the gated step it leaves" do
+          at_gate(warm: warm)
+          expect(marked).to eq(["@100"])
+
+          engine.reject("wr_1", actor: "person", note: "again", to: "plan")
+
+          expect(run["current"]).to eq("plan")
+          expect(marked).to be_empty
+          expect(run["steps"]["build"]["review_window"]).to be_nil
+        end
+      end
+    end
   end
 end
