@@ -1,6 +1,4 @@
-require "digest"
 require "fileutils"
-require "time"
 
 module Workspace
   # The file hook events the daemon never got are recorded in: one line each,
@@ -48,6 +46,7 @@ module Workspace
 
     # Called under the log's lock, so two hooks cannot both pass.
     def throttled?(key)
+      require "digest"
       marker = "#{@path}.#{Digest::SHA256.hexdigest(key)[0, 16]}.throttle"
       now = @clock.call
       return true if File.exist?(marker) && now - File.mtime(marker) < THROTTLE

@@ -12,7 +12,8 @@ module Workspace
       FLAGS = %w[--workspace --agent].freeze
 
       # The standard libraries `lib/workspace.rb` loads first, which the closure's files use without requiring.
-      STDLIB = %w[json fileutils time].freeze
+      # Closure files require any other library (yaml, digest, time, tmpdir) inside the method that uses it.
+      STDLIB = %w[json fileutils].freeze
 
       # The files the hook loads, in dependency order, relative to `lib/workspace`.
       CLOSURE = %w[

@@ -183,6 +183,33 @@ RSpec.describe "workspace session-event fast entry's require closure" do
     expect(lines.first.to_s).to include(Digest::SHA256.hexdigest("approve\n"))
   end
 
+  it "reads the workspace from the session's tmuxinator config and records the undeliverable event in the delivery log" do
+    config = File.join(@home, ".config", "tmuxinator", "workspace.proj.yml")
+    FileUtils.mkdir_p(File.dirname(config))
+    File.write(config, "name: proj\nroot: #{@work}\n")
+
+    out, err, status = session_event({"hook_event_name" => "PostToolUse", "tool_name" => "Read", "tool_use_id" => "t1", "cwd" => @work,
+                                      "tool_input" => {"file_path" => File.join(@work, "a.rb")}, "tool_response" => {}})
+
+    expect([out, status.exitstatus]).to eq(["", 0])
+    expect(File.read(File.join(state_dir, "session-event.log"))).to match(/\A\S+Z undeliverable event=tool_use workspace=proj pane=%1 /)
+    expect_clean(err)
+  end
+
+  it "sends to a workspace whose socket path is too long for its name, under the hashed name" do
+    name = "proj.worktree-#{"x" * 90}"
+
+    lines = with_daemon(name) do
+      _out, err, status = session_event({"hook_event_name" => "PostToolUse", "tool_name" => "Read", "tool_use_id" => "t1", "cwd" => @work,
+                                         "tool_input" => {"file_path" => File.join(@work, "a.rb")}, "tool_response" => {}}, "--workspace", name)
+      expect(status.exitstatus).to eq(0)
+      expect_clean(err)
+    end
+
+    expect(with_home { |config| File.basename(config.agent_socket_path(name)) }).not_to include(name)
+    expect(lines.size).to eq(1)
+  end
+
   it "denies Codex's apply_patch in a review pane and summarises its PostToolUse" do
     bind(reviewer)
     patch = "*** Begin Patch\n*** Add File: x.rb\n+puts 1\n*** End Patch\n"

@@ -1,6 +1,5 @@
 require "json"
 require "fileutils"
-require "time"
 
 module Workspace
   # Maps a tmux pane to the subject it works on (a workflow run, a PR
