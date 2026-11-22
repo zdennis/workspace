@@ -1,0 +1,224 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Reads how long a pane really stays busy after a workflow step is refused with `pane_busy`. For each such attempt it
+# prints the refusal, the gap to the step's next attempt and a hook-based busy duration: the first
+# `workflow_advance_started` for the step's pane after the refusal (the turn's end; there is no turn_ended event) minus
+# the refusal's `ended_at`, or when there is none, the last one before it (negative: the turn had already ended). With
+# no advance event for the pane it falls back to the last hook event of any type and marks the row `last_hook`.
+# It then replays three retry schedules against each block of refusals. Everything is read only.
+#
+# Reads <state-dir>/.workflows/archive/*.json, <state-dir>/.workflows/runs/live/*.json, the .events.jsonl beside each
+# run file and <state-dir>/.events/<workspace>.jsonl.
+#
+#   script/pane-busy-gaps [--state-dir PATH] [--since 2026-11-21T09:00:00Z] [--json]
+
+require "json"
+require "optparse"
+require "time"
+
+module PaneBusyGaps
+  # The commit that made the first pane_busy retry 15s (efff8d30).
+  FIX_TIME = Time.iso8601("2026-11-21T14:40:33-05:00")
+  # Retry waits in seconds; after the last entry the last value repeats.
+  SCHEDULES = {
+    "15/300/900" => [15, 300, 900],
+    "15/60/300" => [15, 60, 300],
+    "15/30/60/300" => [15, 30, 60, 300]
+  }.freeze
+
+  def self.median(values)
+    sorted = values.sort
+    return nil if sorted.empty?
+    mid = sorted.size / 2
+    sorted.size.odd? ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0
+  end
+
+  def self.time(value)
+    Time.iso8601(value.to_s)
+  rescue ArgumentError
+    nil
+  end
+
+  def self.json_lines(path)
+    return [] unless File.file?(path)
+    File.foreach(path).filter_map do |line|
+      event = JSON.parse(line)
+      event if event.is_a?(Hash)
+    rescue JSON::ParserError
+      nil
+    end
+  end
+
+  # @return [Array<Float>] cumulative retry times from the first refusal, up to and including the first one at or after +length+
+  def self.retry_times(schedule, length)
+    times = []
+    total = 0.0
+    index = 0
+    loop do
+      total += schedule[[index, schedule.size - 1].min]
+      times << total
+      break if total >= length
+      index += 1
+    end
+    times
+  end
+
+  # @return [Hash] retries made into the still-busy pane and the wait past the delivery
+  def self.replay(schedule, length)
+    times = retry_times(schedule, length)
+    {"retries" => times.size - 1, "waste" => (times.last - length).round(1)}
+  end
+
+  def self.load_runs(state_dir)
+    seen = {}
+    %w[archive runs/live].each do |sub|
+      Dir[File.join(state_dir, ".workflows", sub, "*.json")].sort.each do |path|
+        run = begin
+          JSON.parse(File.read(path))
+        rescue JSON::ParserError, SystemCallError
+          next
+        end
+        next unless run.is_a?(Hash) && run["steps"].is_a?(Hash) && run["id"].is_a?(String)
+        seen[run["id"]] ||= [run, path.sub(/\.json\z/, ".events.jsonl")]
+      end
+    end
+    seen.values
+  end
+
+  # Hook events of one workspace's log, as [time, event] pairs for the pane, oldest first.
+  def self.hook_events(state_dir, workspace, cache)
+    cache[workspace] ||= json_lines(File.join(state_dir, ".events", "#{workspace}.jsonl")).filter_map do |event|
+      at = time(event["at"])
+      [at, event] if at
+    end.sort_by(&:first)
+  end
+
+  def self.busy(events, pane, run_id, ended_at, block_end)
+    mine = events.select { |_, e| e["pane_id"] == pane }
+    advances = mine.select { |_, e| e["type"] == "workflow_advance_started" && (e["run_id"].nil? || e["run_id"] == run_id) }
+    after = advances.find { |at, _| at > ended_at && (block_end.nil? || at <= block_end) }
+    return [(after.first - ended_at).round(1), "advance_after"] if after
+    before = advances.reverse.find { |at, _| at <= ended_at }
+    return [(before.first - ended_at).round(1), "advance_before"] if before
+    last = mine.reverse.find { |at, _| at <= ended_at }
+    return [(last.first - ended_at).round(1), "last_hook"] if last
+    [nil, "none"]
+  end
+
+  # @return [Hash] +rows+ (one per pane_busy attempt) and +blocks+ (runs of consecutive pane_busy attempts of a step)
+  def self.collect(state_dir, since: nil)
+    rows = []
+    blocks = []
+    cache = {}
+    load_runs(state_dir).each do |run, events_path|
+      dispatches = {}
+      json_lines(events_path).each do |e|
+        dispatches[[e["step"], e["attempt"]]] = e if e["type"] == "step_dispatching"
+      end
+      events = hook_events(state_dir, run["workspace"].to_s, cache)
+      run["steps"].each do |step, data|
+        attempts = Array(data.is_a?(Hash) ? data["attempts"] : nil).select { |a| a.is_a?(Hash) }.sort_by { |a| a["n"].to_i }
+        attempts.each_with_index do |a, i|
+          next unless a["code"] == "pane_busy"
+          ended_at = time(a["ended_at"])
+          next unless ended_at
+          next if since && ended_at < since
+          rest = attempts[(i + 1)..]
+          nxt = rest.first
+          follow = rest.find { |b| b["code"] != "pane_busy" }
+          block_end = follow && time(follow["started_at"])
+          dispatch = dispatches[[step, a["n"]]] || {}
+          pane = dispatch["pane"] || run["pane"]
+          value, basis = busy(events, pane, run["id"], ended_at, block_end)
+          next_dispatch = nxt && dispatches[[step, nxt["n"]]]
+          via = case next_dispatch&.fetch("cause", nil)
+          when "tick" then "retry"
+          when "resume" then "resume"
+          else next_dispatch&.fetch("cause", nil)
+          end
+          next_start = nxt && time(nxt["started_at"])
+          rows << {
+            "run" => run["id"], "step" => step, "n" => a["n"], "pane" => pane, "ended_at" => a["ended_at"],
+            "redelivery" => a["redelivery"].is_a?(Integer) ? a["redelivery"] : 0, "redelivered" => a["redelivered"] == true,
+            "reason" => (a["refusal"].is_a?(Hash) && a["refusal"]["reason"]) || "none",
+            "gap" => next_start && (next_start - ended_at).round(1),
+            "next_code" => nxt && (nxt["code"] || nxt["outcome"] || "-"), "next_via" => via,
+            "busy" => value, "basis" => basis, "post_fix" => ended_at >= FIX_TIME
+          }
+          next if i.positive? && attempts[i - 1]["code"] == "pane_busy"
+          length = block_end && (block_end - ended_at).round(1)
+          blocks << {"run" => run["id"], "step" => step, "n" => a["n"], "length" => length}
+        end
+      end
+    end
+    rows.sort_by! { |r| [r["ended_at"].to_s, r["n"].to_i] }
+    blocks.sort_by! { |b| [b["run"], b["step"], b["n"].to_i] }
+    {"rows" => rows, "blocks" => blocks}
+  end
+
+  def self.summarize(rows, blocks)
+    post = rows.select { |r| r["post_fix"] }
+    durations = post.filter_map { |r| r["busy"] }
+    first = post.select { |r| r["redelivered"] && r["redelivery"].zero? }
+    replay = SCHEDULES.map do |name, schedule|
+      per_block = blocks.filter_map { |b| replay(schedule, b["length"]) if b["length"] }
+      [name, {"blocks" => per_block.size, "retries" => per_block.sum { |r| r["retries"] }, "waste" => per_block.sum { |r| r["waste"] }.round(1)}]
+    end.to_h
+    {
+      "rows" => rows.size, "post_fix_rows" => post.size,
+      "post_fix_busy_median" => median(durations)&.round(1), "post_fix_busy_max" => durations.max,
+      "first_retry_refusals" => first.size, "first_retry_busy_at_15s" => first.count { |r| r["busy"] && r["busy"] > 15 },
+      "replay" => replay
+    }
+  end
+
+  def self.block_replays(blocks)
+    blocks.map do |b|
+      b.merge("replay" => b["length"] ? SCHEDULES.transform_values { |s| replay(s, b["length"]) } : nil)
+    end
+  end
+
+  def self.render(result, out)
+    fmt = ->(v) { v.nil? ? "-" : format("%.1f", v) }
+    out.puts "run                  step               n  retry reason             gap_s   next               busy_s basis"
+    result["rows"].each do |r|
+      nxt = r["next_code"] ? [r["next_code"], r["next_via"]].compact.join("/") : "-"
+      out.puts format("%-20s %-18s %2d %5d %-17s %7s %-18s %7s %s%s", r["run"], r["step"], r["n"].to_i, r["redelivery"], r["reason"],
+        fmt.call(r["gap"]), nxt, fmt.call(r["busy"]), r["basis"], r["post_fix"] ? "" : " (pre-fix)")
+    end
+    s = result["summary"]
+    out.puts
+    out.puts "rows=#{s["rows"]} post_fix_rows=#{s["post_fix_rows"]} post_fix_busy_median=#{fmt.call(s["post_fix_busy_median"])}s post_fix_busy_max=#{fmt.call(s["post_fix_busy_max"])}s"
+    out.puts "first_retry_refusals=#{s["first_retry_refusals"]} busy_at_15s_by_hooks=#{s["first_retry_busy_at_15s"]}"
+    out.puts
+    out.puts "Replay (retry times from the first refusal; retries = into a still-busy pane, waste = wait past the delivery)"
+    names = SCHEDULES.keys
+    out.puts format("%-20s %-18s %2s %9s  %s", "run", "step", "n", "block_s", names.map { |n| format("%-14s", n) }.join(" "))
+    result["blocks"].each do |b|
+      cells = names.map { |n| b["replay"] ? format("%-14s", "#{b["replay"][n]["retries"]} / #{fmt.call(b["replay"][n]["waste"])}s") : "-".ljust(14) }
+      out.puts format("%-20s %-18s %2d %9s  %s", b["run"], b["step"], b["n"].to_i, fmt.call(b["length"]), cells.join(" "))
+    end
+    out.puts format("%-20s %-18s %2s %9s  %s", "total", "", "", "", names.map { |n| format("%-14s", "#{s["replay"][n]["retries"]} / #{fmt.call(s["replay"][n]["waste"])}s") }.join(" "))
+  end
+
+  def self.main(argv, out: $stdout, err: $stderr)
+    opts = {state_dir: File.join(File.expand_path(ENV.fetch("XDG_STATE_HOME", "~/.local/state")), "workspace"), json: false}
+    OptionParser.new do |o|
+      o.banner = "Usage: pane-busy-gaps [--state-dir PATH] [--since TIME] [--json]"
+      o.on("--state-dir PATH", "Workspace state directory (default ~/.local/state/workspace)") { |v| opts[:state_dir] = File.expand_path(v) }
+      o.on("--since TIME", "Only refusals that ended at or after this ISO8601 time") { |v| opts[:since] = Time.iso8601(v) }
+      o.on("--json", "Print JSON") { opts[:json] = true }
+    end.parse!(argv)
+
+    data = collect(opts[:state_dir], since: opts[:since])
+    result = {"rows" => data["rows"], "blocks" => block_replays(data["blocks"]), "summary" => summarize(data["rows"], data["blocks"])}
+    opts[:json] ? out.puts(JSON.generate(result)) : render(result, out)
+    0
+  rescue OptionParser::ParseError, ArgumentError, SystemCallError => e
+    err.puts e.message
+    2
+  end
+end
+
+exit PaneBusyGaps.main(ARGV) if $PROGRAM_NAME == __FILE__
