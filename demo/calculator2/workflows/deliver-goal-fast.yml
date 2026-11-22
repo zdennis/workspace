@@ -17,7 +17,11 @@ replace:
       start sub-agents. Don't change code or commit.
       Write {{artifacts}}/research.md in at most 25 lines: what exists (file:line), what has
       to change, and risks.
-    produces: [research.md]
+      Write {{artifacts}}/requirements.md in your own words: one line per requirement of the
+      goal, each line starting with its number and a space (`R1 `, `R2 `, ...). Then, for each
+      part the goal leaves open, the reading you chose, the readings you rejected and why; if
+      nothing is open, write "No ambiguity." It has no line limit.
+    produces: [research.md, requirements.md]
     guard: unchanged
     timeout: 45m
 

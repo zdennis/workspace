@@ -34,7 +34,8 @@ steps:
     include: [notes, report]
     prompt: |
       Answer the brief above from the code, docs, tests, event logs and past runs.
-      Write the survey as <date>-<topic>-survey.md in the notes directory: the questions, what exists today, each gap with its
+      Write the survey as <date>-<topic>-survey.md in the notes directory: the brief's requirements, one line each,
+      with the reading you chose marked on each ambiguous one; the questions, what exists today, each gap with its
       evidence, and which gaps you would report on, ranked, for the person to prune. Parts of the brief that
       ask for what the report must contain (examples, diagrams, a format) belong to the report
       step: only note them here. On a

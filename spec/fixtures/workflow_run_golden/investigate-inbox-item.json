@@ -65,7 +65,7 @@
       {
         "id": "diagnose",
         "title": "Diagnose",
-        "prompt": "Find the cause. `git log -S` (under the data rules), `git blame` and `git bisect run` with the\nreproduction are allowed; run `git bisect reset` before your turn ends.\nFor a CI failure, reach one verdict: `branch`, `main`, `flaky`, `infra` or `unknown`.\nWrite the note in the notes directory (`workspace notes dir`), named\n`<subject>-investigation-<run id with _ as ->.md`. The subject is `ci-<run digits>`, else\n`pr-<n>`, else the ticket key in lowercase, else `bug`. A rerun writes the same file. It has, in order:\n- `## Answer`: the cause in one sentence, then these lines: `head_sha: <sha>`,\n  `reproduced: yes|no|ci-only`, `ci_verdict: <verdict>` for a CI failure, `confidence:\n  high|medium|low` with the one thing that would change it, and `If you approve: <the planned\n  change, or \"no code change: rerun CI | fix on the default branch | infrastructure\">`.\n- `## Fix options`: each option, the recommended one marked `(recommended)` with the files it\n  touches, any behavior change beyond the bug, and the regression test (and the existing test\n  file it moves into). Plain prose, no fenced blocks.\n- `## Evidence`: the reproduction command and a redacted excerpt of its output, the log excerpt\n  (at most 40 lines, fenced, redacted), the introducing commit if you found it, each marked\n  observed or inferred.\n- `## Not checked`: a cut log, skipped runs, a comparison you did not make.\nOn a rerun after a rejection, add `## Rejected (attempt N)` with the earlier answer and head\nSHA. Write no HTML comments; put quoted text in fenced blocks.\nThen write {{artifacts}}/diagnosis.md: first line `note: <file name of the note>`, then the\nanswer lines and the reproduction files.\nPost last, after diagnosis.md is written, as the report pack says, naming the note: title\n`Investigation: <cause>, <plan>` where cause is the verdict, `cause found` or `not reproduced`\nand plan is `fix planned` or `no code change`, type `review_request`, `--link-run {{run}}\n--dedupe-key investigate:{{run}} --reopen --expires 168h`, plus `--link-pr <n>` when there is a pull request.\n",
+        "prompt": "Find the cause. `git log -S` (under the data rules), `git blame` and `git bisect run` with the\nreproduction are allowed; run `git bisect reset` before your turn ends.\nFor a CI failure, reach one verdict: `branch`, `main`, `flaky`, `infra` or `unknown`.\nWrite the note in the notes directory (`workspace notes dir`), named\n`<subject>-investigation-<run id with _ as ->.md`. The subject is `ci-<run digits>`, else\n`pr-<n>`, else the ticket key in lowercase, else `bug`. A rerun writes the same file. It has, in order:\n- `## Answer`: the cause in one sentence, then these lines: `head_sha: <sha>`,\n  `reproduced: yes|no|ci-only`, `ci_verdict: <verdict>` for a CI failure, `confidence:\n  high|medium|low` with the one thing that would change it, and `If you approve: <the planned\n  change, or \"no code change: rerun CI | fix on the default branch | infrastructure\">`.\n  When the question can be read more than one way, say which reading the answer takes.\n- `## Fix options`: each option, the recommended one marked `(recommended)` with the files it\n  touches, any behavior change beyond the bug, and the regression test (and the existing test\n  file it moves into), and the reading of an ambiguous question it assumes. Plain prose, no\n  fenced blocks.\n- `## Evidence`: the reproduction command and a redacted excerpt of its output, the log excerpt\n  (at most 40 lines, fenced, redacted), the introducing commit if you found it, each marked\n  observed or inferred.\n- `## Not checked`: a cut log, skipped runs, a comparison you did not make.\nOn a rerun after a rejection, add `## Rejected (attempt N)` with the earlier answer and head\nSHA. Write no HTML comments; put quoted text in fenced blocks.\nThen write {{artifacts}}/diagnosis.md: first line `note: <file name of the note>`, then the\nanswer lines and the reproduction files.\nPost last, after diagnosis.md is written, as the report pack says, naming the note: title\n`Investigation: <cause>, <plan>` where cause is the verdict, `cause found` or `not reproduced`\nand plan is `fix planned` or `no code change`, type `review_request`, `--link-run {{run}}\n--dedupe-key investigate:{{run}} --reopen --expires 168h`, plus `--link-pr <n>` when there is a pull request.\n",
         "include": [
           "report"
         ],
@@ -120,7 +120,7 @@
   },
   "definition_source": "preset",
   "definition_path": "<ROOT>/lib/workflows/investigate.yml",
-  "definition_sha256": "2589a54d653c2319e3753243a19feb61d68acaa5180d292aff0c9800e6ee20fe",
+  "definition_sha256": "d8f97197f6618be2d906398c9b56ddb602140d1073aa45de54f1840f3261c71f",
   "workspace": "app.worktree-x",
   "project": "app",
   "worktree": "<TMP>/app",
@@ -167,7 +167,7 @@
             "before": "1111111111111111111111111111111111111111",
             "after": "1111111111111111111111111111111111111111"
           },
-          "definition_sha256": "2589a54d653c2319e3753243a19feb61d68acaa5180d292aff0c9800e6ee20fe",
+          "definition_sha256": "d8f97197f6618be2d906398c9b56ddb602140d1073aa45de54f1840f3261c71f",
           "prompt_sha256": "<PROMPT_SHA>",
           "packs": [
             {
@@ -202,7 +202,7 @@
             "before": "1111111111111111111111111111111111111111",
             "after": "1111111111111111111111111111111111111111"
           },
-          "definition_sha256": "2589a54d653c2319e3753243a19feb61d68acaa5180d292aff0c9800e6ee20fe",
+          "definition_sha256": "d8f97197f6618be2d906398c9b56ddb602140d1073aa45de54f1840f3261c71f",
           "prompt_sha256": "<PROMPT_SHA>",
           "packs": [
             {

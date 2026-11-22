@@ -52,9 +52,9 @@ reviewers:
     model: sonnet
     prompt: |
       You review {{review.subject}}. No person will look at it. Assume it is wrong and try
-      to prove it: missing cases, wrong order, steps that can't be undone, requirements of
-      the task it doesn't meet. Approve only if you can't find a blocking problem. Do not edit
-      the plan.
+      to prove it: missing cases, wrong order, steps that can't be undone, any R in
+      {{artifacts}}/requirements.md with no task, and any reading chosen there that the brief
+      does not support. Approve only if you can't find a blocking problem. Do not edit the plan.
       If {{review.previous}} is set, read your earlier write-up there first and say whether
       each objection in it was answered.
 
@@ -78,28 +78,34 @@ replace:
       names, in the syntax the implementation-plan instructions give, so `workspace plan status`
       shows it.
       One task per commit, in order, with the files touched, tests to add and how you'll
-      know it works under that task in Task details. Call out anything that needs the
-      dev environment or the test database. Set `status: active` and leave every task `[ ]`.
+      know it works under that task in Task details, and the R-numbers from
+      {{artifacts}}/requirements.md it covers: every R needs a task, and the run checks it.
+      Call out anything that needs the dev environment or the test database. Set `status: active` and leave every task `[ ]`.
       You only write the plan here; do not start any task, and do not set `status: done`.
       Then write {{artifacts}}/plan.md: the approach, the risks, and
       the path of the plan file. Do not copy the task list into it. The step is not
       finished until plan.md exists.
       Say in plan.md how each of the reviewer's objections, if any, was answered.
+      No person reads the plan before it is built, so for each reading
+      {{artifacts}}/requirements.md gives an open part, also run
+      `workspace ask "<the open question>" --default "<the reading chosen>"`, once each, and
+      carry on without waiting for an answer.
       Don't change code.
     produces: [plan.md]
-    guard: unchanged
-    # Done only when the workspace plan exists, has at least one task and is not already done
-    # (a done plan is one left over from an earlier goal).
+    guard: config
+    # Done only when the workspace plan exists, has at least one task, is not already done (a done
+    # plan is one left over from an earlier goal), and names in its Task details every R-number
+    # requirements.md starts a line with (when that file exists).
     status:
       run: |
-        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit(plan && plan["exists"] && plan["counts"]["total"].to_i > 0 && plan["state"] != "done" && plan["status"] != "done" ? 0 : 1)'
+        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit 1 unless plan && plan["exists"] && plan["counts"]["total"].to_i > 0 && plan["state"] != "done" && plan["status"] != "done"; req = File.join(ENV.fetch("WORKSPACE_RUN_ARTIFACTS"), "requirements.md"); exit 0 unless File.file?(req); details = File.read(plan["path"])[/^## Task details\r?$(.*?)(?=^## |\z)/m, 1].to_s; missing = File.read(req).scan(/^R\d+\b/).uniq - details.scan(/\bR\d+\b/); abort "In no task of ## Task details: #{missing.join(" ")}" if missing.any?'
     timeout: 45m
     max_attempts: 8
     review:
       from: [skeptical]
       need: 1
       must: [skeptical]
-      subject: the workspace plan (`workspace plan path`), against {{inputs.goal}} and {{artifacts}}/research.md
+      subject: the workspace plan (`workspace plan path`), against {{inputs.goal}}, {{artifacts}}/research.md and {{artifacts}}/requirements.md
       revision: workspace plan status --json | ruby -rjson -e 'data = JSON.parse($stdin.read); abort "no plans" unless data.key?("plans"); puts data["plans"].to_a.first&.dig("revision")'
       max_rounds: 6
       timeout: 30m
