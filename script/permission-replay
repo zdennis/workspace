@@ -19,7 +19,7 @@
 # write. Every row is "partial" unless --transcripts DIR finds exactly one Bash tool_use in Claude Code
 # transcripts (DIR/<project>/<session>.jsonl, DIR/<project>/<session>/subagents/agent-<id>.jsonl) whose first line
 # starts with the logged text and whose timestamp is 10s before to 1s after the request; that full command is then
-# replayed (source "transcript"). A row with an agent_id looks only in agent-<id>.jsonl, else only in session files.
+# replayed (source "transcript"). A logged text with [redacted] or cut by an ellipsis needs a usable prefix of 20+ characters to match at all, and a row with [redacted] stays partial (reason "redacted") even on one hit. A row with an agent_id looks only in agent-<id>.jsonl, else only in session files.
 # An allow on a partial row is shown as "allowed on partial text", counted apart from the clean allows, and still
 # counts as unsafe allowed when the row is marked unsafe. JSON rows add source, partial, partial_reason,
 # transcript_hits (null without --transcripts) and command (the replayed text).
@@ -41,6 +41,7 @@ module PermissionReplay
   PARTIAL_ALLOW = "allowed on partial text"
   WINDOW_BEFORE = 10
   WINDOW_AFTER = 1
+  MIN_PREFIX = 20
 
   def self.default_events_dir
     File.join(File.expand_path(ENV.fetch("XDG_STATE_HOME", "~/.local/state")), "workspace/.events")
@@ -91,12 +92,19 @@ module PermissionReplay
   def self.read_marks(path)
     data = YAML.safe_load_file(path)
     raise ArgumentError, "#{path}: must be a list of {workspace, seq, mark}" unless data.is_a?(Array)
-    data.each_with_object({}) do |entry, marks|
+    duplicated = []
+    marks = data.each_with_object({}) do |entry, marks|
       raise ArgumentError, "#{path}: each entry must be a mapping" unless entry.is_a?(Hash)
       mark = entry["mark"].to_s
       raise ArgumentError, "#{path}: mark must be safe or unsafe, got #{mark.inspect}" unless %w[safe unsafe].include?(mark)
-      marks[[entry["workspace"].to_s, entry["seq"].to_s]] = mark
+      key = [entry["workspace"].to_s, entry["seq"].to_s]
+      duplicated << key if marks.key?(key)
+      marks[key] = (marks[key] == "unsafe") ? "unsafe" : mark
     end
+    unless duplicated.empty?
+      warn "permission-replay: duplicate marks for #{duplicated.uniq.map { |w, q| "#{w}/#{q}" }.join(", ")}; unsafe wins"
+    end
+    marks
   rescue Psych::Exception => e
     raise ArgumentError, "#{path}: #{e.message}"
   rescue SystemCallError => e
@@ -141,7 +149,8 @@ module PermissionReplay
       rescue ArgumentError
         return []
       end
-      prefix = logged.to_s.sub(/…\z/, "").split("[redacted]", 2).first.to_s
+      prefix = PermissionReplay.usable_prefix(logged)
+      return [] if PermissionReplay.cut?(logged) && prefix.length < MIN_PREFIX
       @entries[agent_id&.to_s].filter_map do |stamp, command|
         delta = time - stamp
         command if delta.between?(-WINDOW_AFTER, WINDOW_BEFORE) && command.lines.first.to_s.chomp.start_with?(prefix)
@@ -174,12 +183,18 @@ module PermissionReplay
         end
       end
     rescue SystemCallError => e
-      raise ArgumentError, io_message(path, e)
+      raise ArgumentError, PermissionReplay.io_message(path, e)
     end
+  end
 
-    def io_message(path, error)
-      "#{path}: #{SystemCallError.new(nil, error.errno).message}"
-    end
+  # @return [Boolean] whether the logged text was redacted or cut, so its prefix may be short
+  def self.cut?(input)
+    input.include?("[redacted]") || input.end_with?("…")
+  end
+
+  # @return [String] the logged text before a trailing ellipsis or the first [redacted]
+  def self.usable_prefix(input)
+    input.to_s.sub(/…\z/, "").split("[redacted]", 2).first.to_s
   end
 
   # @return [String] why a logged first line cannot stand for the whole command
@@ -221,9 +236,13 @@ module PermissionReplay
     if transcripts
       found = transcripts.hits(event["agent_id"], logged, event["at"])
       row["transcript_hits"] = found.size
-      if found.size == 1
+      if found.size == 1 && logged.include?("[redacted]")
+        row["partial_reason"] = "redacted"
+      elsif found.size == 1
         command = found.first
         row.merge!("source" => "transcript", "partial" => false, "partial_reason" => "", "command" => command)
+      elsif cut?(logged) && usable_prefix(logged).length < MIN_PREFIX
+        row["partial_reason"] = "prefix too short" unless %w[truncated redacted].include?(row["partial_reason"])
       else
         row["partial_reason"] = found.empty? ? "no transcript match" : "#{found.size} transcript matches"
       end

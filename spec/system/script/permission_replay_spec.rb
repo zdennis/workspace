@@ -85,6 +85,24 @@ RSpec.describe "script/permission-replay" do
     expect(data["requests"].first).to include("candidate" => nil)
   end
 
+  it "keeps unsafe when a duplicate mark key says safe later, and warns" do
+    write_log(request(1, "bundle exec rspec x_spec.rb"))
+    write_rules(allow_rspec)
+    File.write(marks_file, YAML.dump([{"workspace" => "ws", "seq" => 1, "mark" => "unsafe"}, {"workspace" => "ws", "seq" => 1, "mark" => "safe"}]))
+    data, err, code = replay("--rules", rules_file, "--marks", marks_file)
+    expect(code).to eq(1)
+    expect(data["unsafe_rows"].size).to eq(1)
+    expect(err).to include("duplicate marks for ws/1")
+  end
+
+  it "creates no files or directories under HOME when no config exists" do
+    write_log(request(1, "ls"))
+    before_tree = Dir.glob(File.join(home, "**", "*"), File::FNM_DOTMATCH).sort
+    _, _, code = replay
+    expect(code).to eq(0)
+    expect(Dir.glob(File.join(home, "**", "*"), File::FNM_DOTMATCH).sort).to eq(before_tree)
+  end
+
   it "reads today's policy from the config files" do
     FileUtils.mkdir_p("#{home}/.config/workspace")
     File.write("#{home}/.config/workspace/config.yml", YAML.dump("agent" => {"permissions" => {"rules" => [allow_rspec]}}))
@@ -274,11 +292,26 @@ RSpec.describe "script/permission-replay" do
       expect(data["requests"].first).to include("partial" => true, "partial_reason" => "no transcript match", "transcript_hits" => 0)
     end
 
-    it "matches the text before [redacted] and ignores a trailing ellipsis" do
-      write_log(request(1, "curl -H TOKEN=[redacted] x"), request(2, "echo long…"))
-      write_transcript("proj/s1.jsonl", tool_use("curl -H TOKEN=abc x", at: "2026-11-21T10:00:01Z"), tool_use("echo long line\nls", at: "2026-11-21T10:00:02Z"))
+    it "keeps a row with [redacted] partial even with a single hit" do
+      write_log(request(1, "curl -H Authorization=Bearer-[redacted] https://x"))
+      write_transcript("proj/s1.jsonl", tool_use("curl -H Authorization=Bearer-abc https://x\nrm -rf y", at: "2026-11-21T10:00:01Z"))
       data, = replay("--transcripts", tdir)
-      expect(data["requests"].map { |r| r["source"] }).to eq(%w[transcript transcript])
+      expect(data["requests"].first).to include("source" => "log", "partial" => true, "partial_reason" => "redacted", "transcript_hits" => 1)
+    end
+
+    it "recovers a row cut by an ellipsis when one hit shares a prefix of 20 or more characters" do
+      write_log(request(1, "echo a-long-enough-prefix-here…"))
+      write_transcript("proj/s1.jsonl", tool_use("echo a-long-enough-prefix-here and more\nls", at: "2026-11-21T10:00:02Z"))
+      data, = replay("--transcripts", tdir)
+      expect(data["requests"].first).to include("source" => "transcript", "partial" => false)
+    end
+
+    it "does not match when the usable prefix is empty or shorter than 20 characters" do
+      write_log(request(1, "[redacted]"), request(2, "echo long…"))
+      write_transcript("proj/s1.jsonl", tool_use("rm -rf /unrelated", at: "2026-11-21T10:00:01Z"), tool_use("echo long line\nls", at: "2026-11-21T10:00:02Z"))
+      data, = replay("--transcripts", tdir)
+      expect(data["requests"]).to all(include("source" => "log", "partial" => true, "transcript_hits" => 0))
+      expect(data["requests"].map { |r| r["partial_reason"] }).to eq(%w[redacted truncated])
     end
 
     it "uses the subagent file for a row with an agent_id and session files otherwise" do
