@@ -411,6 +411,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/commands/ticket.rb` — `ticket show`: looks up a ticket and its existing workspace.
 - `lib/workspace/timed_process.rb` — Runs one command with a time limit and no prompt.
 - `lib/workspace/tty_processes.rb` — Lists the command names of the processes on one `/dev/ttysN` terminal, through `ps`.
+- `lib/workspace/gateway_window_match.rb` — The strict rule for whether an iTerm window is a leftover tmux -CC gateway window, from its screen, launch commands and tty commands.
 - `lib/workspace/commands/pull_request.rb` — `pr create`: finds or creates the branch's pull request.
 - `lib/workspace/workspace_checkout.rb` — Resolves the workspace, checkout path and branch a command works on.
 - `lib/workspace/commands/rebase.rb` — `rebase --onto local|update|remote`.
