@@ -11,6 +11,10 @@ RSpec.describe Workspace::AgentProtocol do
     described_class.method(builder).call(**args.transform_keys(&:to_sym))
   end
 
+  it "limits a kept message to 200 characters" do
+    expect(described_class::MAX_MESSAGE_LENGTH).to eq(200)
+  end
+
   describe "builders against the recorded wire bytes" do
     fixture.fetch("cases").each do |name, kase|
       it "writes #{name} byte for byte" do

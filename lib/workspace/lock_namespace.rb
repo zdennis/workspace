@@ -1,5 +1,3 @@
-require "digest/sha1"
-
 module Workspace
   # Resolves the shared lock namespace for a working directory.
   #
@@ -35,6 +33,7 @@ module Workspace
     def store_dir(key, display)
       slug = display.gsub(/[^A-Za-z0-9_-]+/, "-").gsub(/-{2,}/, "-").gsub(/^-|-$/, "")
       slug = "namespace" if slug.empty?
+      require "digest/sha1"
       File.join(@config.lock_dir, "#{slug}-#{Digest::SHA1.hexdigest(key)[0, 12]}")
     end
   end
