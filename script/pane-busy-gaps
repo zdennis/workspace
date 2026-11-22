@@ -114,13 +114,17 @@ module PaneBusyGaps
     load_runs(state_dir).each do |run, events_path|
       dispatches = {}
       json_lines(events_path).each do |e|
-        dispatches[[e["step"], e["attempt"]]] = e if e["type"] == "step_dispatching"
+        dispatches[[e["step"], e["attempt"]]] ||= e if e["type"] == "step_dispatching"
       end
       events = hook_events(state_dir, run["workspace"].to_s, cache)
       run["steps"].each do |step, data|
         attempts = Array(data.is_a?(Hash) ? data["attempts"] : nil).select { |a| a.is_a?(Hash) }.sort_by { |a| a["n"].to_i }
+        in_block = false
         attempts.each_with_index do |a, i|
-          next unless a["code"] == "pane_busy"
+          unless a["code"] == "pane_busy"
+            in_block = false
+            next
+          end
           ended_at = time(a["ended_at"])
           next unless ended_at
           next if since && ended_at < since
@@ -146,7 +150,8 @@ module PaneBusyGaps
             "next_code" => nxt && (nxt["code"] || nxt["outcome"] || "-"), "next_via" => via,
             "busy" => value, "basis" => basis, "post_fix" => ended_at >= FIX_TIME
           }
-          next if i.positive? && attempts[i - 1]["code"] == "pane_busy"
+          next if in_block
+          in_block = true
           length = block_end && (block_end - ended_at).round(1)
           blocks << {"run" => run["id"], "step" => step, "n" => a["n"], "length" => length}
         end
@@ -166,7 +171,7 @@ module PaneBusyGaps
       [name, {"blocks" => per_block.size, "retries" => per_block.sum { |r| r["retries"] }, "waste" => per_block.sum { |r| r["waste"] }.round(1)}]
     end.to_h
     {
-      "rows" => rows.size, "post_fix_rows" => post.size,
+      "rows" => rows.size, "post_fix_rows" => post.size, "blocks" => blocks.size, "blocks_open" => blocks.count { |b| b["length"].nil? },
       "post_fix_busy_median" => median(durations)&.round(1), "post_fix_busy_max" => durations.max,
       "first_retry_refusals" => first.size, "first_retry_busy_at_15s" => first.count { |r| r["busy"] && r["busy"] > 15 },
       "replay" => replay
@@ -190,7 +195,7 @@ module PaneBusyGaps
     s = result["summary"]
     out.puts
     out.puts "rows=#{s["rows"]} post_fix_rows=#{s["post_fix_rows"]} post_fix_busy_median=#{fmt.call(s["post_fix_busy_median"])}s post_fix_busy_max=#{fmt.call(s["post_fix_busy_max"])}s"
-    out.puts "first_retry_refusals=#{s["first_retry_refusals"]} busy_at_15s_by_hooks=#{s["first_retry_busy_at_15s"]}"
+    out.puts "first_retry_refusals=#{s["first_retry_refusals"]} busy_at_15s_by_hooks=#{s["first_retry_busy_at_15s"]} blocks=#{s["blocks"]} blocks_open=#{s["blocks_open"]}"
     out.puts
     out.puts "Replay (retry times from the first refusal; retries = into a still-busy pane, waste = wait past the delivery)"
     names = SCHEDULES.keys
@@ -207,16 +212,19 @@ module PaneBusyGaps
     OptionParser.new do |o|
       o.banner = "Usage: pane-busy-gaps [--state-dir PATH] [--since TIME] [--json]"
       o.on("--state-dir PATH", "Workspace state directory (default ~/.local/state/workspace)") { |v| opts[:state_dir] = File.expand_path(v) }
-      o.on("--since TIME", "Only refusals that ended at or after this ISO8601 time") { |v| opts[:since] = Time.iso8601(v) }
+      o.on("--since TIME", "Only refusals that ended at or after this ISO8601 time") do |v|
+        opts[:since] = time(v) || raise(ArgumentError, "--since: expected an ISO8601 time like 2026-11-21T09:00:00Z, got #{v.inspect}")
+      end
       o.on("--json", "Print JSON") { opts[:json] = true }
     end.parse!(argv)
+    raise ArgumentError, "no .workflows directory under #{opts[:state_dir]}" unless File.directory?(File.join(opts[:state_dir], ".workflows"))
 
     data = collect(opts[:state_dir], since: opts[:since])
     result = {"rows" => data["rows"], "blocks" => block_replays(data["blocks"]), "summary" => summarize(data["rows"], data["blocks"])}
     opts[:json] ? out.puts(JSON.generate(result)) : render(result, out)
     0
   rescue OptionParser::ParseError, ArgumentError, SystemCallError => e
-    err.puts e.message
+    err.puts "pane-busy-gaps: #{e.message}"
     2
   end
 end

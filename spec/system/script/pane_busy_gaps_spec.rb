@@ -87,7 +87,23 @@ RSpec.describe "script/pane-busy-gaps" do
 
   it "reports no busy duration when the pane has no hook events" do
     write_run("wr_d", [refused(1, 0, 10)], hooks: [advance(5, pane: "%9")])
-    expect(rows_of.first).to include("busy" => nil, "basis" => "none", "gap" => nil, "next_code" => nil)
+    result = JSON.parse(run_script("--json").first)
+    expect(result["rows"].first).to include("busy" => nil, "basis" => "none", "gap" => nil, "next_code" => nil)
+    expect(result["blocks"].first).to include("length" => nil, "replay" => nil)
+    expect(result["summary"]).to include("blocks" => 1, "blocks_open" => 1)
+    expect(result["summary"]["replay"]["15/300/900"]).to include("blocks" => 0)
+  end
+
+  it "starts a block at the first refusal with a readable ended_at" do
+    write_run("wr_d2", [refused(1, 0, 10, "ended_at" => nil), refused(2, 20, 30), delivered(3, 50, 70)])
+    blocks = JSON.parse(run_script("--json").first)["blocks"]
+    expect(blocks).to contain_exactly(include("n" => 2, "length" => 20.0))
+  end
+
+  it "takes the first dispatch of an attempt as how it started" do
+    write_run("wr_d3", [refused(1, 0, 10), delivered(2, 40, 60)],
+      dispatches: [{"attempt" => 2, "cause" => "resume", "actor" => "person"}, {"attempt" => 2, "cause" => "tick"}])
+    expect(rows_of.first).to include("next_via" => "resume")
   end
 
   it "names a person's resume as how the next attempt started" do
@@ -145,17 +161,31 @@ RSpec.describe "script/pane-busy-gaps" do
   it "leaves the state dir's files unchanged" do
     write_run("wr_k", [refused(1, 0, 10), delivered(2, 40, 60)], hooks: [advance(25)])
     snapshot = lambda do
-      Dir[File.join(state, "**", "*"), File.join(state, "**", ".*")].select { |p| File.file?(p) }.sort.map { |p| [p, File.mtime(p), File.read(p)] }
+      Dir.glob(File.join(state, "**", "*"), File::FNM_DOTMATCH).select { |p| File.file?(p) }.sort.map { |p| [p, File.mtime(p), File.read(p)] }
     end
     before = snapshot.call
+    expect(before.size).to eq(3)
     run_script
     run_script("--json")
     expect(snapshot.call).to eq(before)
   end
 
   it "exits 2 with a message for a bad --since" do
-    _, err, code = run_script("--since", "nope")
-    expect(code).to eq(2)
-    expect(err).not_to be_empty
+    out, err, code = run_script("--since", "nope")
+    expect([out, code]).to eq(["", 2])
+    expect(err).to include("pane-busy-gaps: --since: expected an ISO8601 time")
+  end
+
+  it "exits 2 with a message for an unknown flag" do
+    out, err, code = run_script("--nope")
+    expect([out, code]).to eq(["", 2])
+    expect(err).to include("pane-busy-gaps:", "--nope")
+  end
+
+  it "exits 2 when the state dir has no .workflows directory" do
+    FileUtils.rm_rf(File.join(state, ".workflows"))
+    out, err, code = run_script("--json")
+    expect([out, code]).to eq(["", 2])
+    expect(err).to include("no .workflows directory under #{state}")
   end
 end
