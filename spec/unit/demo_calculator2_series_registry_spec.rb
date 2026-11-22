@@ -74,6 +74,19 @@ RSpec.describe DemoCalculator2::SeriesRegistry do
     expect(registry.remove("a")).to include("key" => "exclude:/runs/a/", "value" => "/runs/a/", "replaced" => nil)
   end
 
+  it "records an id's own sources entries and always returns them on its remove, even while another id is registered" do
+    registry.register("a")
+    registry.register("b2")
+    registry.record("a", sources: ["/wt/a/demo/calculator2/workflows"])
+    registry.record("a", sources: ["/wt/a/demo/calculator2/workflows", "/wt/b/demo/calculator2/workflows"])
+    expect(registry.entries["a"]["sources"]).to eq(["/wt/a/demo/calculator2/workflows", "/wt/b/demo/calculator2/workflows"])
+    expect(registry.remove("a")).to include(
+      {"key" => "workflows.sources:/wt/a/demo/calculator2/workflows", "value" => "/wt/a/demo/calculator2/workflows", "replaced" => nil},
+      {"key" => "workflows.sources:/wt/b/demo/calculator2/workflows", "value" => "/wt/b/demo/calculator2/workflows", "replaced" => nil}
+    )
+    expect(registry.entries.keys).to eq(["b2"])
+  end
+
   it "reports ids whose process is gone as stale" do
     registry.register("a")
     described_class.new(dir, clock: clock, pid: 222, host: "h", alive: alive).register("b2")

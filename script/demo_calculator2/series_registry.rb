@@ -51,12 +51,14 @@ module DemoCalculator2
       end
     end
 
-    # Records workspaces, branches and refs the id created, each call written before the caller's next command.
+    # Records workspaces, branches, refs and `workflows.sources` entries the id created, each call written before the caller's next
+    # command. A sources entry is one only this id's lanes write; {#remove} always hands it back.
     # @return [Hash] the entry
-    def record(id, workspaces: [], branches: [], refs: [])
+    def record(id, workspaces: [], branches: [], refs: [], sources: [])
       modify do |data|
         entry = data["series"][id] or raise ArgumentError, "series #{id} is not registered"
         append(entry, workspaces: workspaces, branches: branches, refs: refs)
+        entry["sources"] = Array(entry["sources"]) | sources unless sources.empty?
         entry
       end
     end
@@ -93,14 +95,15 @@ module DemoCalculator2
       end
     end
 
-    # Drops an id. Its own `exclude:/runs/<id>/` key is always returned. The keys the registry added come back only when no
+    # Drops an id. Its own `exclude:/runs/<id>/` key and its recorded sources entries are always returned. The keys the registry added come back only when no
     # series is left, with their `replaced` value; a `preexisting` key never does.
     # @return [Array<Hash>] `{"key", "value", "replaced"}` for each key to undo
     def remove(id)
       modify do |data|
         next [] unless data["series"].key?(id)
-        data["series"].delete(id)
+        entry = data["series"].delete(id)
         undo = [{"key" => "exclude:/runs/#{id}/", "value" => (data["shared"].delete("exclude:/runs/#{id}/") || {})["value"], "replaced" => nil}]
+        Array(entry["sources"]).each { |path| undo << {"key" => "#{SharedValues::SOURCES_PREFIX}#{path}", "value" => path, "replaced" => nil} }
         if data["series"].empty?
           data["shared"].each do |key, entry|
             next if entry["added_by"] == PREEXISTING
