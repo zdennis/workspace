@@ -1,0 +1,98 @@
+# Merges a second lane's branch into this checkout, then checks the whole result: the project's
+# tests and lint in a fresh context, then its acceptance program over the goal that ends the chain.
+# No plan step, so no plan review. verify keeps the test-db lock: nothing runs beside it.
+schema_version: 0.1
+id: integrate-branch
+title: Merge a branch and check the result
+description: Merges a branch into the checkout, resolving conflicts so both sides' behaviour stays, then verifies and runs an acceptance program over the result.
+
+use_when: Two lanes of goals were delivered apart and their branches must be joined and checked as one.
+
+inputs:
+  branch:
+    description: The branch to merge into this checkout.
+    required: true
+  goal:
+    description: Path, inside the checkout, to the document of the last goal; the acceptance program runs over it.
+    required: true
+  acceptance:
+    description: Path to the project's acceptance program, an executable that takes the goal path and exits 0 when the goal is met.
+    required: true
+
+instructions: |
+  You are joining branch {{inputs.branch}} into workspace {{workspace}}, branch {{branch}}.
+  The last goal is written in {{inputs.goal}}. Do not read, run, or look for the program that
+  accepts the work; it is not yours to see.
+  Shell commands that mention a hidden or denied path, even one you only saw in a log or error,
+  inside quotes or an inline script, are blocked and reported; keep such paths out of shell
+  command lines.
+  Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
+  inputs; read them before you start.
+
+max_attempts: 10
+timeout: 3h
+deny:
+  - "*calculator2/acceptance/*"
+  - "*calculator2/acceptance"
+  - "*refs/demo-calc2*"
+
+steps:
+  # verify and acceptance restate deliver-goal's; keep them in sync with it.
+  merge:
+    title: Merge
+    prompt: |
+      Merge {{inputs.branch}} into this branch if it is not merged yet (check with
+      `git branch --merged`). Resolve every conflict so that both branches' behaviour is kept;
+      a test added on either side stays, and two tests with the same name must be renamed so
+      both run. Commit the merge. Do not rebase or amend.
+      On a rerun (after a failed verify or acceptance), the branch is already merged: make a
+      new commit that fixes what failed and never amend or rebase, or run
+      `git commit --allow-empty -m '<why>'` if no change is needed.
+      Write {{artifacts}}/merge.md: whether there were conflicts, which files, and how you
+      resolved each, and what a rerun fixed.
+    produces: [merge.md]
+    require:
+      - commits: 1
+    timeout: 45m
+
+  verify:
+    title: Verify
+    prompt: |
+      Judge the merged result against {{inputs.goal}} and the goals before it. When your turn
+      ends, this step runs the project's test command and its lint command, when it has one,
+      for you and fails if either fails. Do not run the whole test suite or the linter yourself:
+      that would repeat those checks. Review the merge yourself; do not start sub-agents or
+      reviewers.
+      Read the diff of the merge against the pre-merge HEAD (or the run base) and decide whether both branches' behaviour survived and
+      nothing beyond it was added. Fix any real defect you find, with a new commit rather than
+      an amend.
+      Write {{artifacts}}/verify.md: what you read, what you ran and why, your findings, and
+      what you fixed (or that nothing needed fixing).
+      If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
+      and end your turn.
+    produces: [verify.md]
+    uses: [test-db]
+    status:
+      command: test
+      timeout: 40m
+    require:
+      - command: lint
+        optional: true
+    timeout: 90m
+    on_fail:
+      goto: merge
+      max: 2
+      context: continue
+
+  acceptance:
+    title: Acceptance
+    context: continue
+    prompt: "Change nothing; end your turn."
+    guard: config
+    require:
+      - exec: "/usr/bin/env git diff --quiet HEAD"
+      - exec: "/usr/bin/env {{inputs.acceptance}} {{inputs.goal}}"
+        timeout: 15m
+    timeout: 20m
+    max_attempts: 3
+    on_fail: {goto: merge, max: 1, log_tail: 40, context: fresh}

@@ -1,0 +1,53 @@
+# deliver-goal with a lean research step and no test-db lock on verify, for the wall-clock demo.
+# Everything else, plan and its review included, is deliver-goal's. A replace is whole, so verify
+# restates deliver-goal's verify without `uses: [test-db]` (calculator2's tests use no database).
+schema_version: 0.1
+id: deliver-goal-fast
+title: Deliver a goal, lean research and no test-db lock
+description: deliver-goal with a short, sub-agent-free research step and a verify that does not take the test-db lock.
+extends: deliver-goal
+
+use_when: The calculator2 goals in the wall-clock demo, where research should stay small and two lanes verify at the same time.
+
+replace:
+  research:
+    title: Research
+    prompt: |
+      Read the goal document {{inputs.goal}}, the files it names and their tests. Do not
+      start sub-agents. Don't change code or commit.
+      Write {{artifacts}}/research.md in at most 25 lines: what exists (file:line), what has
+      to change, and risks.
+    produces: [research.md]
+    guard: unchanged
+    timeout: 45m
+
+  # Keep in sync with deliver-goal's verify; only `uses` differs.
+  verify:
+    title: Verify
+    prompt: |
+      Judge the work against the workspace plan (`workspace plan path`) and {{inputs.goal}}.
+      When your turn ends, this step runs the project's test command and its lint command,
+      when it has one, for you and fails if either fails. Do not run the whole test suite or the linter yourself:
+      that would repeat those checks. Review the diff yourself; do not start sub-agents or
+      reviewers.
+      Read the branch's diff against the run base and decide whether it does what the goal asks,
+      and nothing beyond it. Run a targeted command only to confirm a suspicion, such as one
+      test file or one command that shows a behaviour you doubt. Fix any real defect you find,
+      with a new commit rather than an amend. After a fix, rerun only the tests you changed or
+      added, not the whole suite or the linter.
+      Write {{artifacts}}/verify.md: what you read, what you ran and why, your findings, and
+      what you fixed (or that nothing needed fixing).
+      If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
+      and end your turn.
+    produces: [verify.md]
+    status:
+      command: test
+      timeout: 40m
+    require:
+      - command: lint
+        optional: true
+    timeout: 90m
+    on_fail:
+      goto: implement
+      max: 3
+      context: continue

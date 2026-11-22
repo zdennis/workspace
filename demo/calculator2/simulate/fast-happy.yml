@@ -1,0 +1,10 @@
+# Every step passes once, acceptance included; research is the lean one.
+inputs:
+  task: "Deliver the goal in goals/01.md"
+  goal: goals/01.md
+  acceptance: script/acceptance_runner
+steps:
+  plan:
+    - reviews: {skeptical: approve}
+  acceptance:
+    - {}

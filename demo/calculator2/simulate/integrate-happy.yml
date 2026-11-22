@@ -1,0 +1,8 @@
+# The merge, verify and acceptance all pass once.
+inputs:
+  branch: calc-demo/lane-b
+  goal: demo/calculator2/goals/07-repl.md
+  acceptance: script/acceptance_runner
+steps:
+  acceptance:
+    - {}
