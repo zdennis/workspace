@@ -206,6 +206,29 @@ RSpec.describe Workspace::GatewayWindowCloser do
     expect(windows.closed).to be_empty
   end
 
+  it "closes one target by uid and another with no uid by screen, with no warnings" do
+    iterm.maps = [{"UA" => "3"}]
+    iterm.screens = [[gateway("b", wid: 9)]]
+    expect(run({"a" => "UA", "b" => nil})).to eq([])
+    expect(windows.closed).to contain_exactly(3, 9)
+    expect(out.string).to include("Closing launcher window 3", "Closing gateway window 9")
+  end
+
+  it "does not close again, by screen, a window the uid pass already closed" do
+    iterm.maps = [{"UA" => "3"}]
+    iterm.screens = [[gateway("b", wid: 3, uid: "UA")]]
+    expect(run({"a" => "UA", "b" => nil})).to eq([])
+    expect(windows.closed).to eq([3])
+  end
+
+  it "warns and closes nothing when iTerm times out listing windows for the fallback" do
+    iterm.timed_out = true
+    iterm.screens = [[gateway("a")]]
+    expect(run({"a" => nil})).to eq(["iTerm did not answer in 5s; the window for a was left open."])
+    expect(iterm.window_calls).to eq(1)
+    expect(windows.closed).to be_empty
+  end
+
   it "turns a collaborator error into a warning" do
     iterm.fail_with = RuntimeError.new("boom")
     warnings = run({"a" => "UA"})
