@@ -167,7 +167,57 @@ RSpec.describe Workspace::WorkflowReviewSummary do
       expect(item["body"]).to start_with("Step plan passed")
 
       summary.notify(run.merge("current" => "build", "state" => "completed"), step: "plan", attempt: 2, round: 3, outcome: :approved, summary: written)
-      expect(item["body"]).to start_with("The run is completed.")
+      expect(item["body"]).to start_with("The run is completed. The round's summary is #{written["path"]}.")
+    end
+
+    describe "expires_at" do
+      let(:now) { Time.utc(2026, 11, 22, 21, 0, 0) }
+      let(:went_on) { run.merge("current" => "build") }
+
+      subject(:summary) { described_class.new(inbox_for: ->(_name) { inbox }, clock: -> { now }) }
+
+      it "is 168h from now for an approved round whose run went on past the step or ended" do
+        summary.notify(went_on, step: "plan", attempt: 2, round: 3, outcome: :approved, summary: written)
+        expect(item["expires_at"]).to eq("2026-11-29T21:00:00Z")
+
+        summary.notify(went_on.merge("state" => "completed"), step: "plan", attempt: 2, round: 3, outcome: :approved, summary: written)
+        expect(item["expires_at"]).to eq("2026-11-29T21:00:00Z")
+      end
+
+      it "is nil for an approved round that waits at its gate, stopped the run, or runs its step again" do
+        again = run.merge("steps" => {"plan" => {"attempts" => [{"n" => 1}, {"n" => 2}, {"n" => 3}]}})
+        summary.notify(again, step: "plan", attempt: 2, round: 3, outcome: :approved, summary: written)
+        expect(item["expires_at"]).to be_nil
+
+        gated = run.merge("reason" => {"code" => "waiting_you", "details" => {"kind" => "gate", "step" => "plan"}})
+        summary.notify(gated, step: "plan", attempt: 2, round: 3, outcome: :approved, summary: written)
+        expect(item["expires_at"]).to be_nil
+
+        summary.notify(went_on.merge("reason" => {"code" => "budget_exhausted"}), step: "plan", attempt: 2, round: 3, outcome: :approved, summary: written)
+        expect(item["expires_at"]).to be_nil
+      end
+
+      it "is nil for every outcome but approved, even when the run went on" do
+        %i[rejected incomplete stale review_guard].each do |outcome|
+          summary.notify(went_on, step: "plan", attempt: 2, round: 3, outcome: outcome, summary: written)
+          expect(item["expires_at"]).to be_nil, "#{outcome} set an expiry"
+        end
+      end
+
+      it "goes back to none, and the item opens again, when a later round on the same key is rejected" do
+        store = Workspace::InboxStore.new(path: File.join(@dir, "inbox.json"), clock: -> { now })
+        stored = described_class.new(inbox_for: ->(_name) { store }, clock: -> { now })
+        stored.notify(went_on, step: "plan", attempt: 2, round: 3, outcome: :approved, summary: written)
+        id = store.list.first["id"]
+        expect(store.find(id)["expires_at"]).to eq("2026-11-29T21:00:00Z")
+        store.transition(id, to: "done")
+
+        again = run.merge("steps" => {"plan" => {"attempts" => [{"n" => 1}, {"n" => 2}, {"n" => 3}]}})
+        stored.notify(again, step: "plan", attempt: 2, round: 4, outcome: :rejected, summary: written)
+
+        expect(store.list.size).to eq(1)
+        expect(store.find(id)).to include("state" => "open", "expires_at" => nil)
+      end
     end
 
     it "says whose Not blocking findings the summary quotes" do

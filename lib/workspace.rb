@@ -552,7 +552,7 @@ module Workspace
     rejection = WorkflowRejection.new(change: change, dispatch: dispatch, log_tail: log_tail)
     round_rerun ||= WorkflowRoundRerun.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record,
       review_revision: review_revision, holder: round_holder, clock: clock)
-    review_summary ||= WorkflowReviewSummary.new(inbox_for: inbox_for)
+    review_summary ||= WorkflowReviewSummary.new(inbox_for: inbox_for, clock: clock)
     progress = WorkflowProgress.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes,
       log_tail: log_tail, review_tally: review_tally, guard: guard, round_rerun: round_rerun, review_summary: review_summary,
       rejection: rejection, clock: clock)
