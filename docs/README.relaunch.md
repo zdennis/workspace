@@ -16,7 +16,7 @@ Stops the selected workspaces and then relaunches them. With no name it acts on 
 - `--name WS` or positional names: those workspaces (both may be given together).
 - `--all`: every active workspace. With a name it is a usage error.
 - A name with no workspace config is `unknown_workspace`; one that isn't active is `workspace_not_active`. Both are refused before anything is stopped.
-- Only the selected workspaces are stopped and relaunched.
+- Only the selected workspaces are stopped and relaunched. The stop includes each workspace agent daemon, so the relaunch starts a fresh one (see [`stop`](README.stop.md)).
 
 [Headless](README.launch.md#headless) projects are relaunched headless; the others come back in iTerm2.
 

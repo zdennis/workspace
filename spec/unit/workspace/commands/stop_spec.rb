@@ -447,3 +447,138 @@ RSpec.describe Workspace::Commands::Stop do
     end
   end
 end
+
+RSpec.describe Workspace::Commands::Stop, "stopping agent daemons" do
+  let(:tmpdir) { Dir.mktmpdir }
+  let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
+  let(:state) do
+    allow(config).to receive(:state_file).and_return(File.join(tmpdir, "state.json"))
+    allow(config).to receive(:event_log_file).and_return(File.join(tmpdir, "events.jsonl"))
+    Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config))
+  end
+  let(:output) { StringIO.new }
+  let(:error_output) { StringIO.new }
+  let(:tmux) { double("tmux", custom_socket_option: nil, sessions: [], kill_session: nil) }
+  let(:calls) { [] }
+  let(:results) { Hash.new(Workspace::AgentDaemonStopper::Result.new(:not_running, nil, "none").freeze) }
+  let(:daemon_stopper) do
+    calls = self.calls
+    results = self.results
+    ->(name:) {
+      calls << name
+      results[name]
+    }
+  end
+  let(:command) do
+    described_class.new(state: state, iterm: double("iterm"), window_manager: double("window_manager"), tmux: tmux,
+      daemon_stopper: daemon_stopper, output: output, error_output: error_output)
+  end
+
+  before do
+    allow(tmux).to receive(:session_name_for) { |name| name }
+    state["proj1"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+    state["proj2"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
+    state.save
+  end
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  it "stops every target's daemon and says so" do
+    results["proj1"] = Workspace::AgentDaemonStopper::Result.new(:stopped, 11, "stopped").freeze
+
+    command.call
+
+    expect(calls).to eq(%w[proj1 proj2])
+    expect(output.string).to include("Stopped agent daemon for proj1 (pid 11)")
+    expect(output.string).not_to include("daemon for proj2")
+  end
+
+  it "stops the daemon before the tmux session is killed, so a stop run inside that session still reaches it" do
+    order = []
+    allow(tmux).to receive(:sessions).and_return(["proj1"])
+    allow(tmux).to receive(:kill_session) { order << :kill }
+    stopper = ->(name:) {
+      order << :daemon
+      daemon_stopper.call(name: name)
+    }
+    described_class.new(state: state, iterm: double("iterm"), window_manager: double("window_manager"), tmux: tmux,
+      daemon_stopper: stopper, output: output, error_output: error_output).call(["proj1"])
+
+    expect(order).to eq(%i[daemon kill])
+  end
+
+  it "keeps the notice out of a quiet stop" do
+    results["proj1"] = Workspace::AgentDaemonStopper::Result.new(:stopped, 11, "stopped").freeze
+
+    command.call(["proj1"], quiet: true)
+
+    expect(output.string).to eq("")
+  end
+
+  %i[refused timed_out].each do |status|
+    it "puts a #{status} daemon in warnings, prints it once and still stops" do
+      results["proj1"] = Workspace::AgentDaemonStopper::Result.new(status, 11, "it would not go").freeze
+
+      expect(command.call(["proj1"])).to eq(["proj1"])
+
+      expect(command.warnings).to eq(["it would not go. Check it with: workspace daemon status proj1"])
+      expect(error_output.string.scan("it would not go").size).to eq(1)
+      expect(error_output.string).to include("Warning: it would not go")
+    end
+  end
+
+  it "stops the daemon of a named project that is not in state, leaving the usual warning and result" do
+    expect(command.call(["proj1", "gone"])).to eq(["proj1"])
+
+    expect(calls).to eq(%w[proj1 gone])
+    expect(error_output.string).to include("'gone' is not an active workspace project")
+  end
+
+  it "stops the daemon when every named project is missing from state" do
+    expect(command.call(["gone"])).to eq([])
+
+    expect(calls).to eq(["gone"])
+    expect(output.string).to include("No matching workspace projects to stop.")
+  end
+
+  context "with empty state" do
+    before do
+      state.delete("proj1")
+      state.delete("proj2")
+      state.save
+    end
+
+    it "stops a named project's daemon" do
+      expect(command.call(["gone"])).to eq([])
+
+      expect(calls).to eq(["gone"])
+      expect(output.string).to include("No active workspace projects.")
+    end
+
+    it "stops nothing when no name is given" do
+      expect(command.call).to eq([])
+
+      expect(calls).to eq([])
+    end
+  end
+
+  it "prints nothing more when a second stop by name finds the daemon gone" do
+    results["proj1"] = Workspace::AgentDaemonStopper::Result.new(:stopped, 11, "stopped").freeze
+    command.call(["proj1"])
+    output.truncate(0)
+    output.rewind
+    results["proj1"] = Workspace::AgentDaemonStopper::Result.new(:not_running, nil, "none").freeze
+
+    expect(command.call(["proj1"], warn_inactive: false)).to eq([])
+    expect(output.string).not_to include("agent daemon")
+    expect(error_output.string).to eq("")
+  end
+
+  it "skips daemons when no stopper is given" do
+    plain = described_class.new(state: state, iterm: double("iterm"), window_manager: double("window_manager"), tmux: tmux,
+      output: output, error_output: error_output)
+
+    expect(plain.call(["proj1", "gone"])).to eq(["proj1"])
+    expect(calls).to eq([])
+  end
+end

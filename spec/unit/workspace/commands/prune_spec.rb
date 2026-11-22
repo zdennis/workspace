@@ -751,4 +751,82 @@ RSpec.describe Workspace::Commands::Prune do
       expect { command.call(names: ["x"]) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("not_prunable") }
     end
   end
+
+  describe "stopping the agent daemon" do
+    let(:project_root) { File.join(tmpdir, "wt-daemon") }
+    let(:error_output) { StringIO.new }
+    let(:calls) { [] }
+    let(:result) { Workspace::AgentDaemonStopper::Result.new(:stopped, 4242, "stopped").freeze }
+    let(:daemon_stopper) do
+      calls = self.calls
+      result = self.result
+      ->(name:) {
+        calls << [:daemon, name]
+        result
+      }
+    end
+    let(:daemon_command) do
+      described_class.new(state: state, project_config: project_config, project_settings: project_settings, git: git,
+        stop_command: stop_command, daemon_stopper: daemon_stopper, event_log: state.event_log,
+        pull_requests: fake_pull_requests_class.new(-> { true }, pr_table), output: output, error_output: error_output, input: input)
+    end
+
+    before do
+      make_worktree_dir(project_root)
+      allow(project_config).to receive(:available_projects).and_return(["wt-daemon"])
+      allow(project_config).to receive(:project_root_for).with("wt-daemon").and_return(project_root)
+      allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
+      allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/daemon")
+      allow(git).to receive(:worktree_exists?).with(project_root).and_return(false)
+      allow(project_config).to receive(:remove)
+      allow(project_settings).to receive(:remove)
+      allow(stop_command).to receive(:call) { calls << [:stop] }
+      pr_table[["feature/daemon", project_root]] = {number: 13, url: "u", state: "MERGED"}
+    end
+
+    it "leaves the daemon to Stop, and does not stop it again, when the workspace is in state" do
+      state["wt-daemon"] = {"unique_id" => "x"}
+
+      daemon_command.call_structured(names: ["wt-daemon"])
+
+      expect(calls).to eq([[:stop]])
+    end
+
+    it "stops the daemon when the workspace is not in state" do
+      daemon_command.call_structured(names: ["wt-daemon"])
+
+      expect(calls).to eq([[:daemon, "wt-daemon"]])
+    end
+
+    it "says so when the daemon it stopped for a workspace not in state was running" do
+      daemon_command.call_structured(names: ["wt-daemon"])
+
+      expect(output.string).to include("Stopped agent daemon for wt-daemon (pid 4242)")
+    end
+
+    it "prints nothing when no daemon was running" do
+      allow(self).to receive(:result).and_return(Workspace::AgentDaemonStopper::Result.new(:not_running, nil, "none").freeze)
+
+      daemon_command.call_structured(names: ["wt-daemon"])
+
+      expect(output.string).not_to include("agent daemon")
+      expect(error_output.string).to eq("")
+    end
+
+    it "warns on the error stream for a refusal and still removes the workspace" do
+      allow(self).to receive(:result).and_return(Workspace::AgentDaemonStopper::Result.new(:refused, 7, "it is not agentd").freeze)
+
+      rows = daemon_command.call_structured(names: ["wt-daemon"])
+
+      expect(rows.map { |r| r["outcome"] }).to eq(["removed"])
+      expect(error_output.string).to include("Warning: it is not agentd")
+      expect(error_output.string).to include("workspace daemon status wt-daemon")
+      expect(error_output.string.scan("Warning:").size).to eq(1)
+    end
+
+    it "skips the daemon when no stopper is given" do
+      expect { command.call_structured(names: ["wt-daemon"]) }.not_to raise_error
+      expect(calls).to eq([])
+    end
+  end
 end

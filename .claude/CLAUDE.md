@@ -145,6 +145,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/recovery_entry.rb` — The entry-writing helpers more than one recovery part uses.
 - `lib/workspace/agent_recovery_store.rb` — Flock-guarded `agent-recovery.json` with one entry per pane.
 - `lib/workspace/agent_recovery_config.rb` — Reads `agent.recovery.enabled`.
+- `lib/workspace/agent_daemon_stopper.rb` — Stops one workspace's `agentd` from its name alone: finds the socket's holder, checks it is that workspace's `agentd`, sends TERM and waits.
 - `lib/workspace/agent_stopper.rb` — Finds the Claude Code process in a pane and sends it SIGINT, nothing else.
 - `lib/workspace/agent_resume_command.rb` — The one builder of the shell line that resumes a Claude Code session.
 - `lib/workspace/recovery_stop_marker.rb` — A file marking that the daemon is about to stop an agent for recovery.

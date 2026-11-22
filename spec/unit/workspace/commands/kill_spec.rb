@@ -1308,3 +1308,39 @@ RSpec.describe Workspace::Commands::Kill, "task archiving" do
     expect(task_store).not_to have_received(:archive)
   end
 end
+
+RSpec.describe Workspace::Commands::Kill, "stopping the agent daemon" do
+  let(:tmpdir) { Dir.mktmpdir }
+  let(:git) { double("git") }
+  let(:project_config) { double("project_config") }
+  let(:project_settings) { double("project_settings") }
+  let(:stop_command) { double("stop_command", call: nil) }
+  let(:project_detector) { Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config) }
+  let(:name) { "myproject.worktree-PROJ-123" }
+  let(:config_path) { File.join(tmpdir, "workspace.myproject.worktree-PROJ-123.yml") }
+  let(:command) do
+    described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+      stop_command: stop_command, project_detector: project_detector, output: StringIO.new, input: StringIO.new)
+  end
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  before do
+    allow(project_config).to receive(:config_path_for).with(name).and_return(config_path)
+    File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
+    allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+    allow(git).to receive(:remove_worktree)
+    allow(project_config).to receive(:remove)
+    allow(project_settings).to receive(:remove)
+  end
+
+  it "hands the project name to Stop, which stops the agent daemon by name" do
+    command.call(name, force: true)
+
+    expect(stop_command).to have_received(:call).with([name], hash_including(save_position: false)).once
+  end
+
+  it "has no daemon stopper of its own, so a refusal is warned about once, by Stop" do
+    expect(described_class.instance_method(:initialize).parameters.map(&:last)).not_to include(:daemon_stopper)
+  end
+end

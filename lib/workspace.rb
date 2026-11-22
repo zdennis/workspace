@@ -111,6 +111,7 @@ require_relative "workspace/tmuxinator_report"
 require_relative "workspace/session_workspace"
 require_relative "workspace/delivery_log"
 require_relative "workspace/process_tree"
+require_relative "workspace/agent_daemon_stopper"
 require_relative "workspace/liveness"
 require_relative "workspace/window_liveness"
 require_relative "workspace/agent_readiness"
@@ -846,10 +847,13 @@ module Workspace
     pipeline_config = PipelineConfig.new(config: config)
     launch_mode = LaunchMode.new(project_settings: project_settings)
 
+    daemon_process_tree = ProcessTree.new(logger: logger)
+    agent_daemon_stopper = AgentDaemonStopper.new(config: config, process_tree: daemon_process_tree)
+
     # Pre-build command objects so CLI delegates rather than constructs
     stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, window_positions: window_positions,
       gateway_closer: GatewayWindowCloser.new(iterm: iterm, window_manager: window_manager, tmux: tmux, tty_processes: TtyProcesses.new),
-      launch_mode: launch_mode, output: output, error_output: error_output)
+      launch_mode: launch_mode, daemon_stopper: agent_daemon_stopper, output: output, error_output: error_output)
     agent_labels = AgentLabels.new(process_tree: ProcessTree.new(logger: logger))
     agent_readiness = AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new(logger: logger), logger: logger)
     name_migration = NameMigration.new(config: config, project_config: project_config, tmux: tmux, state: state, event_log: event_log,
@@ -907,7 +911,7 @@ module Workspace
       agent_commands: agent_commands, library: library, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
-    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), locks: name_migration, output: output, input: input)
+    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, daemon_stopper: agent_daemon_stopper, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), locks: name_migration, output: output, error_output: error_output, input: input)
     remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, locks: name_migration, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
@@ -1002,9 +1006,9 @@ module Workspace
     workflow_run_loader = WorkflowRunLoader.new(store: workflow_store)
     workflow_stats = WorkflowStats.new(store: workflow_store, loader: workflow_run_loader)
     workflow_compare = WorkflowCompare.new(loader: workflow_run_loader)
-    daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
+    daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client, stopper: agent_daemon_stopper,
       watch_factory: ->(workspace:, run:) { DaemonWatch.new(workspace: workspace, run: run, store: workflow_store, stream: EventStream.new(lifecycle_path: nil, hook_dir: config.hook_events_dir, workspace: workspace)) },
-      process_tree: ProcessTree.new(logger: logger), output: output)
+      process_tree: daemon_process_tree, output: output)
     # Built before the engine: the review round waits for its window's agent through it, and a fan_out sibling's
     # author pane is split through it.
     pane_dispatch = PaneDispatch.new(snapshot_client: agent_snapshot_client, sender: send_command, binder: binding_command, library: library,
@@ -1223,7 +1227,7 @@ module Workspace
       backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer), locks: name_migration,
       project_config: project_config, tmux: tmux, differ: TextDiff.new,
       retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output))
-    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, permission_policy_config: permission_policy_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, library: library, template_validator: template_validator, template_status: template_status, template_apply: template_apply, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), review_orphans: workflow_review_orphans, tmux: tmux, sweep_schedule: sweep_schedule, sweep_last_path: config.workflow_sweep_last_path, sweep_log_path: config.sweep_log_path, output: output, env: env)
+    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, permission_policy_config: permission_policy_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, library: library, template_validator: template_validator, template_status: template_status, template_apply: template_apply, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), review_orphans: workflow_review_orphans, tmux: tmux, daemon_stopper: agent_daemon_stopper, process_tree: daemon_process_tree, sweep_schedule: sweep_schedule, sweep_last_path: config.workflow_sweep_last_path, sweep_log_path: config.sweep_log_path, output: output, env: env)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
     )
