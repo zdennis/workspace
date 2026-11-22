@@ -354,6 +354,21 @@ RSpec.describe "script/demo-calculator2" do
       expect(calls.grep(/\Aconfig set workflows.sources /).first).to end_with("/demo/calculator2/workflows")
     end
 
+    it "keeps other sources entries, adds its own once and warns when another checkout's entry shadows it" do
+      other = File.join(tmp, "other/demo/calculator2/workflows")
+      FileUtils.mkdir_p(other)
+      File.write(fake_workspace, File.read(fake_workspace).sub("#!/bin/sh\n", "#!/bin/sh\nif [ \"$1 $2 $3\" = \"config get workflows.sources\" ]; then echo '/a/team,#{other}'; fi\n"))
+      main(*lane_args)
+      expect(calls.grep(/\Aconfig set workflows.sources /)).to eq(["config set workflows.sources /a/team,#{other},#{File.join(work_dir, "demo/calculator2/workflows")}"])
+      expect(err.string).to include("Warning", other)
+    end
+
+    it "does not set workflows.sources when its entry is already listed" do
+      File.write(fake_workspace, File.read(fake_workspace).sub("#!/bin/sh\n", "#!/bin/sh\nif [ \"$1 $2 $3\" = \"config get workflows.sources\" ]; then echo '/a/team,#{File.join(work_dir, "demo/calculator2/workflows")}'; fi\n"))
+      main(*lane_args)
+      expect(calls.grep(/\Aconfig set workflows.sources /)).to be_empty
+    end
+
     it "finds lane B by its full project-prefixed name as well as by its short name" do
       expect(main(*lane_args.map { |each| (each == "ws-b") ? "workspace.worktree-ws-b" : each })).to eq(0), err.string
       expect(calls).to include("work-queue disable --name workspace.worktree-ws-b")
