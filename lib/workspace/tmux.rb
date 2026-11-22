@@ -707,14 +707,15 @@ module Workspace
     # @param session_name [String] tmux session name
     # @param timeout [Numeric, nil] seconds to wait, through {TimedProcess}; past it Timeout::Error is raised (nil
     #   waits as long as tmux takes)
-    # @return [Array<Hash>] +{window:, name:, review:, pane:, pid:, store:}+ per marked window
+    # @param strict [Boolean] answer nil, not an empty list, when tmux could not be read
+    # @return [Array<Hash>, nil] +{window:, name:, review:, pane:, pid:, store:}+ per marked window
     #   (the window's active pane; +store+ its +@workspace-review-store+, nil when unset); empty when the session
     #   isn't there or tmux fails
-    def review_windows(session_name, timeout: nil)
+    def review_windows(session_name, timeout: nil, strict: false)
       format = ["window_id", "window_name", "pane_id", "pane_pid", REVIEW_STORE_OPTION, REVIEW_OPTION].map { |field| "\#{#{field}}" }.join("\t")
       @logger.debug { "tmux: listing review windows in #{session_name}" }
       stdout, ok = read_option_command(["tmux", "list-windows", "-t", session_target(session_name), "-F", format], timeout)
-      return [] unless ok
+      return (strict ? nil : []) unless ok
 
       stdout.lines.filter_map do |line|
         window, window_name, pane, pid, store, review = line.chomp.split("\t", 6)

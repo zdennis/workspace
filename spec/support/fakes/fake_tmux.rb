@@ -14,7 +14,7 @@ class FakeTmux
     delivered texts details details= screens screens= screen_script screen_script= on_deliver on_deliver= on_details
     on_details= statuses statuses= capture_calls sessions_calls sessions_strict_args styled_screens styled_screens=
     server_pid server_pid= start_commands start_commands= session_gone session_gone=
-    opened_windows killed_windows marked_windows refuse_marks refuse_marks= review_window_list review_window_list= session_server_pid session_server_pid= renumber_windows renumber_windows= review_windows_by_session review_windows_by_session=
+    opened_windows killed_windows marked_windows refuse_marks refuse_marks= review_window_list review_window_list= session_server_pid session_server_pid= renumber_windows renumber_windows= review_windows_by_session review_windows_by_session= review_windows_unreadable review_windows_unreadable=
   ].freeze
 
   attr_reader :sent_keys, :sent_key_names, :capture_calls, :sessions_calls, :sessions_strict_args, :opened_windows, :killed_windows
@@ -30,6 +30,8 @@ class FakeTmux
   attr_accessor :renumber_windows
   # @return [Hash{String=>Array<Hash>}, nil] what `review_windows` lists per session; nil lists `review_window_list` for every one
   attr_accessor :review_windows_by_session
+  # @return [Boolean] a `strict` `review_windows` answers nil, as when tmux can't be read
+  attr_accessor :review_windows_unreadable
   attr_accessor :styled_screens, :server_pid, :start_commands, :session_gone, :captured_output, :pane_indexes, :delivery_status, :details, :screens, :screen_script, :on_deliver,
     :on_details, :statuses
 
@@ -137,7 +139,11 @@ class FakeTmux
   end
 
   # A copy, as each real listing is a new one: a window killed while a caller walks it stays in the walk.
-  def review_windows(session, timeout: nil) = (@review_windows_by_session ? @review_windows_by_session.fetch(session, []) : @review_window_list).map(&:dup)
+  def review_windows(session, timeout: nil, strict: false) = if strict && @review_windows_unreadable
+                                                               nil
+                                                             else
+                                                               (@review_windows_by_session ? @review_windows_by_session.fetch(session, []) : @review_window_list).map(&:dup)
+                                                             end
 
   # Moves a listed window's mark; false for a window it does not list.
   def mark_review_window(window, mark)

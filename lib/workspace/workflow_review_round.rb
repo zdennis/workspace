@@ -1,3 +1,4 @@
+require "digest"
 require "shellwords"
 require "time"
 
@@ -48,8 +49,9 @@ module Workspace
     # @param which [#call] given a program name, its path on PATH or nil; only words a not-ready agent's failure
     # @param error_output [IO] where a failure that could not be recorded is said
     # @param clock [#call] returns the current Time
+    # @param home [String] the user's home directory, where {#prewarm}'s memory digest reads `.claude/CLAUDE.md` and `.claude/settings.json`
     def initialize(store:, change:, tmux:, panes:, readiness:, main_agent:, revision:, prompt:, round_dirs:, holder:, shell: "/bin/sh",
-      which: Which.method(:path), error_output: $stderr, clock: -> { Time.now })
+      which: Which.method(:path), error_output: $stderr, clock: -> { Time.now }, home: Dir.home)
       @store = store
       @change = change
       @tmux = tmux
@@ -64,6 +66,7 @@ module Workspace
       @which = which
       @error_output = error_output
       @clock = clock
+      @home = home
     end
 
     # Delivers the round, or does nothing when the run is no longer waiting for this delivery (another step, attempt
@@ -96,7 +99,122 @@ module Workspace
       []
     end
 
-    private
+    # Opens the review window of the step's next round ahead of the round, with the arguments a cold round opens one
+    # with, and records it as the step's `review_window` (`round`, `window`, `pane`, `warm: true`, `memory`, `opened_at`)
+    # and `review_model`. Types nothing, binds nothing and waits for nothing. Opens nothing for a step with no `review:`,
+    # one in a `fan_out` group, a workspace on its own tmux socket, a step whose rounds are spent, or one whose
+    # `review_window` is a window tmux still has. A run that left the step or attempt by the time the slot is written
+    # (or has its step reviewing, or a round started) records nothing and has the window it opened closed, by its id.
+    #
+    # @param run [WorkflowRun, Hash] the run as read
+    # @param step_id [String]
+    # @param attempt [Integer] the attempt just dispatched
+    # @return [Hash, nil] the recorded slot; nil when nothing was opened or recorded
+    def prewarm(run, step_id, attempt)
+      run = WorkflowRun.from_h(run)
+      step = run.definition["steps"].find { |each| each["id"] == step_id }
+      return nil unless WorkflowDefinition.review(step)
+      return nil if WorkflowDefinition.siblings_of(run.definition, step_id)
+      return nil if @tmux.custom_socket_option(run.workspace)
+      return nil if WorkflowTransitions.review_rounds_spent?(run.to_h, step_id)
+      session = @tmux.session_name_for(run.workspace)
+      kept = run.steps[step_id]&.to_h&.dig("review_window")
+      if kept
+        # A window tmux can't be read about is not known to be gone: nothing is opened.
+        listed = @tmux.review_windows(session, timeout: WorkflowPanes::TMUX_READ_TIMEOUT, strict: true)
+        return nil if listed.nil? || listed.any? { |each| each[:window] == (kept.is_a?(Hash) ? kept["window"] : nil) }
+      end
+      round = run.steps[step_id]&.to_h&.dig("review_rounds").to_i + 1
+      memory = memory_digest(run.worktree)
+      opened = open_review_window(session, run, step_id, round, review_agent(run, step))
+      return nil unless opened
+      slot = {"round" => round, "window" => opened[:window], "pane" => opened[:pane], "warm" => true,
+              "memory" => memory, "opened_at" => @clock.call.utc.iso8601(3)}
+      model = round_model(run, step)
+      recorded = false
+      begin
+        @change.call(run.id, actor: "engine", cause: "review_prewarm") do |read|
+          hash = read.thawed
+          state = hash.dig("steps", step_id)
+          next unless prewarm_wanted?(hash, state, step_id, attempt, round) && state["review_window"] == kept
+          recorded = true
+          state["review_window"] = slot
+          model ? state["review_model"] = model : state.delete("review_model")
+          WorkflowRun.from_h(hash)
+        end
+      rescue Workspace::Error, SystemCallError => e
+        @tmux.kill_window(opened[:window], timeout: WorkflowPanes::TMUX_READ_TIMEOUT) unless recorded
+        raise unless e.is_a?(Workspace::Error) && e.code == "run_not_active"
+        return recorded ? slot : nil
+      end
+      @tmux.kill_window(opened[:window], timeout: WorkflowPanes::TMUX_READ_TIMEOUT) unless recorded
+      recorded ? slot : nil
+    rescue Timeout::Error
+      nil
+    end
+
+    # The run is still on the step and attempt the window was opened for, not reviewing, and no round started since.
+    def prewarm_wanted?(hash, state, step_id, attempt, round)
+      return false unless state.is_a?(Hash) && hash["current"] == step_id && state["state"] != "reviewing"
+      Array(state["attempts"]).last&.dig("n") == attempt && state["review_rounds"].to_i + 1 == round
+    end
+
+    # SHA-256 over the Claude Code start-up files a review process reads when it starts: `CLAUDE.md` and `CLAUDE.local.md`
+    # of the checkout and every directory above it, the checkout's `.claude/CLAUDE.md`, `.mcp.json`, `.claude/settings*.json`
+    # and everything under `.claude/agents`, `commands`, `skills` and `rules` (dotfiles and symlinks followed, each
+    # directory walked once), and the user's `CLAUDE.md` and `settings.json`. Each entry is a path and the hash of what it
+    # resolves to: a missing file counts as absent, a dangling link as its target and absent, an unreadable one as
+    # unreadable, so creating or editing any changes the digest. `@`-imports are not followed.
+    def memory_digest(worktree)
+      root = File.expand_path(worktree)
+      claude = File.join(root, ".claude")
+      files = [".mcp.json", ".claude/CLAUDE.md"].map { |name| File.join(root, name) }
+      files += Dir.glob(File.join(claude, "settings*.json"))
+      files += %w[agents commands skills rules].flat_map { |dir| tree_files(File.join(claude, dir)) }
+      files += %w[CLAUDE.md CLAUDE.local.md].flat_map { |name| ancestors_of(root).map { |dir| File.join(dir, name) } }
+      files += %w[CLAUDE.md settings.json].map { |name| File.join(@home, ".claude", name) }
+      digest = Digest::SHA256.new
+      files.uniq.sort.each { |path| digest << path << "\0" << file_state(path) << "\n" }
+      digest.hexdigest
+    end
+
+    # The directory and every one above it, up to the root.
+    def ancestors_of(dir)
+      found = [dir]
+      found << File.dirname(found.last) until found.last == File.dirname(found.last)
+      found
+    end
+
+    def file_state(path)
+      return "#{File.readlink(path)} absent" if File.symlink?(path) && !File.exist?(path)
+      File.file?(path) ? Digest::SHA256.file(path).hexdigest : "absent"
+    rescue SystemCallError
+      "unreadable"
+    end
+
+    # Every path under +dir+ (dotfiles and links followed), a directory entered once by its real path.
+    def tree_files(dir, seen = [], depth = 0)
+      return [] unless File.directory?(dir) && depth < 16
+      real = File.realpath(dir)
+      return [] if seen.include?(real)
+      seen << real
+      Dir.children(dir).sort.flat_map do |name|
+        path = File.join(dir, name)
+        File.directory?(path) ? tree_files(path, seen, depth + 1) : [path]
+      end
+    rescue SystemCallError
+      [dir]
+    end
+
+    # The agent command a review window starts: Claude Code for the workspace, on the round's model.
+    def review_agent(run, step)
+      with_model(@main_agent.spawn_command(run.workspace, AGENT_KIND), round_model(run, step))
+    end
+
+    def open_review_window(session, run, step_id, round, agent)
+      @tmux.open_window(session, name: "review-#{step_id}", cwd: run.worktree, command: [@shell, "-lc", agent],
+        env: {RUN_ENV => run.id}, option: WorkflowPanes.review_mark(run.id, step_id, round), store: @store.stamp)
+    end
 
     def deliver(run, pending)
       workspace = run.workspace
@@ -120,7 +238,7 @@ module Workspace
         written = @prompt.review_text(run, step, pending["attempt"], pending["round"], answer[:revision], **rerun)
         model = round_model(run, step)
         direct = WorkflowDefinition.direct_review?(run.definition, step)
-        agent = with_model(@main_agent.spawn_command(workspace, AGENT_KIND), model)
+        agent = review_agent(run, step)
         window = review_window(run, pending, agent, model)
         return current(run) if window == :left
         return failed(run, pending, nil, "window_not_opened", "tmux could not open the review window") unless window
@@ -256,8 +374,7 @@ module Workspace
       # Not `reused`: no reviewer of this round can be at work in it, so a failure closes it as a new window's would
       # (an agent that exited there is never waited on again).
       return {pane: carried[:pane], window: carried[:window], reused: false, carried: true} if carried
-      opened = @tmux.open_window(session, name: "review-#{pending["step"]}", cwd: run.worktree, command: [@shell, "-lc", agent],
-        env: {RUN_ENV => run.id}, option: mark, store: @store.stamp)
+      opened = open_review_window(session, run, pending["step"], pending["round"], agent)
       opened && {pane: opened[:pane], window: opened[:window], reused: false, carried: false}
     end
 
