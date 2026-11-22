@@ -7,8 +7,8 @@ Make `calc` with no arguments start a read-eval-print loop.
 A small command-line calculator: Ruby, standard library only (no gems). Work only in `demo/calculator2/`.
 
 - `demo/calculator2/bin/calc` is the entry point, `demo/calculator2/lib/calc.rb` holds the logic.
-- Tests are minitest, in `demo/calculator2/test/calc_test.rb`. Run them from the repository root with
-  `ruby demo/calculator2/test/calc_test.rb`.
+- Tests are minitest, in `demo/calculator2/test/lane_b_test.rb`. Run every test file from the repository root with
+  `ruby -e 'files = Dir["demo/calculator2/test/*_test.rb"].sort; abort "no test files match demo/calculator2/test/*_test.rb" if files.empty?; files.each { |file| require File.expand_path(file) }'`.
 - Lint with `bundle exec standardrb demo/calculator2`.
 - Behaviour from earlier goals must keep working.
 - Today any expression other than the ones earlier goals handle prints `unsupported: EXPR` to standard

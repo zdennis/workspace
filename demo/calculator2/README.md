@@ -6,7 +6,8 @@ arithmetic, division errors, precedence, `%` and `**`, `--json` and a REPL.
 
 ## Layout
 
-- `bin/calc`, `lib/calc.rb`, `test/calc_test.rb`: the app and its own tests (Ruby stdlib, minitest).
+- `bin/calc`, `lib/calc.rb`: the app (Ruby stdlib). Its minitest tests are `test/calc_test.rb` for lane A's goals and
+  `test/lane_b_test.rb` for lane B's.
 - `goals/01-add-sub.md` .. `goals/07-repl.md`: the goal each run is given.
 - `workflows/deliver-goal.yml`: the workflow that delivers one goal.
 - `acceptance/`: black-box tests that score a run, run by `script/demo_calculator2/acceptance_runner`.
@@ -20,8 +21,8 @@ script/demo-calculator2 eval    # score a recorded run
 script/demo-calculator2 reset   # put the app back to its stub
 ```
 
-Run the app's own tests with `ruby demo/calculator2/test/calc_test.rb`, and lint with
-`bundle exec standardrb demo/calculator2`.
+Run every test file with `DemoCalculator2::TEST_COMMAND` (`script/demo_calculator2/config.rb`): a `ruby -e` one-liner that
+requires each `demo/calculator2/test/*_test.rb` and fails when none match. Lint with `bundle exec standardrb demo/calculator2`.
 
 ## Integration and waits
 
@@ -31,8 +32,11 @@ plain acceptance run on goal 07. A conflict or a failed check queues a repair in
 - A clean merge whose checks failed is repaired by `integrate-merged`. The merge stays committed on lane A's
   branch, and the workflow checks it and fixes what it finds, with no merge turn. `integrate-branch` runs only
   for a conflict or a failed merge.
-- Duplicate test method names in the merged `test/calc_test.rb` fail the first pass.
-- The merge driver for `calc_test.rb` is configured as `ruby "$(git rev-parse --show-toplevel)/script/demo_calculator2/merge_test_methods" %O %A %B`.
+- Before the merge, an ownership check reads each lane's own commits since the fork. Lane B may change only
+  `test/lane_b_test.rb` under `test/`, and lane A may not change that file. A violation stops the run with reason
+  `ownership` and is recorded in `lane_b_check`. A re-run of `integrate` reads lane A only up to its head before the merge.
+- Duplicate test method names across the merged test files fail the first pass.
+- The merge driver for `calc_test.rb` stays as a safety net for a lane B that edits it. It is configured as `ruby "$(git rev-parse --show-toplevel)/script/demo_calculator2/merge_test_methods" %O %A %B`.
   The command names no checkout path, so every worktree runs its own copy.
 - The driver merges `calc_test.rb` method by method against the fork point. Lane B's new tests, helpers and `require`
   lines go in, and a method only lane B changed or removed takes lane B's version. Both lanes changing one method, or

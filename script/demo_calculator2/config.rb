@@ -16,12 +16,13 @@ module DemoCalculator2
   GOAL_WORKFLOW_IDS = DEFINITION_IDS - [INTEGRATE_WORKFLOW_ID, INTEGRATE_MERGED_WORKFLOW_ID]
   # Lane A runs 01-05 and lane B 06 and 07, forked from lane A's head after goal 03 (`fork_after`).
   LANES = {a: %w[01-add-sub 02-mul-div 03-div-zero 04-precedence 05-mod-pow].freeze, b: %w[06-json 07-repl].freeze, fork_after: "03-div-zero"}.freeze
-  # Lane B's prompt names the goals "earlier" means, since its branch holds only 01-03. The goal documents are unchanged. Lane A
-  # adds 04 and 05 at the same time, so an expression lane B's tests expect to be unsupported must stay unsupported after the
-  # merge (p2, t2a and t3a2 used `2 % 3` and `2 ** 3`, which goal 05 makes work).
+  # Runs every test file of the demo (calc_test.rb and lane B's lane_b_test.rb) from the checkout root, and fails when none match.
+  TEST_COMMAND = %(ruby -e 'files = Dir["#{DEMO_DIR}/test/*_test.rb"].sort; abort "no test files match #{DEMO_DIR}/test/*_test.rb" if files.empty?; files.each { |file| require File.expand_path(file) }').freeze
+  # Lane B's prompt names the goals "earlier" means, since its branch holds only 01-03. Goals 06 and 07 name lane B's test file themselves.
   LANE_B_PROMPT = "Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05. " \
-    "Another lane is adding them now: several operators, parentheses, `%` and `**`. A test that expects `unsupported` must use an " \
-    "expression no goal supports, such as `2 & 3`, never one of those.".freeze
+    "Another lane is adding them now, and it changes which expressions are supported, so do not write a test that asserts any arithmetic expression is unsupported or invalid (non-numeric input such as `abc` is fine). Put every test you write in `#{DEMO_DIR}/test/lane_b_test.rb`, a minitest file that starts with " \
+    "`require \"minitest/autorun\"` and `require_relative \"../lib/calc\"`, and never edit `#{DEMO_DIR}/test/calc_test.rb`. " \
+    "Run all the tests with `#{TEST_COMMAND}`.".freeze
 
   # @param spec [String] comma-separated goal numbers or names, such as `01,03`
   # @return [Array<String>] those goals in GOALS order
@@ -88,7 +89,7 @@ module DemoCalculator2
       queue_items: ->(name_args) { goals.map { |goal| [workflow_id, queue_argv(goal, name_args, workflow_id: workflow_id, acceptance: acceptance, prompt: prompt)] } },
       restored: %w[bin lib test], template_dir: nil, stub_ref: stub_ref,
       acceptance_dir: "#{DEMO_DIR}/acceptance", readme_path: "#{DEMO_DIR}/README.md", runs_dir: "tmp/demo-calculator2/runs",
-      test_command: "ruby #{DEMO_DIR}/test/calc_test.rb", lint_command: "bundle exec standardrb #{DEMO_DIR}",
+      test_command: TEST_COMMAND, lint_command: "bundle exec standardrb #{DEMO_DIR}",
       acceptance_ref: acceptance_ref_for(id), program: "demo-calculator2", record_extras: {"stub_ref" => stub_ref, "goals" => goals}.merge(extras))
   end
 

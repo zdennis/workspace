@@ -95,7 +95,7 @@ RSpec.describe "calc_test.rb merge driver through Lanes" do
     File.write(File.join(tmp, path), "require \"minitest/autorun\"\n\nclass CalcTest < Minitest::Test\n  def test_smoke\n    assert true\n  end\nend\n")
     git("add", "-A")
     git("commit", "-qm", "base")
-    File.write(record_path, JSON.generate("lanes" => {"b" => {"branch" => "lane-b"}}))
+    File.write(record_path, JSON.generate("lanes" => {"b" => {"branch" => "lane-b"}}, "fork" => {"sha" => git("rev-parse", "HEAD").first.strip}))
     expect(ENV.keys & %w[GIT_DIR GIT_COMMON_DIR]).to be_empty
     expect(File.realpath(git("rev-parse", "--git-common-dir").first.strip, tmp)).to eq(File.join(tmp, ".git"))
   end
@@ -119,6 +119,16 @@ RSpec.describe "calc_test.rb merge driver through Lanes" do
   def lane_b(*names)
     git("checkout", "-qb", "lane-b")
     names.each { |name| add_method(name) }
+    git("checkout", "-q", "main")
+  end
+
+  # Lane B as the ownership rule allows: its own test file only, branched from the fork.
+  def lane_b_own(*names)
+    git("checkout", "-qb", "lane-b")
+    body = names.map { |name| "  def #{name}\n    assert true\n  end\n" }.join
+    File.write(File.join(tmp, "demo/calculator2/test/lane_b_test.rb"), "require \"minitest/autorun\"\n\nclass LaneBTest < Minitest::Test\n#{body}end\n")
+    git("add", "-A")
+    git("commit", "-qm", "lane b tests")
     git("checkout", "-q", "main")
   end
 
@@ -150,7 +160,7 @@ RSpec.describe "calc_test.rb merge driver through Lanes" do
 
   it "records first_pass true for a clean merge where each lane added tests" do
     lanes.write_attributes(record_path)
-    lane_b("test_json", "test_repl")
+    lane_b_own("test_json", "test_repl")
     add_method("test_add")
     lanes.integrate(record)
     integration = record["integration"]
@@ -161,12 +171,107 @@ RSpec.describe "calc_test.rb merge driver through Lanes" do
 
   it "records first_pass false with the duplicates when only one side has a duplicated test name" do
     lanes.write_attributes(record_path)
-    lane_b("test_json", "test_json")
+    lane_b_own("test_json")
+    add_method("test_json")
+    add_method("test_json")
     expect { lanes.integrate(record) }.to raise_error(DemoCalculator::Refused)
     integration = record["integration"]
     expect(integration).to include("merge" => "clean", "first_pass" => false)
     expect(integration["test_names"]).to eq("ok" => false, "duplicates" => ["test_json"])
     expect(workspace_calls.map { |argv| argv[0, 5] }).to eq([%w[ws-bin work-queue add workflow integrate-merged]])
+  end
+
+  describe "the ownership check over real git" do
+    let(:own_file) { "demo/calculator2/test/lane_b_test.rb" }
+
+    def branch_commit(branch, files)
+      git("checkout", "-qb", branch)
+      files.each do |file, text|
+        FileUtils.mkdir_p(File.dirname(File.join(tmp, file)))
+        File.write(File.join(tmp, file), text)
+      end
+      git("add", "-A")
+      git("commit", "-qm", branch)
+      git("checkout", "-q", "main")
+    end
+
+    def head = git("rev-parse", "HEAD").first.strip
+
+    def check(a_head = head) = lanes.ownership_problem(record, a_head)
+
+    it "passes lane B's own file, or no test file, with lane A leaving it alone" do
+      branch_commit("lane-b", own_file => "x\n", "demo/calculator2/lib/extra.rb" => "x = 1\n")
+      add_method("test_add")
+      expect(check).to be_nil
+    end
+
+    it "refuses a lane B that changed calc_test.rb" do
+      branch_commit("lane-b", path => "changed\n")
+      expect(check).to match(/lane B .* changed #{Regexp.escape(path)}/)
+    end
+
+    it "refuses another test file of lane B" do
+      branch_commit("lane-b", "demo/calculator2/test/other_test.rb" => "x\n")
+      expect(check).to match(/other_test\.rb/)
+    end
+
+    it "refuses a lane B that deleted a test file" do
+      git("checkout", "-qb", "lane-b")
+      git("rm", "-q", path)
+      git("commit", "-qm", "lane b rm")
+      git("checkout", "-q", "main")
+      expect(check).to match(/changed #{Regexp.escape(path)}/)
+    end
+
+    it "refuses a lane B that renamed calc_test.rb away, naming both files" do
+      git("checkout", "-qb", "lane-b")
+      git("mv", path, "demo/calculator2/test/moved_test.rb")
+      git("commit", "-qm", "rename")
+      git("checkout", "-q", "main")
+      expect(check).to include(path, "moved_test.rb")
+    end
+
+    it "refuses a lane A that changed lane B's test file" do
+      branch_commit("lane-b", own_file => "x\n")
+      File.write(File.join(tmp, own_file), "a\n")
+      git("add", "-A")
+      git("commit", "-qm", "a touches b")
+      expect(check).to match(/lane A changed #{Regexp.escape(own_file)}/)
+    end
+
+    it "does not blame lane A for lane B's file once it is merged in" do
+      branch_commit("lane-b", own_file => "x\n")
+      git("merge", "-q", "--no-ff", "--no-edit", "lane-b")
+      expect(check).to be_nil
+    end
+
+    it "does not blame lane B for lane A's edits that lane B merged into its own branch" do
+      branch_commit("lane-b", own_file => "x\n")
+      add_method("test_add")
+      git("checkout", "-q", "lane-b")
+      git("merge", "-q", "--no-ff", "--no-edit", "main")
+      git("checkout", "-q", "main")
+      expect(File.read(File.join(tmp, path))).to include("test_add")
+      expect(check).to be_nil
+    end
+
+    it "reads lane A only up to the head recorded before the merge, so repair commits may edit lane B's file" do
+      branch_commit("lane-b", own_file => "x\n")
+      add_method("test_add")
+      premerge = head
+      git("merge", "-q", "--no-ff", "--no-edit", "lane-b")
+      File.write(File.join(tmp, own_file), "repaired\n")
+      git("commit", "-qam", "repair edits lane B's test")
+      expect(check).to match(/lane A changed #{Regexp.escape(own_file)}/)
+      expect(check(premerge)).to be_nil
+      data = record.merge("integration" => {"merge" => "clean"}, "lane_b_check" => {"passed" => true, "premerge_head" => premerge})
+      expect(lanes.ownership_a_head(data)).to eq(premerge)
+      expect(check(lanes.ownership_a_head(data))).to be_nil
+    end
+
+    it "raises the infrastructure error when lane B's branch does not exist" do
+      expect { check }.to raise_error(DemoCalculator2::OwnershipCheckFailed, /could not run: git rev-parse/)
+    end
   end
 
   it "rewrites a driver that names a removed worktree" do
