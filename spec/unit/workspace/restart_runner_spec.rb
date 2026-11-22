@@ -69,7 +69,7 @@ RSpec.describe Workspace::RestartRunner do
       transcript_summary: Workspace::TranscriptSummary.new, pane_bindings: nil, error_output: error_output)
       .run(started, "go", false, 5, nil)
 
-    expect(wired[:screen_ready].call("%18")).to eq("screen")
+    expect(wired[:screen_ready].call("%18").raw).to eq("screen")
     expect(wired[:screen_ready].call("five")).to be_nil
   end
 

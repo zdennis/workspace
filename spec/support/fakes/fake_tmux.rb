@@ -41,7 +41,7 @@ class FakeTmux
   # @param details [Array<Hash>, nil] what `pane_details` lists (`window: nil` lists all, else one window); nil lists none
   # @param strict_windows [Boolean] `pane_details` refuses a call that does not ask for every window
   # @param screens [Array<String>] the screens `capture_screen` shows in turn, the last one repeating
-  # @param styled_screens [Array<String>, nil] the answers of `capture_screen_styled` in turn, the last repeating (default: `screens`)
+  # @param styled_screens [Array<String>, nil] the answers of `capture_screen_styled` in turn, the last repeating (default: `screens`); an entry may be `[screen, history_rows]` for `capture_screen_scrollback` (plain `capture_screen_styled` gives the screen)
   # @param server_pid [String, nil] what `server_pid_for_pane` answers
   # @param start_commands [Array<Hash>] what `pane_start_commands` lists
   # @param session_gone [Boolean] what `session_gone?` answers
@@ -164,9 +164,16 @@ class FakeTmux
   end
 
   def capture_screen_styled(target)
-    return capture_screen(target) unless @styled_screens
+    shown = next_styled_screen(target)
+    shown.is_a?(Array) ? shown.first : shown
+  end
 
-    (@styled_screens.size > 1) ? @styled_screens.shift : @styled_screens.first
+  def capture_screen_scrollback(target)
+    shown = next_styled_screen(target)
+    return nil if shown.nil?
+
+    raw, history_rows = shown
+    Workspace::Tmux::StyledCapture.new(raw, history_rows || 0).freeze
   end
 
   def server_pid_for_pane(_pane_id, timeout: nil) = @server_pid
@@ -230,6 +237,12 @@ class FakeTmux
   end
 
   private
+
+  def next_styled_screen(target)
+    return capture_screen(target) unless @styled_screens
+
+    (@styled_screens.size > 1) ? @styled_screens.shift : @styled_screens.first
+  end
 
   def type_into_screen(text, enter)
     @screens = [enter ? @blank : @screens.first.sub(/❯ \n\z/, "❯ #{text}\n────────\n")]

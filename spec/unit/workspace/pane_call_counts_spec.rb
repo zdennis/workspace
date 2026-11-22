@@ -20,7 +20,7 @@ RSpec.describe "tmux calls of the pane desks" do
     it "reads one styled screen to check a pane" do
       typer.check("%5")
 
-      expect(tmux.calls).to eq([:capture_screen_styled])
+      expect(tmux.calls).to eq([:capture_screen_scrollback])
     end
 
     it "reads, pastes, reads and presses Enter, with no pane list" do
@@ -29,7 +29,7 @@ RSpec.describe "tmux calls of the pane desks" do
 
       typer.type(session_name: "api", target: "0.1", pane_id: "%5", text: "hi")
 
-      expect(tmux.calls).to eq([:capture_screen_styled, :deliver, :capture_screen_styled, :deliver])
+      expect(tmux.calls).to eq([:capture_screen_scrollback, :deliver, :capture_screen_scrollback, :deliver])
     end
 
     it "makes no call at all for an id that is not a pane id" do
@@ -53,7 +53,7 @@ RSpec.describe "tmux calls of the pane desks" do
       tmux.screens = [empty_prompt, empty_prompt, empty_prompt, "────────\n❯ x\n"]
       desk.request("pane_id" => "%5")
 
-      expect(tmux.calls.first(3)).to eq([:pane_details, :capture_screen_styled, :pane_details])
+      expect(tmux.calls.first(3)).to eq([:pane_details, :capture_screen_scrollback, :pane_details])
       expect(tmux.calls.count(:pane_details)).to eq(2)
     end
 
@@ -107,7 +107,7 @@ RSpec.describe "tmux calls of the pane desks" do
         :pane_details, :server_pid_for_pane,
         :pane_details, :server_pid_for_pane,
         :capture_screen, :pane_details, :server_pid_for_pane,
-        :capture_screen_styled, :deliver, :capture_screen_styled, :deliver
+        :capture_screen_scrollback, :deliver, :capture_screen_scrollback, :deliver
       ])
     end
 
@@ -122,7 +122,7 @@ RSpec.describe "tmux calls of the pane desks" do
       desk.interrupt_send("pane_id" => "%5", "text" => "go")
 
       expect(tmux.call_runs).to eq([
-        :pane_details, :send_key, :capture_screen, :capture_screen_styled, :deliver, :capture_screen_styled, :deliver
+        :pane_details, :send_key, :capture_screen, :capture_screen_scrollback, :deliver, :capture_screen_scrollback, :deliver
       ])
     end
   end
@@ -159,7 +159,7 @@ RSpec.describe "tmux calls of the pane desks" do
       now[0] += 30
       watcher.poll
 
-      expect(tmux.calls).to eq([:pane_details, :capture_screen_styled, :deliver, :capture_screen_styled, :deliver])
+      expect(tmux.calls).to eq([:pane_details, :capture_screen_scrollback, :deliver, :capture_screen_scrollback, :deliver])
     end
   end
 
@@ -173,7 +173,7 @@ RSpec.describe "tmux calls of the pane desks" do
         .run({"pane" => "0.1", "pane_id" => "%5"}, "go", false, 5, nil)
       wired[:screen_ready].call("%5")
 
-      expect(tmux.calls).to eq([:capture_screen_styled])
+      expect(tmux.calls).to eq([:capture_screen_scrollback])
     end
   end
   describe Workspace::AgentRestart do
@@ -263,7 +263,7 @@ RSpec.describe "tmux calls of the pane desks" do
       verdict = desk.check("%5", store.get("%5"))
 
       expect(verdict).to have_attributes(answer: :go, mode: :restart)
-      expect(tmux.call_runs).to eq([:pane_details, :capture_screen_styled, :capture_screen, :server_pid_for_pane])
+      expect(tmux.call_runs).to eq([:pane_details, :capture_screen_scrollback, :capture_screen, :server_pid_for_pane])
     end
 
     it "lists the panes once, and reads nothing else, when tmux lists none" do

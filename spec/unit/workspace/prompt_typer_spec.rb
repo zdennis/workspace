@@ -49,6 +49,25 @@ RSpec.describe Workspace::PromptTyper do
     expect(typer.check("%5")).to include(reason: "no_input_prompt")
   end
 
+  it "accepts an idle box whose top rule is in scrollback and types the prompt" do
+    box_in_history = "────────\n❯ \n────────\n  status\n"
+    tmux.styled_screens = [[box_in_history, 1], [box_in_history.sub("❯ ", "❯ run the specs"), 1]]
+
+    result = type
+
+    expect(result.outcome).to eq(:submitted)
+    expect(pane.deliveries).to eq([{text: "run the specs", enter: false}, {text: "", enter: true}])
+  end
+
+  it "refuses when the only input box sits entirely in history rows" do
+    tmux.styled_screens = [["────────\n❯ \n────────\n  status\n  more\n", 3]]
+
+    result = type
+
+    expect(result.outcome).to eq(:refused)
+    expect(pane.deliveries).to be_empty
+  end
+
   it "takes the paste placeholder for a long paste as the text being there" do
     text = "step\n" * 50
     tmux.screens = [empty_prompt, "────────\n❯ [Pasted text #1 +50 lines]\n────────\n"]

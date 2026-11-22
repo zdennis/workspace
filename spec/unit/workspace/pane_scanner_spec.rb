@@ -101,13 +101,13 @@ RSpec.describe Workspace::PaneScanner do
     end
 
     it "reads the styled screen only with a question tool open" do
-      expect(tmux).not_to receive(:capture_screen_styled)
+      expect(tmux).not_to receive(:capture_screen_scrollback)
 
       refresh
     end
 
     it "closes a question whose dialog the screen proves gone, and says so on the error stream" do
-      allow(tmux).to receive(:capture_screen_styled).with("%2").and_return(fixture("question_closed_single"))
+      allow(tmux).to receive(:capture_screen_scrollback).with("%2").and_return(fixture("question_closed_single"))
       pane[:open_tools] = {"t1" => {tool: "AskUserQuestion", since: now}}
 
       refresh
@@ -118,8 +118,20 @@ RSpec.describe Workspace::PaneScanner do
       expect(err.string).to eq("workspace agent: question closed in %2 of proj: its dialog is gone from the screen\n")
     end
 
+    it "reads the question capture through the scrollback capture and hands it on whole" do
+      capture = Workspace::Tmux::StyledCapture.new(fixture("question_closed_single"), 2).freeze
+      allow(tmux).to receive(:capture_screen_scrollback).with("%2").and_return(capture)
+      pane[:open_tools] = {"t1" => {tool: "AskUserQuestion", since: now}}
+
+      refresh
+      refresh(now + Workspace::QuestionClosedCheck::HOLD)
+
+      expect(tmux).to have_received(:capture_screen_scrollback).with("%2").at_least(:once)
+      expect(pane[:open_tools]).to be_empty
+    end
+
     it "reads a styled capture that raises as no screen" do
-      allow(tmux).to receive(:capture_screen_styled).with("%2").and_raise(Workspace::Error, "no server")
+      allow(tmux).to receive(:capture_screen_scrollback).with("%2").and_raise(Workspace::Error, "no server")
       pane[:open_tools] = {"t1" => {tool: "AskUserQuestion", since: now}}
 
       refresh
@@ -226,7 +238,7 @@ RSpec.describe Workspace::PaneScanner do
       end
 
       def show(name)
-        allow(tmux).to receive(:capture_screen_styled).with("%2").and_return(fixture(name))
+        allow(tmux).to receive(:capture_screen_scrollback).with("%2").and_return(fixture(name))
       end
 
       def open_question(tool = "AskUserQuestion", id = "t1")
@@ -283,17 +295,17 @@ RSpec.describe Workspace::PaneScanner do
       end
 
       it "keeps the question open when the capture raises or comes back empty" do
-        allow(tmux).to receive(:capture_screen_styled).with("%2").and_raise(Workspace::Error, "no server")
+        allow(tmux).to receive(:capture_screen_scrollback).with("%2").and_raise(Workspace::Error, "no server")
         scans(3)
         expect(open_tools).to eq(["AskUserQuestion"])
 
-        allow(tmux).to receive(:capture_screen_styled).with("%2").and_return(nil)
+        allow(tmux).to receive(:capture_screen_scrollback).with("%2").and_return(nil)
         scans(3)
         expect(open_tools).to eq(["AskUserQuestion"])
       end
 
       it "keeps the question open when the capture is not valid UTF-8" do
-        allow(tmux).to receive(:capture_screen_styled).with("%2")
+        allow(tmux).to receive(:capture_screen_scrollback).with("%2")
           .and_return((+"────\n❯ \n────\ncaf\xE9\n").force_encoding("UTF-8"))
         scans(3)
         expect(open_tools).to eq(["AskUserQuestion"])
@@ -364,7 +376,7 @@ RSpec.describe Workspace::PaneScanner do
       end
 
       it "leaves a draft alone: the tool stays open and the pane refused" do
-        allow(tmux).to receive(:capture_screen_styled).with("%2").and_return("────────\n❯ half a thought\n────────\n")
+        allow(tmux).to receive(:capture_screen_scrollback).with("%2").and_return("────────\n❯ half a thought\n────────\n")
         scans(5)
 
         expect(open_tools).to eq(["AskUserQuestion"])
@@ -423,7 +435,7 @@ RSpec.describe Workspace::PaneScanner do
       it "reads the styled screen only while a question tool is open" do
         show("question_closed_single")
         scans(2)
-        expect(tmux).not_to receive(:capture_screen_styled)
+        expect(tmux).not_to receive(:capture_screen_scrollback)
 
         scans(3)
       end
