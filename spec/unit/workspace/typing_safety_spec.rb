@@ -266,6 +266,14 @@ RSpec.describe Workspace::TypingSafety do
       expect(safety.check(facts, screen)).to be_nil
     end
 
+    it "takes text on a 12-row screen whose idle box's top rule is one row into scrollback" do
+      visible = ["❯ ", "─" * 80, "  ? for shortcuts"] + Array.new(9, "")
+      screen = capture(["─" * 80] + visible, 1)
+
+      expect(visible.size).to eq(12)
+      expect(safety.check(facts, screen)).to be_nil
+    end
+
     it "refuses a prompt that is only in scrollback" do
       screen = capture(["────────────────────", "❯ ", "Do you want to proceed?", "  1. Yes", "  2. No"], 2)
 
