@@ -16,8 +16,12 @@ module DemoCalculator2
   GOAL_WORKFLOW_IDS = DEFINITION_IDS - [INTEGRATE_WORKFLOW_ID, INTEGRATE_MERGED_WORKFLOW_ID]
   # Lane A runs 01-05 and lane B 06 and 07, forked from lane A's head after goal 03 (`fork_after`).
   LANES = {a: %w[01-add-sub 02-mul-div 03-div-zero 04-precedence 05-mod-pow].freeze, b: %w[06-json 07-repl].freeze, fork_after: "03-div-zero"}.freeze
-  # Lane B's prompt names the goals "earlier" means, since its branch holds only 01-03. The goal documents are unchanged.
-  LANE_B_PROMPT = "Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05.".freeze
+  # Lane B's prompt names the goals "earlier" means, since its branch holds only 01-03. The goal documents are unchanged. Lane A
+  # adds 04 and 05 at the same time, so an expression lane B's tests expect to be unsupported must stay unsupported after the
+  # merge (p2, t2a and t3a2 used `2 % 3` and `2 ** 3`, which goal 05 makes work).
+  LANE_B_PROMPT = "Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05. " \
+    "Another lane is adding them now: several operators, parentheses, `%` and `**`. A test that expects `unsupported` must use an " \
+    "expression no goal supports, such as `2 & 3`, never one of those.".freeze
 
   # @param spec [String] comma-separated goal numbers or names, such as `01,03`
   # @return [Array<String>] those goals in GOALS order

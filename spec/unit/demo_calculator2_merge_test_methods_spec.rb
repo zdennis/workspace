@@ -45,8 +45,73 @@ RSpec.describe MergeTestMethods do
       .to raise_error(described_class::Conflict, /test_x/)
   end
 
-  it "conflicts when theirs changes a method of the ancestor" do
-    expect { described_class.merge(ancestor, ancestor, file(test_method("test_smoke", "refute true"))) }.to raise_error(described_class::Conflict, /test_smoke/)
+  it "takes theirs' change to a test method ours left as the ancestor had it" do
+    ours = file(smoke, test_method("test_mine"))
+    theirs = file(test_method("test_smoke", "refute false"))
+    expect(described_class.merge(ancestor, ours, theirs)).to eq(file(test_method("test_smoke", "refute false"), test_method("test_mine")))
+  end
+
+  it "conflicts when both sides change the same method differently" do
+    expect { described_class.merge(ancestor, file(test_method("test_smoke", "assert 1")), file(test_method("test_smoke", "assert 2"))) }
+      .to raise_error(described_class::Conflict, "both sides changed test_smoke (theirs changed it, ours changed it)")
+  end
+
+  it "keeps a method both sides changed the same way" do
+    same = file(test_method("test_smoke", "assert 1"))
+    expect(described_class.merge(ancestor, same, same)).to equal(same)
+  end
+
+  describe "helpers and requires (what lane B's --json and REPL goals add)" do
+    def helper(name, args, body) = "  def #{name}(#{args})\n    #{body}\n  end\n"
+
+    let(:run_calc) { helper("run_calc", "expression", "Open3.capture3(BIN, expression)") }
+    let(:ancestor) { file(run_calc, smoke) }
+
+    it "adds a new require after ours' last one, and a new helper before the final end" do
+      theirs = "require \"json\"\n" + file(run_calc, smoke, helper("run_repl", "input", "Open3.capture3(BIN, stdin_data: input)"), test_method("test_repl"))
+      merged = described_class.merge(ancestor, file(run_calc, smoke, test_method("test_mine")), theirs)
+      expect(merged).to eq("require \"minitest/autorun\"\nrequire \"json\"\n" +
+        file(run_calc, smoke, test_method("test_mine"), helper("run_repl", "input", "Open3.capture3(BIN, stdin_data: input)"), test_method("test_repl")).delete_prefix("require \"minitest/autorun\"\n"))
+    end
+
+    it "does not add a require ours already has" do
+      ours = "require \"json\"\n" + file(run_calc, smoke)
+      expect(described_class.merge(ancestor, ours, "require \"json\"\n" + file(run_calc, smoke))).to equal(ours)
+    end
+
+    it "takes theirs' widened helper when ours left it alone" do
+      wide = helper("run_calc", "*args", "Open3.capture3(BIN, *args)")
+      merged = described_class.merge(ancestor, file(run_calc, smoke, test_method("test_mine")), file(wide, smoke, test_method("test_json")))
+      expect(merged).to eq(file(wide, smoke, test_method("test_mine"), test_method("test_json")))
+    end
+
+    it "conflicts when both sides change the helper" do
+      ours = file(helper("run_calc", "x", "x"), smoke)
+      theirs = file(helper("run_calc", "*args", "args"), smoke)
+      expect { described_class.merge(ancestor, ours, theirs) }.to raise_error(described_class::Conflict, /both sides changed run_calc/)
+    end
+
+    it "treats a one-line endless helper as its own block, not part of the test after it" do
+      theirs = file(run_calc, smoke, "  def two = 2\n", test_method("test_b"))
+      merged = described_class.merge(ancestor, ancestor, theirs)
+      expect(merged.scan("def test_b").size).to eq(1)
+      expect(merged).to eq(file(run_calc, smoke, "  def two = 2\n", test_method("test_b")))
+    end
+
+    it "names a class method with its self., so two of them do not collide" do
+      theirs = file(run_calc, smoke, helper("self.a", "", "1"), helper("self.b", "", "2"))
+      expect(described_class.merge(ancestor, ancestor, theirs)).to eq(theirs)
+    end
+
+    it "conflicts when a def starts inside another method, as in a heredoc" do
+      theirs = file(run_calc, smoke, "  def test_text\n    <<~RUBY\n  def inner\n    RUBY\n  end\n")
+      expect { described_class.merge(ancestor, ancestor, theirs) }.to raise_error(described_class::Conflict, "inner starts inside test_text, so the methods cannot be told apart")
+    end
+
+    it "conflicts when theirs adds a require and ours has none to put it after" do
+      expect { described_class.merge(ancestor, "class CalcTest < Minitest::Test\n#{run_calc}#{smoke}end\n", "require \"json\"\n" + file(run_calc, smoke)) }
+        .to raise_error(described_class::Conflict, /no top-level require/)
+    end
   end
 
   it "conflicts when theirs defines the same new name twice" do
@@ -70,13 +135,38 @@ RSpec.describe MergeTestMethods do
     end
   end
 
-  it "conflicts when theirs removes a method of the ancestor" do
-    expect { described_class.merge(ancestor, ancestor, file) }.to raise_error(described_class::Conflict, /removed or changed/)
+  it "drops a method theirs removed and ours left alone, with its blank line" do
+    ancestor = file(smoke, test_method("test_old"), test_method("test_kept"))
+    ours = file(smoke, test_method("test_old"), test_method("test_kept"), test_method("test_mine"))
+    merged = described_class.merge(ancestor, ours, file(smoke, test_method("test_kept")))
+    expect(merged).to eq(file(smoke, test_method("test_kept"), test_method("test_mine")))
   end
 
-  it "conflicts when theirs adds a require or a class outside the methods" do
-    theirs = "require \"set\"\n" + file(smoke, test_method("test_new"))
-    expect { described_class.merge(ancestor, ancestor, theirs) }.to raise_error(described_class::Conflict, /outside the test methods/)
+  it "drops the last method of the class when theirs removed it, leaving a file that parses" do
+    ancestor = file(smoke, test_method("test_old"))
+    merged = described_class.merge(ancestor, ancestor, file(smoke))
+    expect(merged).to eq(file(smoke))
+  end
+
+  it "keeps out a method both sides removed" do
+    ancestor = file(smoke, test_method("test_old"))
+    expect(described_class.merge(ancestor, file(smoke, test_method("test_mine")), file(smoke))).to eq(file(smoke, test_method("test_mine")))
+  end
+
+  it "conflicts when theirs changes a method ours removed" do
+    ancestor = file(smoke, test_method("test_old"))
+    expect { described_class.merge(ancestor, file(smoke), file(smoke, test_method("test_old", "refute false"))) }
+      .to raise_error(described_class::Conflict, "both sides changed test_old (theirs changed it, ours removed it)")
+  end
+
+  it "conflicts when theirs removes a method ours changed" do
+    expect { described_class.merge(ancestor, file(test_method("test_smoke", "assert 1")), file) }
+      .to raise_error(described_class::Conflict, "both sides changed test_smoke (theirs removed it, ours changed it)")
+  end
+
+  it "conflicts when theirs adds a class or any other line outside the methods" do
+    theirs = file(smoke, test_method("test_new")) + "class Other\nend\n"
+    expect { described_class.merge(ancestor, ancestor, theirs) }.to raise_error(described_class::Conflict, /outside the methods/)
   end
 
   it "conflicts when the merged text does not parse" do
@@ -104,10 +194,11 @@ RSpec.describe MergeTestMethods do
     end
 
     it "returns 1, says why and leaves ours alone on a conflict" do
-      write(ancestor, ancestor, file)
+      ours = file(test_method("test_smoke", "assert 1"))
+      write(ancestor, ours, file(test_method("test_smoke", "assert 2")))
       expect(described_class.run(paths, err: err)).to eq(1)
-      expect(err.string).to include("merge_test_methods:")
-      expect(File.read(paths[1])).to eq(ancestor)
+      expect(err.string).to include("merge_test_methods: both sides changed test_smoke")
+      expect(File.read(paths[1])).to eq(ours)
     end
 
     it "returns 1 for a file it cannot read and 2 for the wrong argument count" do
