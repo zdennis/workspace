@@ -1,0 +1,88 @@
+#!/usr/bin/env ruby
+# A git merge driver for demo/calculator2/test/calc_test.rb: `merge_test_methods %O %A %B` (ancestor, ours, theirs).
+#
+# The result is ours with every test method that theirs added (a `def test_...` block and the comment lines right above it) put
+# before the test class's final `end`. It writes the result to %A and exits 0, or exits 1 and leaves %A alone when it cannot
+# do that safely: theirs changed or removed something the ancestor had, a method name is in both sides with different bodies,
+# theirs added anything outside a test method, or the result does not parse. Git then reports a conflict.
+module MergeTestMethods
+  Conflict = Class.new(StandardError)
+  Block = Struct.new(:name, :lines)
+
+  METHOD_START = /\A  def (test_\w+)/
+  METHOD_END = /\A  end\s*\z/
+
+  # @return [Array(Array<Block>, Array<String>)] the test method blocks of a file, and its other non-blank lines
+  def self.split(text)
+    lines = text.lines
+    blocks = []
+    taken = Array.new(lines.size, false)
+    lines.each_with_index do |line, index|
+      next unless (name = line[METHOD_START, 1])
+      finish = (index...lines.size).find { |at| lines[at].match?(METHOD_END) }
+      raise Conflict, "#{name} has no closing end at two spaces" unless finish
+      first = index
+      first -= 1 while first > 0 && lines[first - 1].start_with?("  #") && !taken[first - 1]
+      (first..finish).each { |at| taken[at] = true }
+      blocks << Block.new(name, lines[first..finish])
+    end
+    rest = lines.each_with_index.reject { |line, at| taken[at] || line.strip.empty? }.map(&:first)
+    [blocks, rest]
+  end
+
+  # @return [String] the merged file
+  # @raise [Conflict] when the merge is not just added methods
+  def self.merge(ancestor, ours, theirs)
+    base_blocks, base_rest = split(ancestor)
+    our_blocks, = split(ours)
+    their_blocks, their_rest = split(theirs)
+    raise Conflict, "theirs changed lines outside the test methods" unless their_rest == base_rest
+    twice = their_blocks.map(&:name).tally.find { |_, count| count > 1 }
+    raise Conflict, "theirs defines #{twice[0]} twice" if twice
+    theirs_by_name = their_blocks.to_h { |block| [block.name, block] }
+    base_blocks.each do |block|
+      same = theirs_by_name[block.name]
+      raise Conflict, "theirs removed or changed #{block.name}" unless same && same.lines == block.lines
+    end
+    ours_by_name = our_blocks.to_h { |block| [block.name, block] }
+    base_names = base_blocks.map(&:name)
+    added = their_blocks.reject { |block| base_names.include?(block.name) }
+    added.each do |block|
+      mine = ours_by_name[block.name]
+      raise Conflict, "#{block.name} is in both sides with different bodies" if mine && mine.lines != block.lines
+    end
+    added = added.reject { |block| ours_by_name.key?(block.name) }
+    return ours if added.empty?
+    lines = ours.lines
+    last = lines.rindex { |line| !line.strip.empty? }
+    raise Conflict, "ours has no final end" unless last && lines[last].match?(/\Aend\s*\z/)
+    head = lines[0...last]
+    head.pop while head.last&.strip&.empty?
+    head << "\n"
+    inserted = added.flat_map { |block| block.lines + ["\n"] }
+    inserted.pop
+    result = (head + inserted + lines[last..]).join
+    check_syntax!(result)
+    result
+  end
+
+  def self.check_syntax!(text)
+    RubyVM::InstructionSequence.compile(text)
+  rescue SyntaxError => e
+    raise Conflict, "the merged file does not parse: #{e.message.lines.first}"
+  end
+
+  # @return [Integer] exit status
+  def self.run(argv, err: $stderr)
+    return 2.tap { err.puts "usage: merge_test_methods ANCESTOR OURS THEIRS" } unless argv.size == 3
+    ancestor, ours, theirs = argv.map { |path| File.read(path) }
+    result = merge(ancestor, ours, theirs)
+    File.write(argv[1], result) unless result.equal?(ours)
+    0
+  rescue Conflict, SystemCallError => e
+    err.puts "merge_test_methods: #{e.message}"
+    1
+  end
+end
+
+exit MergeTestMethods.run(ARGV) if $PROGRAM_NAME == __FILE__
