@@ -299,6 +299,8 @@ RSpec.describe "script/demo-calculator2" do
       expect(File.read(info_attributes).lines.map(&:strip)).to include("demo/calculator2/test/calc_test.rb merge=union")
       record = JSON.parse(File.read(Dir.glob(File.join(work_dir, "tmp/demo-calculator2/runs/*/run.json")).first))
       branch = record["branch"]
+      expect(record.dig("out_exclude", "line")).to match(%r{\A/.+/\z})
+      expect(File.read(record.dig("out_exclude", "path")).lines.map(&:strip)).to include(record.dig("out_exclude", "line"))
       expect(record["lanes"]).to include("workflow" => "deliver-goal-fast", "fork_after" => "03-div-zero")
       expect(record["lanes"]["a"]).to eq("workspace" => "ws", "goals" => DemoCalculator2::LANES[:a])
       expect(record["lanes"]["b"]).to include("workspace" => "ws-b", "path" => lane_b_dir, "branch" => "#{branch}-b", "goals" => %w[06-json 07-repl], "items" => [])

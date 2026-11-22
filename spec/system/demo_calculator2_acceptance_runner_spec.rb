@@ -54,6 +54,20 @@ RSpec.describe "script/demo_calculator2/acceptance_runner", type: :system do
     expect(out).to include("(2 more failures not shown)")
   end
 
+  it "passes with files under a directory the shared info/exclude names, and refuses on any other untracked file" do
+    build_custom_repo(dir, ref, "require \"minitest/autorun\"\nclass G1 < Minitest::Test\n  def test_ok = assert(true)\nend\n")
+    FileUtils.mkdir_p(File.join(dir, ".git", "info"))
+    File.write(File.join(dir, ".git", "info", "exclude"), "/runs/w01/\n")
+    FileUtils.mkdir_p(File.join(dir, "runs", "w01"))
+    File.write(File.join(dir, "runs", "w01", "driver.log"), "x")
+    _, _, status = run_runner(runner, dir, "demo/calculator2/goals/01-x.md")
+    expect(status.exitstatus).to eq(0)
+    File.write(File.join(dir, "stray.txt"), "x")
+    out, _, status = run_runner(runner, dir, "demo/calculator2/goals/01-x.md")
+    expect(status.exitstatus).to eq(1)
+    expect(out).to include("untracked files present")
+  end
+
   it "exits 2 when the ref holds no test file for a group the goal asks for" do
     build_custom_repo(dir, ref, "require \"minitest/autorun\"\nclass G1 < Minitest::Test\n  def test_ok = assert(true)\nend\n")
     _, err, status = run_runner(runner, dir, "demo/calculator2/goals/02-y.md")

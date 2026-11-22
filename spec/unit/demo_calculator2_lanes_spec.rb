@@ -296,6 +296,17 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(calls.any? { |argv| argv[1, 4] == %w[work-queue add workflow integrate-branch] }).to be(true)
     end
 
+    it "prints the failing command and the last 40 lines of its output before queueing integrate-branch" do
+      output = (1..60).map { |n| "line #{n}\n" }.join
+      on(/acceptance_runner\z/) { [output, false] }
+      finished("int1")
+      lanes.integrate_run(record_path)
+      expect(out.string).to match(/first-pass check acceptance failed: .*acceptance_runner .*07-repl\.md/)
+      expect(out.string).to include("line 21\n", "line 60\n")
+      expect(out.string).not_to include("line 20\n")
+      expect(out.string.index("first-pass check acceptance failed")).to be < out.string.index("+ workspace work-queue add workflow integrate-branch")
+    end
+
     it "stops on the first failing check and runs no later one" do
       on("sh", "-c", "ruby demo/calculator2/test/calc_test.rb") { ["", false] }
       finished("int1")
@@ -336,6 +347,35 @@ RSpec.describe DemoCalculator2::Lanes do
     it "refuses a record that has no fork" do
       File.write(record_path, JSON.generate(record))
       expect { lanes.integrate_run(record_path) }.to raise_error(DemoCalculator::Refused, /has not forked/)
+    end
+  end
+
+  describe "#write_out_exclude" do
+    let(:common) { File.join(tmp, "common") }
+    let(:record_path) { File.join(tmp, "runs", "w01", "run.json").tap { |path| FileUtils.mkdir_p(File.dirname(path)) } }
+    let(:out_lanes) { lanes }
+    let(:exclude_path) { File.join(common, "info", "exclude") }
+
+    before do
+      on("git", "rev-parse", "--git-common-dir") { ["#{common}\n", true] }
+    end
+
+    it "adds an anchored line for the out directory once and records it in run.json" do
+      2.times { out_lanes.write_out_exclude(record_path) }
+      expect(File.read(exclude_path)).to eq("/runs/w01/\n")
+      expect(saved["out_exclude"]).to eq("path" => exclude_path, "line" => "/runs/w01/")
+      expect(saved["lanes"]).to eq(JSON.parse(JSON.generate(record["lanes"])))
+    end
+
+    it "writes nothing when the out directory is outside the checkout" do
+      elsewhere = Dir.mktmpdir
+      outside = File.join(elsewhere, "run.json")
+      File.write(outside, JSON.generate(record))
+      out_lanes.write_out_exclude(outside)
+      expect(File.exist?(exclude_path)).to be(false)
+      expect(JSON.parse(File.read(outside))).not_to have_key("out_exclude")
+    ensure
+      FileUtils.rm_rf(elsewhere)
     end
   end
 

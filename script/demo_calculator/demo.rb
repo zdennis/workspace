@@ -16,11 +16,18 @@ module DemoCalculator
   # @param out_dir [String, nil] the run's `--out` directory, relative to `checkout` when not absolute
   # @return [Array<String>] `["--", ":(exclude)<dir>"]`, or `[]` when `out_dir` is nil or lies outside `checkout`
   def self.out_dir_exclude(checkout, out_dir)
-    return [] if out_dir.nil?
+    rel = out_dir_relative(checkout, out_dir)
+    rel ? ["--", ":(exclude)#{rel}"] : []
+  end
+
+  # @param checkout [String]
+  # @param out_dir [String, nil] the run's `--out` directory, relative to `checkout` when not absolute
+  # @return [String, nil] the directory's path from `checkout`'s root, or nil when `out_dir` is nil or lies outside `checkout`
+  def self.out_dir_relative(checkout, out_dir)
+    return nil if out_dir.nil?
     root = real_path(checkout)
     dir = real_path(File.expand_path(out_dir, checkout))
-    return [] unless dir.start_with?(root + File::SEPARATOR)
-    ["--", ":(exclude)#{dir.delete_prefix(root + File::SEPARATOR)}"]
+    dir.start_with?(root + File::SEPARATOR) ? dir.delete_prefix(root + File::SEPARATOR) : nil
   end
 
   # Resolves symlinks in the part of a path that exists, so /var and /private/var compare equal.

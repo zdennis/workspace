@@ -87,6 +87,7 @@ module DemoCalculator2
         out_dir: @out_dir, clock: -> { started }, config: config)
       record = demo.run
       write_attributes
+      write_out_exclude(demo.record_path)
       if @dry_run
         say "would wait for lane A's #{fork_goal}, then in lane B: git checkout -B #{branch_b} <#{fork_goal}'s final head>, queue #{b_goals.join(", ")} and enable its queue"
         say "would then merge #{branch_b} in lane A and run the tests, lint and the plain acceptance runner on 07-repl (groups 1..7)"
@@ -169,15 +170,38 @@ module DemoCalculator2
     #
     # @return [void]
     def write_attributes
+      append_info_line("attributes", ATTRIBUTES_LINE)
+    end
+
+    # Adds an anchored line for the run's own output directory (`--out`, else the default under `tmp/`) to `info/exclude` in the shared git dir, once, so no process that
+    # checks a checkout for untracked files (the acceptance runner, integrate-branch) sees the run's log and record. Does nothing
+    # when that directory lies outside this checkout. The line is recorded in the run record as `out_exclude`.
+    #
+    # @param record_path [String, nil] the run.json to record the line in
+    # @return [void]
+    def write_out_exclude(record_path)
+      dir = record_path ? File.dirname(record_path) : @out_dir && File.expand_path(@out_dir, @root)
+      rel = DemoCalculator.out_dir_relative(@root, dir)
+      return unless rel
+      line = "/#{rel}/"
+      path = append_info_line("exclude", line)
+      return if @dry_run || record_path.nil?
+      @record_path = record_path
+      record = JSON.parse(File.read(record_path))
+      save(record.merge("out_exclude" => {"path" => path, "line" => line}))
+    end
+
+    def append_info_line(file, line)
       dir, ok = git(@root, "rev-parse", "--git-common-dir")
       raise DemoCalculator::Refused, "cannot find the shared git dir in #{@root}" unless ok
-      path = File.join(File.expand_path(dir.strip, @root), "info", "attributes")
-      say "+ add `#{ATTRIBUTES_LINE}` to #{path}"
-      return if @dry_run
+      path = File.join(File.expand_path(dir.strip, @root), "info", file)
+      say "+ add `#{line}` to #{path}"
+      return path if @dry_run
       existing = File.exist?(path) ? File.read(path) : ""
-      return if existing.lines.map(&:strip).include?(ATTRIBUTES_LINE)
+      return path if existing.lines.map(&:strip).include?(line)
       FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, existing + ((existing.empty? || existing.end_with?("\n")) ? "" : "\n") + ATTRIBUTES_LINE + "\n")
+      File.write(path, existing + ((existing.empty? || existing.end_with?("\n")) ? "" : "\n") + line + "\n")
+      path
     end
 
     # Runs the wait, the fork and the integration over a recorded run, as `run --wait` does after it queues, and prints the closing line.
@@ -450,8 +474,12 @@ module DemoCalculator2
         "acceptance" => [File.join(@root, ACCEPTANCE_RUNNER), "#{DEMO_DIR}/goals/07-repl.md"]
       }
       commands.each do |key, argv|
-        _, ok = @exec.call(argv, chdir: @root)
+        output, ok = @exec.call(argv, chdir: @root)
         integration[key] = ok
+        unless ok
+          say "first-pass check #{key} failed: #{argv.join(" ")}"
+          say output.to_s.lines.last(40).join.chomp
+        end
         return false unless ok
       end
       true
