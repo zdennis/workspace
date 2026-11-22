@@ -136,7 +136,7 @@ RSpec.describe DemoCalculator2::Lanes do
         %w[ws-bin work-queue enable --name ws-b], %w[ws-bin work-queue advance --name ws-b])
       adds = calls.select { |argv| argv[1, 2] == %w[work-queue add] }.select { |argv| argv.include?("--name") && argv.last == "ws-b" }
       expect(adds.map { |argv| argv[argv.index("--dedupe-key") + 1] }).to eq(%w[calculator2-demo:06-json calculator2-demo:07-repl])
-      expect(adds.map { |argv| argv[argv.index("--prompt") + 1] }).to all(include("Earlier goals here means 01, 02 and 03. This branch has no 04 or 05, so do not look for or build precedence, `%` or `**`."))
+      expect(adds.map { |argv| argv[argv.index("--prompt") + 1] }).to all(include("Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05."))
       expect(adds.flat_map { |argv| argv.each_cons(2).filter_map { |key, value| value if key == "--input" } }).to include("acceptance=script/demo_calculator2/acceptance_runner_lanes")
       expect(saved["fork"]).to include("sha" => "2" * 40, "acceptance_base" => base, "goal" => "03-div-zero", "item" => "a3")
       expect(saved["fork"]["at"]).to match(/\A2026-11-21T/)

@@ -15,7 +15,7 @@ module DemoCalculator2
   # Lane A runs 01-05 and lane B 06 and 07, forked from lane A's head after goal 03 (`fork_after`).
   LANES = {a: %w[01-add-sub 02-mul-div 03-div-zero 04-precedence 05-mod-pow].freeze, b: %w[06-json 07-repl].freeze, fork_after: "03-div-zero"}.freeze
   # Lane B's prompt names the goals "earlier" means, since its branch holds only 01-03. The goal documents are unchanged.
-  LANE_B_PROMPT = "Earlier goals here means 01, 02 and 03. This branch has no 04 or 05, so do not look for or build precedence, `%` or `**`.".freeze
+  LANE_B_PROMPT = "Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05.".freeze
 
   # @param spec [String] comma-separated goal numbers or names, such as `01,03`
   # @return [Array<String>] those goals in GOALS order
