@@ -152,6 +152,13 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(result["transitions"]).to include(a_hash_including("type" => "step_looped", "from" => "plan", "to" => "research"))
   end
 
+  it "refuses an on_fail goto from plan back to plan itself" do
+    text = File.read(path).sub("    max_attempts: 8\n", "    max_attempts: 8\n    on_fail: {goto: plan, max: 2, log_tail: 10, context: continue}\n")
+    expect(text).to include("on_fail: {goto: plan")
+    expect { Workspace::WorkflowDefinition.parse(text, id: "deliver-goal", source: "global", path: path, parent_lookup: lookup) }
+      .to raise_error(Workspace::Error) { |error| expect(error.details["problems"]).to include(%(step plan: on_fail goto must name an earlier step (research), got "plan")) }
+  end
+
   it "goes back to implement once when acceptance fails, then completes" do
     result = play("acceptance-fails-once")
     expect(result["outcome"]).to eq("completed")
