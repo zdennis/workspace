@@ -24,10 +24,10 @@ module Workspace
       TAIL_BYTES = 1_048_576
 
       # How long a restart waits for the old daemon's socket to stop answering.
-      DEFAULT_STOP_TIMEOUT = 5
+      DEFAULT_STOP_TIMEOUT = AgentDaemonStopper::DEFAULT_STOP_TIMEOUT
 
       # How long `lsof` gets to name the processes that have the socket open.
-      LSOF_TIMEOUT = 2
+      LSOF_TIMEOUT = AgentDaemonStopper::LSOF_TIMEOUT
 
       # How long `list` waits for each answering daemon to say its version.
       VERSION_TIMEOUT = 2
@@ -37,9 +37,6 @@ module Workspace
 
       # Seconds between reads while `watch` follows.
       WATCH_POLL_INTERVAL = 0.25
-
-      LSOF_COMMAND = %w[lsof -t].freeze
-      private_constant :LSOF_COMMAND
 
       # What a restart did. `outcome` is "restarted" (a daemon was stopped and
       # a new one answers), "started" (none was running, one answers now) or
@@ -67,6 +64,8 @@ module Workspace
       # @param ensure_agent [Workspace::Commands::EnsureAgent] starts the new daemon, detached, under its lock
       # @param process_tree [Workspace::ProcessTree] confirms a pid is an `agentd` process before it is signalled
       # @param version_client [Workspace::AgentSnapshotClient] asks an answering daemon which version it runs
+      # @param stopper [Workspace::AgentDaemonStopper, nil] stops and finds the daemon; nil builds one from the
+      #   +process_tree+, +pid_finder+, +signaller+, +clock+, +stop_timeout+, +lsof_command+ and +lsof_timeout+ given here
       # @param pid_finder [#call] `(socket_path)` returns the pids with the socket open,
       #   or nil when it couldn't find out in time
       # @param signaller [#call] `(signal, pid)`; raises Errno::ESRCH when the process is gone
@@ -78,9 +77,9 @@ module Workspace
       # @param watch_factory [#call, nil] `(workspace:, run:)` builds the {Workspace::DaemonWatch} that `watch` follows; nil refuses `watch`
       # @param wall_clock [#now] time source, for the watch's first and last lines
       # @param output [IO]
-      def initialize(config:, project_config:, ensure_agent:, version_client:, watch_factory: nil, wall_clock: Time, process_tree: ProcessTree.new, pid_finder: method(:lsof_pids), signaller: Process.method(:kill),
+      def initialize(config:, project_config:, ensure_agent:, version_client:, watch_factory: nil, wall_clock: Time, process_tree: ProcessTree.new, stopper: nil, pid_finder: nil, signaller: Process.method(:kill),
         sleeper: ->(seconds) { sleep(seconds) }, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
-        stop_timeout: DEFAULT_STOP_TIMEOUT, lsof_command: LSOF_COMMAND, lsof_timeout: LSOF_TIMEOUT, output: $stdout)
+        stop_timeout: DEFAULT_STOP_TIMEOUT, lsof_command: nil, lsof_timeout: LSOF_TIMEOUT, output: $stdout)
         @config = config
         @project_config = project_config
         @ensure_agent = ensure_agent
@@ -88,13 +87,10 @@ module Workspace
         @version_client = version_client
         @watch_factory = watch_factory
         @wall_clock = wall_clock
-        @pid_finder = pid_finder
-        @signaller = signaller
         @sleeper = sleeper
-        @clock = clock
         @stop_timeout = stop_timeout
-        @lsof_command = lsof_command
-        @lsof_timeout = lsof_timeout
+        @stopper = stopper || AgentDaemonStopper.new(config: config, process_tree: process_tree, pid_finder: pid_finder, signaller: signaller,
+          sleeper: sleeper, clock: clock, stop_timeout: stop_timeout, lsof_timeout: lsof_timeout, **{lsof_command: lsof_command}.compact)
         @output = output
       end
 
@@ -260,7 +256,7 @@ module Workspace
         # second one beside it would help nobody.
         pids = socket_pids(name)
         unless pids
-          return failed("not_stopped", nil, "lsof did not answer within #{@lsof_timeout}s, so the process holding the socket " \
+          return failed("not_stopped", nil, "lsof did not answer within #{@stopper.lsof_timeout}s, so the process holding the socket " \
             "for #{name} can't be identified; nothing was stopped. Run it again: workspace daemon restart #{name}")
         end
 
@@ -273,17 +269,17 @@ module Workspace
 
         old_pid = pids.first
         if old_pid
-          words = agentd_words(name, old_pid)
-          return words if words.is_a?(Result)
+          holder = @stopper.holder(name, old_pid)
+          return holder_refusal(name, old_pid, holder) if holder.refusal
 
-          wc_socket ||= old_wc_socket(words, name)
+          wc_socket ||= old_wc_socket(holder.words, name)
           if wc_socket == :unknown
             return failed("wc_socket_unknown", old_pid, "the daemon for #{name} (pid #{old_pid}) was started with a --wc-socket " \
               "whose path can't be read back from its command line (a relative path, or one with a space); nothing was stopped. " \
               "Name the socket for the new daemon: workspace daemon restart #{name} --wc-socket PATH")
           end
 
-          stopped = stop(name, old_pid, wc_socket)
+          stopped = stop_failure(name, old_pid, wc_socket, @stopper.terminate(name, old_pid))
           return stopped if stopped
         end
 
@@ -410,22 +406,6 @@ module Workspace
         raise Workspace::Error.new("Unknown workspace '#{name}'", code: "unknown_workspace", details: {"name" => name})
       end
 
-      # Refuses unless the process holding the socket is an `agentd`, so a
-      # reused pid or an unrelated process that opened the socket is never signalled.
-      #
-      # @return [Array<String>, Result] the daemon's command line, or the refusal
-      def agentd_words(name, pid)
-        entry = @process_tree.snapshot.find(pid)
-        words = entry ? entry[:args].to_s.split : []
-        return words if words.drop(1).include?("agentd")
-
-        described = entry ? "is running #{entry[:args].to_s[0, 80].inspect}" : "is not in the process table"
-        failed("not_agentd", pid, "pid #{pid} holds the socket for #{name} but #{described}, not `workspace agentd`; " \
-          "not signalling it. Stop it by hand and run: workspace agentd --ensure --name #{name}")
-      rescue Workspace::Error => e
-        failed("not_stopped", pid, "couldn't confirm pid #{pid} is the daemon for #{name}: #{e.message}")
-      end
-
       # The `--wc-socket` a daemon was started with, from its command line as
       # `ps` prints it: words joined by spaces, so a path with a space in it
       # can't always be told from a path followed by a workspace name or
@@ -461,36 +441,6 @@ module Workspace
           "workspace daemon restart #{name} --wc-socket #{wc_socket}"
       end
 
-      def stop(name, pid, wc_socket)
-        begin
-          @signaller.call("TERM", pid)
-        rescue Errno::ESRCH
-          # already gone
-        rescue SystemCallError => e
-          return failed("not_stopped", pid, "couldn't stop the daemon for #{name} (pid #{pid}): #{e.message}", wc_socket)
-        end
-        deadline = @clock.call + @stop_timeout
-        while @config.agent_running?(name) || alive?(pid)
-          if @clock.call >= deadline
-            return failed("not_stopped", pid, "the daemon for #{name} (pid #{pid}) was still running #{@stop_timeout}s after SIGTERM. " \
-              "It may still exit: check `workspace daemon status #{name}`, then run `workspace daemon restart #{name}` again" \
-              "#{retry_hint(name, wc_socket)}", wc_socket)
-          end
-
-          @sleeper.call(0.1)
-        end
-        nil
-      end
-
-      def alive?(pid)
-        @signaller.call(0, pid)
-        true
-      rescue Errno::ESRCH
-        false
-      rescue SystemCallError
-        true
-      end
-
       def start(name, wc_socket, old_pid)
         result = @ensure_agent.call(name: name, wc_socket: wc_socket)
         case result.status
@@ -508,32 +458,41 @@ module Workspace
         end
       end
 
-      def failed(reason, old_pid, message, wc_socket = nil)
-        Result.new("failed", old_pid, nil, reason, message, wc_socket)
+      def holder_refusal(name, pid, holder)
+        case holder.refusal
+        when :not_agentd
+          failed("not_agentd", pid, "pid #{pid} holds the socket for #{name} but #{holder.detail}, not `workspace agentd`; " \
+            "not signalling it. Stop it by hand and run: workspace agentd --ensure --name #{name}")
+        when :other_workspace
+          failed("not_stopped", pid, "pid #{pid} holds the socket for #{name} but is the agentd for #{holder.detail}; " \
+            "not signalling it. Stop it by hand and run: workspace agentd --ensure --name #{name}")
+        else
+          failed("not_stopped", pid, "couldn't confirm pid #{pid} is the daemon for #{name}: #{holder.detail}")
+        end
+      end
+
+      # @return [Result, nil] the failure a stopper result means for a restart, nil when the old daemon is gone
+      def stop_failure(name, pid, wc_socket, result)
+        case result.status
+        when :refused
+          failed("not_stopped", pid, result.message, wc_socket)
+        when :timed_out
+          failed("not_stopped", pid, "the daemon for #{name} (pid #{pid}) was still running #{@stopper.stop_timeout}s after SIGTERM. " \
+            "It may still exit: check `workspace daemon status #{name}`, then run `workspace daemon restart #{name}` again" \
+            "#{retry_hint(name, wc_socket)}", wc_socket)
+        end
       end
 
       def find_pid(name)
-        pids = socket_pids(name)
-        (pids&.size == 1) ? pids.first : nil
+        @stopper.find_pid(name)
       end
 
-      # @return [Array<Integer>, nil] nil when the finder couldn't answer in time
       def socket_pids(name)
-        found = @pid_finder.call(socket_path_on_disk(@config.agent_socket_path(name)))
-        found && (Array(found).map(&:to_i).select(&:positive?).uniq - [Process.pid])
+        @stopper.socket_pids(name)
       end
 
-      # The socket as the file system spells it (this is only for `lsof`, which matches paths exactly).
-      # A daemon started as `notes` for
-      # the config `Notes` made `notes.sock`, and `lsof` matches a path exactly.
-      def socket_path_on_disk(path)
-        entries = Dir.children(File.dirname(path))
-        return path if entries.include?(File.basename(path))
-
-        found = entries.find { |entry| WorkspaceName.same?(entry, File.basename(path)) }
-        found ? File.join(File.dirname(path), found) : path
-      rescue SystemCallError
-        path
+      def failed(reason, old_pid, message, wc_socket = nil)
+        Result.new("failed", old_pid, nil, reason, message, wc_socket)
       end
 
       # @return [Array<String>, nil] the last +count+ lines, nil when there is no log
@@ -551,36 +510,6 @@ module Workspace
         nil
       rescue SystemCallError => e
         raise Workspace::Error, "Can't read #{path}: #{e.message}"
-      end
-
-      # Waits at most @lsof_timeout for `lsof`, so one that hangs (a dead
-      # network mount is the usual cause) can't stall `status` or a restart.
-      # On timeout the child is killed and reaped.
-      #
-      # @return [Array<Integer>, nil] the pids; empty when lsof is missing or
-      #   found none; nil when it didn't answer in time
-      def lsof_pids(socket_path)
-        reader, writer = IO.pipe
-        pid = Process.spawn(*@lsof_command, socket_path, in: File::NULL, out: writer, err: File::NULL)
-        waiter = Process.detach(pid)
-        writer.close
-        output = Thread.new { reader.read }.tap { |thread| thread.report_on_exception = false }
-        return nil unless waiter.join(@lsof_timeout)
-
-        output.value.split.map(&:to_i)
-      rescue SystemCallError
-        []
-      ensure
-        if waiter&.alive?
-          begin
-            Process.kill(:KILL, pid)
-          rescue Errno::ESRCH
-            nil
-          end
-          waiter.join
-        end
-        output&.kill&.join
-        [reader, writer].each { |io| io.close if io && !io.closed? }
       end
     end
   end

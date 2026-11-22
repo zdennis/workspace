@@ -111,6 +111,7 @@ require_relative "workspace/tmuxinator_report"
 require_relative "workspace/session_workspace"
 require_relative "workspace/delivery_log"
 require_relative "workspace/process_tree"
+require_relative "workspace/agent_daemon_stopper"
 require_relative "workspace/liveness"
 require_relative "workspace/window_liveness"
 require_relative "workspace/agent_readiness"
@@ -1002,9 +1003,11 @@ module Workspace
     workflow_run_loader = WorkflowRunLoader.new(store: workflow_store)
     workflow_stats = WorkflowStats.new(store: workflow_store, loader: workflow_run_loader)
     workflow_compare = WorkflowCompare.new(loader: workflow_run_loader)
-    daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
+    daemon_process_tree = ProcessTree.new(logger: logger)
+    agent_daemon_stopper = AgentDaemonStopper.new(config: config, process_tree: daemon_process_tree)
+    daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client, stopper: agent_daemon_stopper,
       watch_factory: ->(workspace:, run:) { DaemonWatch.new(workspace: workspace, run: run, store: workflow_store, stream: EventStream.new(lifecycle_path: nil, hook_dir: config.hook_events_dir, workspace: workspace)) },
-      process_tree: ProcessTree.new(logger: logger), output: output)
+      process_tree: daemon_process_tree, output: output)
     # Built before the engine: the review round waits for its window's agent through it, and a fan_out sibling's
     # author pane is split through it.
     pane_dispatch = PaneDispatch.new(snapshot_client: agent_snapshot_client, sender: send_command, binder: binding_command, library: library,
