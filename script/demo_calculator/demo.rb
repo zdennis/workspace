@@ -9,6 +9,34 @@ require_relative "wait"
 module DemoCalculator
   class Refused < StandardError; end
 
+  # The git pathspec that leaves a run's own `--out` directory out of a clean-tree check, so the run's log and record
+  # do not make its checkout look dirty. Only that directory: any other file still counts.
+  #
+  # @param checkout [String] the checkout whose status is read
+  # @param out_dir [String, nil] the run's `--out` directory, relative to `checkout` when not absolute
+  # @return [Array<String>] `["--", ":(exclude)<dir>"]`, or `[]` when `out_dir` is nil or lies outside `checkout`
+  def self.out_dir_exclude(checkout, out_dir)
+    return [] if out_dir.nil?
+    root = real_path(checkout)
+    dir = real_path(File.expand_path(out_dir, checkout))
+    return [] unless dir.start_with?(root + File::SEPARATOR)
+    ["--", ":(exclude)#{dir.delete_prefix(root + File::SEPARATOR)}"]
+  end
+
+  # Resolves symlinks in the part of a path that exists, so /var and /private/var compare equal.
+  #
+  # @param path [String]
+  # @return [String]
+  def self.real_path(path)
+    missing = []
+    existing = File.expand_path(path)
+    until File.exist?(existing)
+      missing.unshift(File.basename(existing))
+      existing = File.dirname(existing)
+    end
+    File.join(File.realpath(existing), *missing)
+  end
+
   # One demo workspace: the checkout this script sits in, and the commands that drive it.
   class Demo
     # @return [String, nil] where `run` wrote run.json; nil before it did, and under `dry_run`
@@ -191,7 +219,7 @@ module DemoCalculator
     def name_args = @name ? ["--name", @name] : []
 
     def preflight(branch)
-      raise Refused, "the working tree has uncommitted changes: commit or discard them first" unless git("status", "--porcelain").empty?
+      raise Refused, "the working tree has uncommitted changes: commit or discard them first" unless git("status", "--porcelain", *DemoCalculator.out_dir_exclude(@root, @out_dir)).empty?
       _, status = Open3.capture2("git", "-C", @root, "rev-parse", "--verify", "--quiet", "refs/heads/#{branch}")
       raise Refused, "branch #{branch} already exists" if status.success?
       current = git("rev-parse", "--abbrev-ref", "HEAD")

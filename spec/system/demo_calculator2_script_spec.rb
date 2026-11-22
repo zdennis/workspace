@@ -349,6 +349,32 @@ RSpec.describe "script/demo-calculator2" do
         refused_before_anything_changes("uncommitted changes")
       end
 
+      it "allows files under --out inside lane A's checkout, and leaves them out of the run's commits" do
+        FileUtils.mkdir_p(File.join(work_dir, "runs/w01"))
+        File.write(File.join(work_dir, "runs/w01/driver.log"), "log\n")
+        expect(main(*lane_args, "--out", "runs/w01")).to eq(0), err.string
+        expect(git(work_dir, "log", "--format=%H", "--name-only")).not_to include("runs/")
+      end
+
+      it "allows files under an absolute --out inside lane B's checkout" do
+        FileUtils.mkdir_p(File.join(lane_b_dir, "runs"))
+        File.write(File.join(lane_b_dir, "runs/x.log"), "log\n")
+        expect(main(*lane_args, "--out", File.join(lane_b_dir, "runs"))).to eq(0), err.string
+      end
+
+      it "still refuses another untracked file in lane A's checkout when --out is inside it" do
+        FileUtils.mkdir_p(File.join(work_dir, "runs/w01"))
+        File.write(File.join(work_dir, "stray.txt"), "x")
+        expect(main(*lane_args, "--out", "runs/w01")).to eq(1)
+        expect(err.string).to include("uncommitted changes")
+      end
+
+      it "still refuses another untracked file in lane B's checkout when --out is outside it" do
+        File.write(File.join(lane_b_dir, "stray.txt"), "x")
+        expect(main(*lane_args, "--out", "runs/w01")).to eq(1)
+        expect(err.string).to include("uncommitted changes")
+      end
+
       it "refuses a checkout that is past main" do
         File.write(File.join(lane_b_dir, "extra.txt"), "x")
         git(lane_b_dir, "add", "extra.txt")
