@@ -210,6 +210,7 @@ New per-file detail goes there, never here.
 
 - `bin/workspace` — Entry point; calls `Workspace.build_cli.run(ARGV)`.
 - `lib/workspace.rb` — Module root and the `build_cli` composition root, plus the public `build_agentd_parts`, `build_agent_daemon` and `build_workflow_engine` builders.
+- `lib/workspace/errors.rb` — `Workspace::Error` and its subclasses (`UsageError`, `ConfigParseError`, `UnsavedWorkError`), carrying the stable `code`, `details` and `retry` of the `--json` error envelope; loads alone.
 - `lib/workspace/cli.rb` — CLI dispatch, OptionParser definitions and simple command methods; routes verbs to family parsers.
 - `lib/workspace/cli/invocation.rb` — `CLI::Invocation`, the frozen value of one run (streams, exit handler, flags, env).
 - `lib/workspace/cli/common.rb` — `CLI::Common`, the shared output, exit, help, JSON-error and editor helpers.
@@ -221,6 +222,8 @@ New per-file detail goes there, never here.
 - `lib/workspace/cli/workflow.rb` — `CLI::Workflow`, the `workflow` and `step` verb family parser.
 - `lib/workspace/cli/agent.rb` — `CLI::Agent`, the `agent`, `agentd`, `daemon`, `sessions` and `review` verb family parser.
 - `lib/workspace/cli/agent_run.rb` — `CLI::AgentRun`, the `agent-run` and `handoff` verb family parser.
+- `lib/workspace/cli/session_event_wiring.rb` — `CLI::SessionEventWiring.build`, the one construction of `Commands::SessionEvent` and its guards, which takes the objects `build_cli` shares and builds the rest, without needing `lib/workspace.rb`.
+- `lib/workspace/cli/session_event_entry.rb` — The fast `session-event` path `bin/workspace` takes before loading `lib/workspace`: checks the argv, loads only the hook's files and builds the command through `SessionEventWiring`, passing SessionStart, SessionEnd and PermissionRequest to the full CLI.
 - `lib/workspace/cli/pipeline.rb` — `CLI::Pipeline`, the deprecated `pipeline` verb family.
 - `lib/workspace/cli/plan_spine.rb` — `CLI::PlanSpine`, the `plan`, `spine`/`journey` and `goal` verb family parser.
 - `lib/workspace/help_pages.rb` — Data-only help pages for the verbs that share one option parser.
@@ -322,6 +325,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/commands/sessions.rb` — Shows which panes in a workspace are running a coding agent, whether each is working, idle, or waiting on a person, and what sub-agents they have started.
 - `lib/workspace/commands/wait_until_content.rb` — Polls a tmux pane's scrollback until it contains a target string, then execs a follow-up command so it replaces this process and owns the terminal (direct Ctrl-C, untouched STDIN/STDOUT/STDERR).
 - `lib/workspace/session_workspace.rb` — The one map from a tmux session to the workspace whose agentd owns it.
+- `lib/workspace/tmuxinator_config_names.rb` — Lists the sorted workspace names that have a tmuxinator config, template files left out; a stand-in for `ProjectConfig` where only `available_projects` is needed.
 - `lib/workspace/tmux_pane.rb` — Resolves a pane specification to a tmux pane index.
 - `lib/workspace/transcript_label.rb` — Reads the title and last prompt Claude Code keeps in a session's transcript, so `sessions --json` can label a pane by what it is doing.
 - `lib/workspace/scan_slot_limiter.rb` — Bounds how many session monitors scan at once, machine-wide.
@@ -424,6 +428,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it.
 - `lib/workspace/prompt_input.rb` — Wraps input and refuses prompts under `--no-input`.
 - `lib/workspace/core/duration.rb` — Parses duration strings like `5m` and `1h`.
+- `lib/workspace/core/deferred.rb` — `Deferred.new { ... }` builds a costly object on its first method call, then passes every call to it; the block runs at most once.
 - `lib/workspace/core/next_action.rb` — Builds the `{action, args, needs}` next-action entries that status documents carry.
 - `lib/workspace/core/file_lock.rb` — Advisory `flock` on a sidecar lock file.
 - `lib/workspace/core/atomic_file.rb` — Atomic file write through a temp file and rename.
@@ -436,6 +441,8 @@ New per-file detail goes there, never here.
 - `script/boundary-baseline` — Rewrites the dependency-direction allow-list from the current tree.
 - `spec/unit/dependency_direction_spec.rb` — Checks the tree against the dependency-direction rules and the allow-list.
 - `lib/workspace/terminal_text.rb` — The one escaper for text printed to a terminal.
+- `script/hook-timeline` — Times a headless Claude Code session's hooks through logging shims and prints per-hook medians, the PreToolUse-to-PostToolUse gap X and the predicted Read delta.
+- `script/hook-latency` — Prints n, median and p90 of a workspace's tool_started-to-tool_finished delta from its hook event log, or with `--process N` the median wall time of `session-event` run in a throwaway HOME.
 
 - State tracked in `~/.workspace-state.json`
 - Configs installed to `~/.config/tmuxinator/`
@@ -544,7 +551,7 @@ init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, 
 ## Dependency Injection
 
 - All collaborators are injected via keyword arguments in `initialize`
-- `Workspace.build_cli` is the sole composition root — all object construction happens there
+- `Workspace.build_cli` is the sole composition root — all object construction happens there. The one exception is the fast `session-event` path (`CLI::SessionEventEntry`), which builds its own few collaborators and shares the guard construction with `build_cli` through `CLI::SessionEventWiring.build`; nothing else may add a root
 - Command objects are pre-built in `build_cli` and passed to CLI; CLI never constructs commands
 - IO streams (`output:`, `error_output:`, `input:`) are injectable on every class that produces output
 - `exit_handler:` is injectable on CLI (defaults to `Kernel`, tests use `FakeExitHandler`)

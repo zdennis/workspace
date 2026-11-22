@@ -12,7 +12,7 @@ module Workspace
     OPTION = "@workspace"
 
     # @param tmux [Workspace::Tmux] reads the session option and each config's session name
-    # @param project_config [Workspace::ProjectConfig] lists the configs the fallback looks through
+    # @param project_config [#available_projects] lists the configs the fallback looks through ({ProjectConfig} or {TmuxinatorConfigNames})
     # @param config [Workspace::Config] tells whether a daemon already listens under the session's own name
     # @param on_ambiguous [#call, nil] given the session and the config names that all claim it
     def initialize(tmux:, project_config:, config:, on_ambiguous: nil)

@@ -12,6 +12,10 @@ module Workspace
     # every message.
     VERSION = 1
 
+    # Longest notification or waiting message kept. A long one is cut rather
+    # than dropped.
+    MAX_MESSAGE_LENGTH = 200
+
     COMMAND = "command"
     INJECT = "inject"
     RESTART_AGENT = "restart_agent"
