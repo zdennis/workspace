@@ -327,8 +327,10 @@ module Workspace
         @project_settings.remove(project)
         # EventLog#record never raises.
         @event_log&.record(type: "worktree_finished", project: project, data: {"workspace" => project, "outcome" => "pruned"})
-        @stop_command.call([project], session_names: {project => session_name}.compact, socket_arguments: {project => socket}.compact) if @state[project]
-        stop_agent_daemon(project)
+        in_state = @state[project]
+        @stop_command.call([project], session_names: {project => session_name}.compact, socket_arguments: {project => socket}.compact) if in_state
+        # Stop stops the daemon of a project it ran for; one that was not in state gets it here.
+        stop_agent_daemon(project) unless in_state
         # Stop already removed a live entry; deleting again would log a second state_removed.
         @state.delete(project) if @state[project]
         {outcome: "removed"}

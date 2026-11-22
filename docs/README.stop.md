@@ -24,6 +24,8 @@ Headless workspaces are skipped, and so is a workspace with no recorded id when 
 
 A `stop` or `kill` run from a pane inside a session it ends dies with that session. Windows are closed only after every session is killed, so with `--all` or several names every target's window stays open, and targets after that session in the list may keep running. Close them by hand.
 
+Before the sessions are killed, `stop` stops each target's agent daemon (before, because a `stop` run inside one of those sessions ends with it), found from its name alone, and prints `Stopped agent daemon for P (pid N)` (not with `--quiet`); nothing is printed when none was running. A project you name is treated this way even when it is not in the state file, so `workspace stop NAME` on an already-stopped workspace still ends a daemon it left behind; with no name or `--all`, only the projects in state are. A daemon that could not be stopped, or is not safe to signal, is a `Warning:` on stderr naming `workspace daemon status P`, is added to `--json` `warnings`, and changes neither the rows nor the exit code. `relaunch` and `projects stop` do the same, and `kill` and `prune` stop it through `stop` too (`prune` stops it by name itself for a workspace no longer in state).
+
 Projects can be restarted with `workspace launch`.
 
 Every AppleScript call goes through the osascript runner with a time limit. A failure never changes the exit code. `stop` still removes the entries from the state file and kills the tmux sessions, prints one of these warnings to stderr, and leaves the window open (close it by hand):

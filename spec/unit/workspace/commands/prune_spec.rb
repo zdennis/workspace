@@ -784,19 +784,24 @@ RSpec.describe Workspace::Commands::Prune do
       pr_table[["feature/daemon", project_root]] = {number: 13, url: "u", state: "MERGED"}
     end
 
-    it "stops the daemon by name after the stop command when the workspace is in state" do
+    it "leaves the daemon to Stop, and does not stop it again, when the workspace is in state" do
       state["wt-daemon"] = {"unique_id" => "x"}
 
       daemon_command.call_structured(names: ["wt-daemon"])
 
-      expect(calls).to eq([[:stop], [:daemon, "wt-daemon"]])
-      expect(output.string).to include("Stopped agent daemon for wt-daemon (pid 4242)")
+      expect(calls).to eq([[:stop]])
     end
 
     it "stops the daemon when the workspace is not in state" do
       daemon_command.call_structured(names: ["wt-daemon"])
 
       expect(calls).to eq([[:daemon, "wt-daemon"]])
+    end
+
+    it "says so when the daemon it stopped for a workspace not in state was running" do
+      daemon_command.call_structured(names: ["wt-daemon"])
+
+      expect(output.string).to include("Stopped agent daemon for wt-daemon (pid 4242)")
     end
 
     it "prints nothing when no daemon was running" do
@@ -816,6 +821,7 @@ RSpec.describe Workspace::Commands::Prune do
       expect(rows.map { |r| r["outcome"] }).to eq(["removed"])
       expect(error_output.string).to include("Warning: it is not agentd")
       expect(error_output.string).to include("workspace daemon status wt-daemon")
+      expect(error_output.string.scan("Warning:").size).to eq(1)
     end
 
     it "skips the daemon when no stopper is given" do

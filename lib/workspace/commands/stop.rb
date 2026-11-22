@@ -17,9 +17,10 @@ module Workspace
       #   window after its session is killed; nil closes no window
       # @param launch_mode [Workspace::LaunchMode, nil] tells whether an entry with no recorded session uid
       #   is headless; nil treats such an entry as having no window
+      # @param daemon_stopper [#call, nil] `(name:)` stops a workspace's agent daemon, in state or not; nil skips
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(state:, iterm:, window_manager:, tmux:, window_positions: nil, gateway_closer: nil, launch_mode: nil, output: $stdout, error_output: $stderr)
+      def initialize(state:, iterm:, window_manager:, tmux:, window_positions: nil, gateway_closer: nil, launch_mode: nil, daemon_stopper: nil, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
         @window_manager = window_manager
@@ -27,16 +28,21 @@ module Workspace
         @window_positions = window_positions
         @gateway_closer = gateway_closer
         @launch_mode = launch_mode
+        @daemon_stopper = daemon_stopper
         @output = output
         @error_output = error_output
         @warnings = []
       end
 
-      # @return [Array<String>] the gateway closer's sentences about what the latest {#call} could not
-      #   do (iTerm2 not answering in time, a window left open)
+      # @return [Array<String>] the sentences about what the latest {#call} could not do (iTerm2 not
+      #   answering in time, a window left open, an agent daemon that would not stop)
       attr_reader :warnings
 
       # Stops the specified projects (or all active projects if none specified).
+      #
+      # Each target's agent daemon is stopped by name after its session is killed. A project named in
+      # +projects+ has its daemon stopped even when it is not in state (an already-stopped workspace
+      # still leaves one running); with no names, only the entries in state are stopped.
       #
       # The state entries are removed and saved before any tmux session is
       # killed: the caller may be running inside one of those sessions, and
@@ -61,6 +67,7 @@ module Workspace
 
         if @state.empty?
           out.puts "No active workspace projects."
+          stop_agent_daemons(projects, out)
           return []
         end
 
@@ -68,6 +75,7 @@ module Workspace
 
         if targets.empty?
           out.puts "No matching workspace projects to stop."
+          stop_agent_daemons(projects, out)
           return []
         end
 
@@ -81,6 +89,8 @@ module Workspace
         @state.save
 
         out.puts "Stopped #{killed_projects.size} project(s): #{killed_projects.join(", ")}"
+        # Before the sessions go: a stop run inside one of them ends when its session is killed.
+        stop_agent_daemons(targets | projects, out)
         kill_tmux_sessions(targets, out, session_names, socket_arguments)
         close_windows(windowed, snapshot, window_session_names, out) unless windowed.empty?
         killed_projects
@@ -130,6 +140,19 @@ module Workspace
             out.puts "Killing tmux session: #{session_name}"
             @tmux.kill_session(session_name, project: project, socket: socket)
           end
+        end
+      end
+
+      def stop_agent_daemons(names, out)
+        return unless @daemon_stopper
+        names.each do |name|
+          result = @daemon_stopper.call(name: name)
+          notice = result.notice(name)
+          out.puts notice if notice
+          warning = result.warning(name)
+          next unless warning
+          @warnings << warning.delete_prefix("Warning: ")
+          Warn.puts(@error_output, warning)
         end
       end
 

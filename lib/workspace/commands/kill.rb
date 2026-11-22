@@ -10,9 +10,7 @@ module Workspace
       # @param git [Workspace::Git] git operations
       # @param project_config [Workspace::ProjectConfig] config management
       # @param stop_command [Commands::Stop] stop command for session teardown
-      # @param daemon_stopper [#call, nil] `(name:)` stops the workspace's agent daemon, in state or not; nil skips
       # @param output [IO] output stream for user-facing messages
-      # @param error_output [IO] where a daemon that could not be stopped is warned about
       # @param task_store [Workspace::TaskStore, nil] archives the project's task
       #   once its worktree is removed; nil leaves tasks alone
       # @param event_log [Workspace::EventLog, nil] records `worktree_finished` once the
@@ -32,7 +30,7 @@ module Workspace
       # @param locks [Workspace::NameMigration, nil] the config is deleted inside the workspace's startup lock
       #   ({NameMigration#hold_if_possible}), so `template apply` never writes it back; nil deletes without it
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, pr_status: nil, window_positions: nil, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, dev: nil, tmux: nil, locks: nil, daemon_stopper: nil, output: $stdout, error_output: $stderr, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, pr_status: nil, window_positions: nil, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, dev: nil, tmux: nil, locks: nil, output: $stdout, input: $stdin)
         @tmux = tmux
         @locks = locks
         @dev = dev
@@ -51,9 +49,7 @@ module Workspace
         @notes_inside_worktree = nil
         @branch_result = nil
         @remote_branch_result = nil
-        @daemon_stopper = daemon_stopper
         @output = output
-        @error_output = error_output
         @input = input
       end
 
@@ -219,22 +215,10 @@ module Workspace
 
         out.puts "Killing session..."
         @stop_command.call([project], quiet: quiet, warn_inactive: warn_inactive, save_position: false, session_names: {project => session_name}.compact, socket_arguments: {project => socket}.compact)
-        stop_agent_daemon(project, out)
         project
       end
 
       private
-
-      # Stops the workspace's agent daemon from its name, so it goes whether or not the workspace was in state.
-      # A refusal or timeout is a warning on the error stream, never a failure.
-      def stop_agent_daemon(project, out)
-        return unless @daemon_stopper
-        result = @daemon_stopper.call(name: project)
-        notice = result.notice(project)
-        out.puts notice if notice
-        warning = result.warning(project)
-        Warn.puts(@error_output, warning) if warning
-      end
 
       # Deletes the config and render record inside the workspace's startup lock when one was given.
       def remove_config(name, **options)

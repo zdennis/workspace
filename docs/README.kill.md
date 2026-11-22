@@ -32,7 +32,7 @@ Removes the git worktree, cleans up the tmuxinator config, project settings and 
 6. Remove the tmuxinator config and project settings.
 7. Delete the local branch, and with `--delete-remote` the remote one (see [Branches](#branches)).
 8. Remove the state entry, kill the tmux session, then close the iTerm2 window iTerm2 brings back for it (see [`stop`](README.stop.md#the-window-iterm2-brings-back)).
-9. Stop the workspace's agent daemon, found from its name alone, so it goes whether or not the workspace was in state. `Stopped agent daemon for NAME (pid 4242)` is printed (not with `--quiet`); nothing is printed when none was running. A daemon that could not be stopped, or that is not safe to signal, is a `Warning:` on stderr naming `workspace daemon status NAME`, and the kill still succeeds. [`finish`](README.finish.md) and `projects kill` do this too.
+9. The stop step also stops the workspace's agent daemon, found from its name alone, so it goes whether or not the workspace was in state. `Stopped agent daemon for NAME (pid 4242)` is printed (not with `--quiet`); nothing is printed when none was running. A daemon that could not be stopped, or that is not safe to signal, is a `Warning:` on stderr naming `workspace daemon status NAME`, and the kill still succeeds. [`finish`](README.finish.md) and `projects kill` do this too.
 
 The session is killed last because `kill` often runs inside that session, and killing it ends the `kill` process. Everything that has to be written is done by then. For the same reason, the `post_kill` hook runs before the session is killed, not after. It still sees the project's settings, but the worktree directory is already gone, so it runs in the directory you ran `kill` from.
 
