@@ -14,9 +14,9 @@ RSpec.describe "script/permission-replay" do
   before { FileUtils.mkdir_p(home) }
   after { FileUtils.remove_entry(dir) }
 
-  def request(seq, command, tool: "Bash", workspace: "ws")
+  def request(seq, command, tool: "Bash", workspace: "ws", agent_id: nil)
     JSON.generate("type" => "permission_requested", "at" => "2026-11-21T10:00:0#{seq}Z", "workspace" => workspace,
-      "pane_id" => "%1", "seq" => seq, "tool" => tool, "agent_id" => nil, "input" => command)
+      "pane_id" => "%1", "seq" => seq, "tool" => tool, "agent_id" => agent_id, "input" => command)
   end
 
   def write_log(*lines)
@@ -46,7 +46,8 @@ RSpec.describe "script/permission-replay" do
     data, _, code = replay("--rules", rules_file)
     expect(code).to eq(0)
     expect(data["requests"].first["candidate"]).to eq("allow")
-    expect(data["counts"]).to include("requests" => 1, "allowed_candidate" => 1, "allowed_today" => 0)
+    expect(data["counts"]).to include("requests" => 1, "allowed_candidate" => 0, "allowed_today" => 0,
+      "allowed_partial" => {"today" => 0, "candidate" => 1})
   end
 
   it "keeps a substitution command at ask under an allow * rule" do
@@ -110,8 +111,8 @@ RSpec.describe "script/permission-replay" do
     write_log(request(1, "ls"))
     data, = replay
     expect(data.keys).to eq(%w[requests counts unsafe_rows])
-    expect(data["requests"].first.keys).to include("at", "workspace", "seq", "mark", "today", "candidate", "reason", "command")
-    expect(data["counts"].keys).to eq(%w[requests allowed_today allowed_candidate unsafe_allowed])
+    expect(data["requests"].first.keys).to include("at", "workspace", "seq", "mark", "today", "candidate", "reason", "command", "source", "partial", "partial_reason", "transcript_hits")
+    expect(data["counts"].keys).to eq(%w[requests allowed_today allowed_candidate allowed_partial unsafe_allowed])
   end
 
   it "prints a text table with counts" do
@@ -119,7 +120,7 @@ RSpec.describe "script/permission-replay" do
     write_rules(allow_rspec)
     out, _, code = run_script("--file", log, "--rules", rules_file)
     expect(code).to eq(0)
-    expect(out).to include("requests: 1", "allowed candidate: 1", "bundle exec rspec x_spec.rb")
+    expect(out).to include("requests: 1", "allowed candidate: 0", "allowed on partial text, candidate: 1", "bundle exec rspec x_spec.rb")
   end
 
   it "fails with a message and exit 2 for an invalid rules file" do
@@ -222,5 +223,102 @@ RSpec.describe "script/permission-replay" do
     expect(code).to eq(0)
     expect(data["requests"].map { |r| r["seq"] }).to eq([1, 2, 2])
     expect(data["requests"].map { |r| r["workspace"] }).to eq(%w[ws a b])
+  end
+
+  describe "--transcripts" do
+    let(:tdir) { File.join(dir, "transcripts") }
+
+    def tool_use(command, at:)
+      JSON.generate("type" => "assistant", "timestamp" => at,
+        "message" => {"content" => [{"type" => "text", "text" => "x"}, {"type" => "tool_use", "name" => "Bash", "input" => {"command" => command}}]})
+    end
+
+    def write_transcript(relative, *lines)
+      path = File.join(tdir, relative)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, lines.join("\n") + "\n")
+    end
+
+    it "replays the full command from a single transcript hit and changes the decision" do
+      write_log(request(1, "bundle exec rspec a_spec.rb"))
+      write_rules(allow_rspec)
+      write_transcript("proj/s1.jsonl", "garbage", tool_use("bundle exec rspec a_spec.rb\nrm -rf x", at: "2026-11-21T10:00:00.500Z"))
+      data, = replay("--rules", rules_file, "--transcripts", tdir)
+      row = data["requests"].first
+      expect(row).to include("source" => "transcript", "partial" => false, "partial_reason" => "", "transcript_hits" => 1,
+        "command" => "bundle exec rspec a_spec.rb\nrm -rf x", "candidate" => "ask")
+      expect(data["counts"]["allowed_partial"]).to eq("today" => 0, "candidate" => 0)
+    end
+
+    it "counts a transcript-confirmed allow as clean" do
+      write_log(request(1, "bundle exec rspec a_spec.rb"))
+      write_rules(allow_rspec)
+      write_transcript("proj/s1.jsonl", tool_use("bundle exec rspec a_spec.rb", at: "2026-11-21T10:00:00Z"))
+      data, = replay("--rules", rules_file, "--transcripts", tdir)
+      expect(data["counts"]).to include("allowed_candidate" => 1)
+    end
+
+    it "keeps the logged text and marks partial when two hits fall in the window" do
+      write_log(request(1, "bundle exec rspec a_spec.rb"))
+      write_rules(allow_rspec)
+      write_transcript("proj/s1.jsonl", tool_use("bundle exec rspec a_spec.rb", at: "2026-11-21T10:00:00Z"))
+      write_transcript("proj/s2.jsonl", tool_use("bundle exec rspec a_spec.rb\nrm x", at: "2026-11-21T09:59:58Z"))
+      data, = replay("--rules", rules_file, "--transcripts", tdir)
+      expect(data["requests"].first).to include("source" => "log", "partial" => true, "partial_reason" => "2 transcript matches", "transcript_hits" => 2)
+    end
+
+    it "ignores hits outside the time window and reports no match" do
+      write_log(request(1, "bundle exec rspec a_spec.rb"))
+      write_transcript("proj/s1.jsonl", tool_use("bundle exec rspec a_spec.rb", at: "2026-11-21T09:59:40Z"))
+      data, = replay("--transcripts", tdir)
+      expect(data["requests"].first).to include("partial" => true, "partial_reason" => "no transcript match", "transcript_hits" => 0)
+    end
+
+    it "matches the text before [redacted] and ignores a trailing ellipsis" do
+      write_log(request(1, "curl -H TOKEN=[redacted] x"), request(2, "echo long…"))
+      write_transcript("proj/s1.jsonl", tool_use("curl -H TOKEN=abc x", at: "2026-11-21T10:00:01Z"), tool_use("echo long line\nls", at: "2026-11-21T10:00:02Z"))
+      data, = replay("--transcripts", tdir)
+      expect(data["requests"].map { |r| r["source"] }).to eq(%w[transcript transcript])
+    end
+
+    it "uses the subagent file for a row with an agent_id and session files otherwise" do
+      write_log(request(1, "ls", agent_id: "a1"), request(2, "ls"))
+      write_transcript("proj/s1/subagents/agent-a1.jsonl", tool_use("ls\nrm sub", at: "2026-11-21T10:00:01Z"))
+      write_transcript("proj/s1.jsonl", tool_use("ls\nrm top", at: "2026-11-21T10:00:02Z"))
+      data, = replay("--transcripts", tdir)
+      expect(data["requests"].map { |r| r["command"] }).to eq(["ls\nrm sub", "ls\nrm top"])
+    end
+
+    it "fails with exit 2 for a missing transcripts dir" do
+      write_log(request(1, "ls"))
+      _, err, code = run_script("--file", log, "--transcripts", File.join(dir, "nope"))
+      expect(code).to eq(2)
+      expect(err).to include("nope: no such directory")
+    end
+  end
+
+  describe "partial rows" do
+    it "marks a truncated logged row partial without a transcript join" do
+      write_log(request(1, "echo #{"x" * 300}…"))
+      data, = replay
+      expect(data["requests"].first).to include("partial" => true, "partial_reason" => "truncated", "source" => "log", "transcript_hits" => nil)
+    end
+
+    it "names the other partial reasons" do
+      write_log(request(1, "cat <<EOF"), request(2, "echo 'abc"), request(3, "curl TOKEN=[redacted]"), request(4, "ls"))
+      data, = replay
+      expect(data["requests"].map { |r| r["partial_reason"] }).to eq(["heredoc", "unclosed quote", "redacted", "first line only"])
+    end
+
+    it "flags an allow on partial text, keeps it out of the clean counts and still counts it as unsafe" do
+      write_log(request(1, "bundle exec rspec x_spec.rb"))
+      write_rules(allow_rspec)
+      File.write(marks_file, YAML.dump([{"workspace" => "ws", "seq" => 1, "mark" => "unsafe"}]))
+      data, _, code = replay("--rules", rules_file, "--marks", marks_file)
+      expect(code).to eq(1)
+      expect(data["counts"]).to include("allowed_candidate" => 0, "allowed_partial" => {"today" => 0, "candidate" => 1})
+      out, = run_script("--file", log, "--rules", rules_file, "--marks", marks_file)
+      expect(out).to include("allowed on partial text", "unsafe allowed: 1")
+    end
   end
 end
