@@ -22,8 +22,8 @@ require_relative "demo_calculator2/series"
 
 module DemoCalculator2
   SERIES_HELP = <<~TEXT
-    Usage: script/demo-calculator2 series --id ID [--lanes 2] [--workflow ID] [--sonnet] [--base REF] [--keep] [--evidence-dir DIR]
-                                          [--scoreboard FILE] [--dry-run] [--take-over]
+    Usage: script/demo-calculator2 series --id ID [--lanes 2] [--workflow ID] [--sonnet | --claude-command CMD] [--base REF] [--keep]
+                                          [--evidence-dir DIR] [--scoreboard FILE] [--dry-run] [--take-over]
            series --forget ID
     Runs a whole lanes run: checks everything first, starts the two workspaces, shares the merge driver and the workflow definitions,
     runs, saves the evidence, pins the heads and cleans up, then prints one scoreboard row.
@@ -31,6 +31,8 @@ module DemoCalculator2
         --lanes N             only 2 is supported (default 2)
         --workflow ID         the workflow each goal runs as (default #{Series::DEFAULT_WORKFLOW})
         --sonnet              run the agents on #{Series::SONNET_COMMAND}
+        --claude-command CMD  run the agents on CMD, set as agent.commands.claude in each lane; CMD may be an absolute path
+                              (a wrapper script); cannot be combined with --sonnet
         --base REF            the ref to branch from (default main; main must equal origin/main, and the base's latest CI run must pass)
         --keep                keep the workspaces, branches and shared values after the run
         --evidence-dir DIR    where the evidence goes (default tmp/demo-calculator2/series/<id> in this checkout)
@@ -110,7 +112,7 @@ module DemoCalculator2
     options = {json: false, dry_run: false, name: nil, wait: false, run_dir: nil, base: nil, out_dir: nil, stub_ref: nil, goals: nil, lanes: false, lane_b: nil, workflow: nil, id: nil}
     parser = OptionParser.new do |o|
       o.banner = "Usage: script/demo-calculator2 reset|run|eval|integrate|series [--name WORKSPACE] [--dry-run] [--wait]\n" \
-        "       series --id ID [--lanes 2] [--workflow ID] [--sonnet] [--base REF] [--keep] [--evidence-dir DIR] [--scoreboard FILE] [--dry-run] [--take-over]\n" \
+        "       series --id ID [--lanes 2] [--workflow ID] [--sonnet | --claude-command CMD] [--base REF] [--keep] [--evidence-dir DIR] [--scoreboard FILE] [--dry-run] [--take-over]\n" \
         "       series --forget ID\n" \
         "       run [--base REF] [--stub-ref REF] [--goals 01,02] [--workflow ID] [--id ID] [--out DIR] [--wait]\n" \
         "       run --lanes --lane-b WORKSPACE [--workflow deliver-goal-fast] [--goals 01,06] [--wait]\n" \

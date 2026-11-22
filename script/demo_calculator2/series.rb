@@ -68,7 +68,7 @@ module DemoCalculator2
     # A `--dry-run` exec was asked for a command that could write.
     class DryRunWrite < StandardError; end
 
-    Options = Struct.new(:id, :lanes, :workflow, :sonnet, :base, :keep, :evidence_dir, :scoreboard, :dry_run, :take_over, :forget, keyword_init: true)
+    Options = Struct.new(:id, :lanes, :workflow, :sonnet, :claude_command, :base, :keep, :evidence_dir, :scoreboard, :dry_run, :take_over, :forget, keyword_init: true)
 
     # One shared value as preflight saw it: what it is now, its classification and what a series would do with it.
     Shared = Struct.new(:key, :live, :wanted, :state, :action, keyword_init: true)
@@ -126,6 +126,7 @@ module DemoCalculator2
         p.on("--lanes N", Integer) { |v| o.lanes = v }
         p.on("--workflow ID") { |v| o.workflow = v }
         p.on("--sonnet") { o.sonnet = true }
+        p.on("--claude-command CMD") { |v| o.claude_command = v }
         p.on("--base REF") { |v| o.base = v }
         p.on("--keep") { o.keep = true }
         p.on("--evidence-dir DIR") { |v| o.evidence_dir = v }
@@ -136,6 +137,8 @@ module DemoCalculator2
       end.parse!(argv.dup)
       raise OptionParser::MissingArgument, "--id" if o.id.nil? && o.forget.nil?
       raise OptionParser::InvalidArgument, "--lanes: only 2 is supported" unless o.lanes == 2
+      raise OptionParser::InvalidArgument, "--claude-command: give a command" if o.claude_command&.strip&.empty?
+      raise OptionParser::InvalidArgument, "--sonnet and --claude-command cannot be given together" if o.sonnet && o.claude_command
       o.freeze
     end
 
@@ -304,7 +307,7 @@ module DemoCalculator2
       begin
         start_lanes
         check_heads
-        use_sonnet if @options.sonnet
+        use_claude_command if claude_command
         wait_for_idle_lanes
         write_shared_state
         run_lanes
@@ -368,6 +371,7 @@ module DemoCalculator2
       o = @options
       words = ["script/demo-calculator2", "series", "--id", id, "--base", o.base, "--workflow", o.workflow]
       words << "--sonnet" if o.sonnet
+      words.push("--claude-command", o.claude_command) if o.claude_command
       words << "--take-over" if o.take_over
       words << "--keep" if o.keep
       words.push("--evidence-dir", o.evidence_dir) if o.evidence_dir
@@ -570,16 +574,22 @@ module DemoCalculator2
       end
     end
 
+    # @return [String, nil] the launcher step 3 sets as `agent.commands.claude`: `--claude-command`, else `claude-sonnet` for `--sonnet`
+    def claude_command
+      @options.claude_command || (SONNET_COMMAND if @options.sonnet)
+    end
+
     # Step 3. The pane command is read back from the tmuxinator file: `sessions --json` carries no command field.
-    def use_sonnet
+    def use_claude_command
+      cmd = claude_command
       @lanes.each do |lane|
         name = lane[:workspace]
-        stop_unless_ok(@root, @workspace, "config", "set", "--scope", "workspace", "--name", name, "agent.commands.claude", SONNET_COMMAND)
+        stop_unless_ok(@root, @workspace, "config", "set", "--scope", "workspace", "--name", name, "agent.commands.claude", cmd)
         stop_unless_ok(@root, @workspace, "template", "apply", name, "--relaunch")
         doc = parse(stop_unless_ok(@root, @workspace, "tmux", "show", "--name", name, "--json"))
         panes = doc.is_a?(Hash) ? Array(doc["windows"]).flat_map { |window| Array(window["panes"]) } : []
         pane = panes.find { |each| each["kind"] == "claude" }
-        raise Stopped, "#{name}'s Claude Code pane does not run #{SONNET_COMMAND} (#{pane ? pane["command"].inspect : "no such pane"})" unless pane && pane["command"].to_s.start_with?("#{SONNET_COMMAND} ")
+        raise Stopped, "#{name}'s Claude Code pane does not run #{cmd} (#{pane ? pane["command"].inspect : "no such pane"})" unless pane && pane["command"].to_s.start_with?("#{cmd} ")
       end
     end
 
@@ -863,13 +873,13 @@ module DemoCalculator2
       @out.puts "  2. register #{id} in #{@registry.path}, then start both lanes:"
       [a, b].each { |name| @out.puts "       #{@workspace} start #{name} --base #{o.base} --headless --yes --json" }
       @out.puts "     then check each lane's HEAD equals #{o.base}"
-      if o.sonnet
+      if (cmd = claude_command)
         [a, b].each do |name|
-          @out.puts "  3. #{@workspace} config set --scope workspace --name #{name} agent.commands.claude #{SONNET_COMMAND}; " \
-            "#{@workspace} template apply #{name} --relaunch; check its Claude pane runs #{SONNET_COMMAND}"
+          @out.puts "  3. #{@workspace} config set --scope workspace --name #{name} agent.commands.claude #{cmd}; " \
+            "#{@workspace} template apply #{name} --relaunch; check its Claude pane runs #{cmd}"
         end
       else
-        @out.puts "  3. skipped, no --sonnet"
+        @out.puts "  3. skipped, no --sonnet or --claude-command"
       end
       @out.puts "  4. wait for an idle Claude Code pane in both lanes: poll every #{@idle_poll}s, at most #{@idle_wait}s"
       @out.puts "  5. write the shared values (each recorded in #{@registry.path} first):"

@@ -88,6 +88,15 @@ RSpec.describe DemoCalculator2::Series do
       expect(o.to_h).to include(id: "a1", lanes: 2, workflow: "deliver-goal-fast", sonnet: true, base: "dev", keep: true, evidence_dir: "/e", scoreboard: "/s", dry_run: true, take_over: true)
     end
 
+    it "reads --claude-command as the launcher and refuses it together with --sonnet" do
+      o = described_class.parse(%w[--id a1 --claude-command /x/bin/claude-sonnet-shim])
+      expect(o.claude_command).to eq("/x/bin/claude-sonnet-shim")
+      expect(o.sonnet).to be(false)
+      expect { described_class.parse(%w[--id a1 --sonnet --claude-command c]) }.to raise_error(OptionParser::InvalidArgument, /--sonnet and --claude-command/)
+      expect { described_class.parse(["--id", "a1", "--claude-command", " "]) }.to raise_error(OptionParser::InvalidArgument, /give a command/)
+      expect { described_class.parse(%w[--id a1 --claude-command c --sonnet]) }.to raise_error(OptionParser::InvalidArgument, /--sonnet and --claude-command/)
+    end
+
     it "defaults the workflow to deliver-goal-fast" do
       expect(described_class.parse(%w[--id a1]).workflow).to eq("deliver-goal-fast")
     end
@@ -351,7 +360,7 @@ RSpec.describe DemoCalculator2::Series do
         "  2. register s1 in #{registry_dir}/series.json",
         "workspace start calc2-demo-s1 --base main --headless --yes --json",
         "workspace start calc2-demo-s1-b --base main --headless --yes --json",
-        "  3. skipped, no --sonnet",
+        "  3. skipped, no --sonnet or --claude-command",
         "  4. wait for an idle Claude Code pane in both lanes: poll every 5s, at most 300s",
         "  5. write the shared values",
         "  6. run <lane A path>/script/demo-calculator2 run --lanes --lane-b calc2-demo-s1-b --id s1 --wait --out runs/s1",
@@ -373,6 +382,15 @@ RSpec.describe DemoCalculator2::Series do
         read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }).call
       expect(out.string).to include("agent.commands.claude claude-sonnet", "template apply calc2-demo-s1-b --relaunch",
         "8. kept: --keep", "9. append the scoreboard row to #{root}/board.md")
+    end
+
+    it "prints step 3 with the given command for --claude-command" do
+      options = described_class.parse(%w[--id s1 --dry-run --claude-command /x/shim])
+      described_class.new(root: root, options: options, exec: exec, registry: registry, out: out, err: err,
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }).call
+      expect(out.string).to include("config set --scope workspace --name calc2-demo-s1 agent.commands.claude /x/shim;",
+        "template apply calc2-demo-s1-b --relaunch", "check its Claude pane runs /x/shim")
+      expect(out.string).not_to include("skipped, no --sonnet", "claude-sonnet")
     end
 
     it "lists every refusal on a dry run, still prints the rows and the plan, and returns 1" do
@@ -599,6 +617,23 @@ RSpec.describe DemoCalculator2::Series do
       end
     end
 
+    context "with --claude-command" do
+      let(:extra_args) { ["--keep", "--claude-command", "/x/bin/shim"] }
+      let(:tmux_command) { "/x/bin/shim --dangerously-skip-permissions --continue || /x/bin/shim --dangerously-skip-permissions" }
+
+      it "sets the given command per lane and reads the pane command back against it" do
+        expect(full.call).to eq(0)
+        expect(calls("workspace", "config", "set", "--scope")).to eq([lane_a, lane_b].map { |name| %W[workspace config set --scope workspace --name #{name} agent.commands.claude /x/bin/shim] })
+        expect(calls("workspace", "template", "apply")).to eq([lane_a, lane_b].map { |name| ["workspace", "template", "apply", name, "--relaunch"] })
+      end
+
+      it "stops when the pane runs claude-sonnet instead of the given command" do
+        exec.on(%w[workspace tmux show], {"windows" => [{"panes" => [{"kind" => "claude", "command" => "claude-sonnet --continue"}]}]}.to_json)
+        expect(full.call).to eq(3)
+        expect(err.string).to match(%r{does not run /x/bin/shim})
+      end
+    end
+
     describe "the idle wait" do
       it "polls every 5s until both lanes have an idle Claude pane" do
         snapshot_states.concat(%w[working working])
@@ -813,6 +848,16 @@ RSpec.describe DemoCalculator2::Series do
             "#{run_dir}/attempts-wr_1.json", "#{run_dir}/trace-wr_1.json", "#{run_dir}/attempts-wr_fork.json", "#{run_dir}/command.txt")
           expect(files["#{run_dir}/command.txt"]).to include("series --id s1")
           expect(calls("/wt/a/script/demo-calculator2").first).to eq(["/wt/a/script/demo-calculator2", "eval", "--run", run_dir])
+        end
+
+        context "with --claude-command" do
+          let(:extra_args) { ["--claude-command", "/x/bin/shim"] }
+          let(:tmux_command) { "/x/bin/shim --continue" }
+
+          it "records the flag and its value in command.txt" do
+            full.call
+            expect(files["#{run_dir}/command.txt"]).to include("--claude-command /x/bin/shim")
+          end
         end
 
         it "pins both lane heads, then copies the evidence, then kills, then deletes the branches and the acceptance ref" do

@@ -537,7 +537,7 @@ RSpec.describe "script/demo-calculator2" do
 
     it "lists series and its options in the help" do
       expect(series("--help")).to eq(0)
-      expect(out.string).to include("series --id ID", "--lanes", "--workflow", "--sonnet", "--base", "--keep", "--evidence-dir", "--scoreboard", "--dry-run", "--take-over", "--forget")
+      expect(out.string).to include("series --id ID", "--lanes", "--workflow", "--sonnet", "--claude-command", "--base", "--keep", "--evidence-dir", "--scoreboard", "--dry-run", "--take-over", "--forget")
       expect(out.string).to match(/--take-over.*\n.*only when that owning checkout has no going run/)
       expect(out.string).to include("Exit codes: 0", "3 it stopped", "1 a refusal")
       expect(DemoCalculator2.main([], out: out, err: err, root: work_dir)).to eq(1)
