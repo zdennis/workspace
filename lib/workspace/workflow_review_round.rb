@@ -157,8 +157,9 @@ module Workspace
     end
 
     # Closes the warm review window (`review_window` with `warm: true`) of every step but the current one: kills the
-    # window by the id the slot holds, then drops the slot in a run change, only while that step is still not current
-    # and its slot is unchanged. A change that fails leaves the slot, which a later read finds pointing at no window.
+    # window the slot names while tmux lists it with the slot's mark (nothing when tmux can't be read), then drops
+    # the slot in a run change, only while that step is still not current and its slot is unchanged. A change that
+    # fails leaves the slot, which a later read finds pointing at no window.
     #
     # @param run [WorkflowRun, Hash] the run as read
     # @return [WorkflowRun] the run afterwards
@@ -169,7 +170,14 @@ module Workspace
         [id, slot] if id != run.current && slot.is_a?(Hash) && slot["warm"] == true
       end
       return run if warm.empty?
-      warm.each { |_, slot| @tmux.kill_window(slot["window"], timeout: WorkflowPanes::TMUX_READ_TIMEOUT) if slot["window"].is_a?(String) }
+      # Killed only while tmux lists the window with the slot's own mark: after a tmux restart an id alone can name another window.
+      listed = @tmux.review_windows(@tmux.session_name_for(run.workspace), timeout: WorkflowPanes::TMUX_READ_TIMEOUT, strict: true)
+      return run if listed.nil?
+      warm.each do |id, slot|
+        mark = WorkflowPanes.review_mark(run.id, id, slot["round"])
+        next unless listed.any? { |each| each[:window] == slot["window"] && each[:review] == mark }
+        @tmux.kill_window(slot["window"], timeout: WorkflowPanes::TMUX_READ_TIMEOUT)
+      end
       @change.call(run.id, actor: "engine", cause: "review_prewarm") do |read|
         hash = read.thawed
         warm.each do |id, slot|

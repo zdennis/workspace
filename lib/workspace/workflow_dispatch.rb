@@ -603,6 +603,9 @@ module Workspace
       run["state"] = "running"
       slots(run)["reason"] = nil
       @change.event(run, "step_dispatching", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane, "cause" => cause, "retry_of" => attempt["retry_of"])
+      scoped = subagent || WorkflowRun.step_scoped?(run, step["id"])
+      # Registered on every path, so a move into a fan_out group still closes the warm windows other steps left.
+      ctx.prewarm({"step" => step["id"], "attempt" => attempt["n"]}) if prewarm_wanted?(run, step, scoped)
       if subagent
         # The group's composed line is registered once, after every sibling's attempt is stored; a re-attempt on its
         # own (the failure loop) delivers a composed line naming only this sibling. Its delivery is always fresh: the
@@ -618,7 +621,6 @@ module Workspace
           ctx.add_delivery(line)
         else
           ctx.deliver(line)
-          ctx.prewarm({"step" => step["id"], "attempt" => attempt["n"]}) if prewarm_wanted?(run, step)
         end
       end
     rescue Workspace::Error, SystemCallError, EncodingError => e
@@ -627,9 +629,9 @@ module Workspace
     end
 
     # Whether a dispatch registers the {#prewarm} follow-up: the step has `review:`, or another step keeps a warm window.
-    def prewarm_wanted?(run, step)
+    def prewarm_wanted?(run, step, scoped)
       return false unless @prewarm
-      return true if WorkflowDefinition.review(step)
+      return true if !scoped && WorkflowDefinition.review(step)
       (run["steps"] || {}).any? { |id, state| id != step["id"] && state.is_a?(Hash) && state.dig("review_window", "warm") == true }
     end
 

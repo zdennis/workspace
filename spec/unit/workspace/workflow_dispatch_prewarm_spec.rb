@@ -86,6 +86,17 @@ RSpec.describe Workspace::WorkflowDispatch, "prewarm" do
       expect(context.prewarm).to be_nil
     end
 
+    it "registers one for a fan_out sibling when another step keeps a warm window, so the follow-up closes it" do
+      steps.replace([{"id" => "plan", "prompt" => "Plan.", "produces" => [], "review" => review},
+        {"id" => "a", "group" => "g", "prompt" => "A.", "produces" => []}, {"id" => "b", "group" => "g", "prompt" => "B.", "produces" => []}])
+      plan = {"state" => "passed", "attempts" => [{"n" => 1}], "review_window" => {"round" => 1, "window" => "@7", "pane" => "%7", "warm" => true}}
+      hash = run_hash(current: "a", step_states: {"plan" => plan, "a" => {"state" => "pending", "attempts" => []}, "b" => {"state" => "pending", "attempts" => []}})
+      context = ctx
+      build_dispatch.dispatch(hash, ctx: context, cause: "next_step")
+      expect(context.deliveries).not_to be_empty
+      expect(context.prewarm).to include("step" => "a")
+    end
+
     it "registers none for a step that could not start" do
       context = ctx
       build_dispatch.dispatch(run_hash.merge("worktree" => File.join(@dir, "gone")), ctx: context, cause: "first")

@@ -157,6 +157,19 @@ RSpec.describe Workspace::WorkflowRunChange do
         expect(prewarm_lines.first).to include("step" => "a", "code" => "tmux_failed", "message" => "tmux went away", "actor" => "engine", "cause" => "review_prewarm")
       end
 
+      [Errno::EPIPE.new("broken pipe"), Timeout::Error.new("tmux timed out")].each do |error|
+        it "drops one that raises #{error.class}, recording it with the code error" do
+          change = prewarming(->(_id, _found) { raise error })
+          result = change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
+            ctx.deliver({"step" => "a"})
+            ctx.prewarm({"step" => "a", "attempt" => 1})
+            nil
+          end
+          expect(result).to eq(:typed)
+          expect(prewarm_lines.map { |line| line.slice("step", "code", "message") }).to eq([{"step" => "a", "code" => "error", "message" => error.message}])
+        end
+      end
+
       it "lets a code bug in one raise" do
         change = prewarming(->(_id, _found) { raise NoMethodError, "undefined method" })
         expect do

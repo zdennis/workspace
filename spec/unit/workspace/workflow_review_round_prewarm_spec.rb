@@ -350,6 +350,20 @@ RSpec.describe Workspace::WorkflowReviewRound, "#prewarm" do
       expect(after.steps["plan"].to_h).not_to have_key("review_window")
     end
 
+    it "kills no window whose id tmux now lists under another mark, and drops the slot" do
+      tmux.review_window_list = [{window: "@7", name: "review-x", review: "wr_9:x:1", pane: "%7", pid: 1, store: nil}]
+      runner.close_warm(run)
+      expect(tmux.killed_windows).to be_empty
+      expect(slot).to be_nil
+    end
+
+    it "kills nothing and keeps the slot when tmux can't list the windows" do
+      tmux.review_windows_unreadable = true
+      runner.close_warm(run)
+      expect(tmux.killed_windows).to be_empty
+      expect(slot).to eq(warm_slot)
+    end
+
     it "leaves the current step's warm window and a kept, not warm, window alone" do
       store.runs["wr_1"]["current"] = "plan"
       runner.close_warm(run)
