@@ -39,7 +39,7 @@ module DemoCalculator2
       loaded = a[:loaded] + b[:loaded] + [integrate].compact
       leak = leak(caps, {}, loaded, head, record.dig("acceptance_ref", "removal_sha"), workspaces: [a_name, b_name])
       leak &&= leak.merge(diff: diff_scan(record, head))
-      summary = Metrics.lanes(rows, fork: record["fork"], integration: integration, integrate_attempts: integrate && integrate_attempts(integrate))
+      summary = Metrics.lanes(rows, fork: record["fork"], integration: integration, integrate_attempts: integrate && integrate_attempts(integrate), first_item_at: lanes["first_item_at"])
       summary[:catches] = %w[A B].to_h { |lane| [lane, catches(rows.select { |row| row[:lane] == lane })] }
       summary[:integration][:plain_acceptance] = plain_acceptance(record, head)
       document = build_document(record, pricing, rows, totals, lint, leak).merge("lanes" => summary)

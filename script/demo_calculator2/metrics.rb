@@ -140,6 +140,8 @@ module DemoCalculator2
 
     # How far the critical path's parts may differ from the measured wall before the eval flags an error.
     PATH_TOLERANCE = 5
+    # The harness polls every 15s, so it notices a drained lane up to that late; plus the tolerance.
+    HARNESS_LAG_LIMIT = 20
 
     # The numbers of a lanes run that no single item has: wall, the sequential equivalent, the critical path, the waits
     # on it, lock waits per lane and the integration. A row needs `lane` ("A" or "B"), `goal`, `started_at` and `ended_at`
@@ -153,8 +155,10 @@ module DemoCalculator2
     # @param fork [Hash, nil] run.json's `fork` block (`goal`)
     # @param integration [Hash, nil] run.json's `integration` block (`started_at`, `ended_at`, `first_pass`, `conflict`, `integrate_run`)
     # @param integrate_attempts [Integer, nil] attempts of the integrate-branch run, when there was one
+    # @param first_item_at [String, nil] when the harness saw lane A's first item start (run.json `lanes.first_item_at`): with the integration's
+    #   recorded end it is a wall measured apart from the item rows the parts come from
     # @return [Hash] `wall`, `sequential`, `critical_path` (with `check`), `wall_net_of_waits`, `lock_waits`, `integration`
-    def self.lanes(rows, fork:, integration:, integrate_attempts: nil)
+    def self.lanes(rows, fork:, integration:, integrate_attempts: nil, first_item_at: nil)
       ran = rows.select { |row| row[:ran] && time(row[:started_at]) && time(row[:ended_at]) }
       lane = ->(name) { ran.select { |row| row[:lane] == name }.sort_by { |row| time(row[:started_at]) } }
       a = lane.call("A")
@@ -167,7 +171,8 @@ module DemoCalculator2
       walls = rows.select { |row| row[:ran] }.map { |row| row[:wall] }.grep(Numeric)
       integration_wall = (started && ended) ? ended - started : nil
       sequential = (walls.empty? || integration_wall.nil?) ? nil : walls.sum + integration_wall
-      path = critical_path(a, b, first, started, ended, fork && fork["goal"], wall, fork && time(fork["at"]))
+      harness_wall = (time(first_item_at) && ended) ? ended - time(first_item_at) : nil
+      path = critical_path(a, b, first, started, ended, fork && fork["goal"], harness_wall, fork && time(fork["at"]))
       {wall: wall, sequential: sequential, critical_path: path, wall_net_of_waits: net_of_waits(wall, a, b, path, fork && fork["goal"]),
        lock_waits: lock_waits(ran), integration: {
          wall: integration_wall, merge: integration["merge"], first_pass: integration["first_pass"], conflict: integration["conflict"],
@@ -176,7 +181,8 @@ module DemoCalculator2
     end
 
     # @return [Hash, nil] `span`, `fork_latency`, `a_tail`, `b_tail`, `integration`, `slack`, `lane` (the longer one) and
-    #   `check` (`sum`, `delta`, `fork_ordered`, `ok`: the parts add up to wall within PATH_TOLERANCE, none is negative and the recorded fork time falls between the fork goal's end and lane B's first start); nil without both lanes and a fork goal
+    #   `harness_lag` (integration start less the later lane's end; `harness_lag_flagged` above HARNESS_LAG_LIMIT) and
+    #   `check` (`sum`, `delta` against the harness's wall (nil without it), `fork_ordered`, `ok`: the parts add up to it within PATH_TOLERANCE, none is negative and the recorded fork time falls between the fork goal's end and lane B's first start); nil without both lanes and a fork goal
     def self.critical_path(a, b, first, started, ended, fork_goal, wall, fork_at = nil)
       fork_row = a.find { |row| row[:goal] == fork_goal }
       return nil if fork_row.nil? || b.empty? || first.nil? || started.nil? || ended.nil?
@@ -184,16 +190,17 @@ module DemoCalculator2
       b_start = time(b.first[:started_at])
       a_end = a.map { |row| time(row[:ended_at]) }.max
       b_end = b.map { |row| time(row[:ended_at]) }.max
-      parts = {span: fork_end - first, fork_latency: b_start - fork_end, a_tail: a_end - b_start, b_tail: b_end - b_start, integration: ended - started}
+      parts = {span: fork_end - first, fork_latency: b_start - fork_end, a_tail: a_end - b_start, b_tail: b_end - b_start, integration: ended - started, harness_lag: started - [a_end, b_end].max}
       longest = [parts[:a_tail], parts[:b_tail]].max
-      sum = parts[:span] + parts[:fork_latency] + longest + parts[:integration]
-      # Each part is read from its own timestamps and the integration from its own recorded start, so any gap between the later
-      # lane's end and the integration's start shows up as delta rather than being absorbed.
-      delta = (sum - wall).abs
+      sum = parts[:span] + parts[:fork_latency] + longest + parts[:harness_lag] + parts[:integration]
+      # The parts come from the run files' timestamps; `wall` here is the harness's own (first item seen to integration end), so a
+      # part that is wrong or missing shows as delta. Without the harness's start there is no delta and ok is an ordering check only.
+      delta = wall && (sum - wall).abs
       # The one reading the parts do not share: the harness's own fork time must sit between the fork goal's end and lane B's first start.
       ordered = fork_at.nil? || fork_at.between?(fork_end - PATH_TOLERANCE, b_start + PATH_TOLERANCE)
       parts.merge(slack: (a_end - b_end).abs, lane: (a_end >= b_end) ? "A" : "B",
-        check: {sum: sum, delta: delta, fork_ordered: ordered, ok: delta <= PATH_TOLERANCE && ordered && [parts[:span], parts[:fork_latency], longest, parts[:integration]].all? { |v| v >= 0 }})
+        harness_lag_flagged: parts[:harness_lag] > HARNESS_LAG_LIMIT,
+        check: {sum: sum, delta: delta, fork_ordered: ordered, ok: (delta.nil? || delta <= PATH_TOLERANCE) && ordered && [parts[:span], parts[:fork_latency], longest, parts[:harness_lag], parts[:integration]].all? { |v| v >= 0 }})
     end
 
     # Wall less the machine, redelivery and person waits of the items on the critical path: lane A through the fork goal,
@@ -244,9 +251,10 @@ module DemoCalculator2
       path = lanes[:critical_path]
       lines = ["wall: #{duration.call(lanes[:wall])}  sequential equivalent: #{duration.call(lanes[:sequential])}  wall net of waits: #{duration.call(lanes[:wall_net_of_waits])}"]
       if path
-        lines << "critical path: 01-03 #{duration.call(path[:span])} + fork #{duration.call(path[:fork_latency])} + tail #{duration.call([path[:a_tail], path[:b_tail]].max)} " \
+        lines << "critical path: 01-03 #{duration.call(path[:span])} + fork #{duration.call(path[:fork_latency])} + tail #{duration.call([path[:a_tail], path[:b_tail]].max)} + harness lag #{duration.call(path[:harness_lag])} " \
           "(lane #{path[:lane]}; A #{duration.call(path[:a_tail])}, B #{duration.call(path[:b_tail])}) + integration #{duration.call(path[:integration])} = #{duration.call(path[:check][:sum])}; slack #{duration.call(path[:slack])}"
-        lines << "ERROR: the critical path differs from the wall by #{duration.call(path[:check][:delta])} or has a negative part, or the recorded fork time is outside the fork goal's end and lane B's start: the eval is wrong or the run record is incomplete" unless path[:check][:ok]
+        lines << "WARNING: the harness took #{duration.call(path[:harness_lag])} to start the integration after the later lane ended (more than #{HARNESS_LAG_LIMIT}s)" if path[:harness_lag_flagged]
+        lines << "ERROR: the critical path differs from the harness's wall by #{duration.call(path[:check][:delta])} or has a negative part, or the recorded fork time is outside the fork goal's end and lane B's start: the eval is wrong or the run record is incomplete" unless path[:check][:ok]
       else
         lines << "critical path: #{fmt::UNKNOWN}#{" (fork goal #{fork["goal"]})" if fork}"
       end

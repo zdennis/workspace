@@ -224,8 +224,8 @@ RSpec.describe DemoCalculator2::Metrics do
     end
 
     it "splits the critical path into the 01-03 span, fork latency, the longer tail, and the integration, and checks they add up to wall" do
-      path = described_class.lanes(rows, fork: fork, integration: integration)[:critical_path]
-      expect(path).to include(span: 12 * 60 - 5, fork_latency: 20, a_tail: 27 * 60 - (12 * 60 + 20), b_tail: 30 * 60 - (12 * 60 + 20), integration: 60, lane: "B", slack: 3 * 60)
+      path = described_class.lanes(rows, fork: fork, integration: integration, first_item_at: at(0, 5))[:critical_path]
+      expect(path).to include(harness_lag: 0, span: 12 * 60 - 5, fork_latency: 20, a_tail: 27 * 60 - (12 * 60 + 20), b_tail: 30 * 60 - (12 * 60 + 20), integration: 60, lane: "B", slack: 3 * 60)
       expect(path[:check]).to include(ok: true, delta: 0)
     end
 
@@ -238,14 +238,20 @@ RSpec.describe DemoCalculator2::Metrics do
 
     it "flags a recorded fork time outside the fork goal's end and lane B's first start, though the parts still add up" do
       path = described_class.lanes(rows, fork: fork.merge("at" => at(31)), integration: integration)[:critical_path]
-      expect(path[:check]).to include(delta: 0, fork_ordered: false, ok: false)
+      expect(path[:check]).to include(delta: nil, fork_ordered: false, ok: false)
       expect(described_class.lanes(rows, fork: fork.merge("at" => at(12, 20)), integration: integration)[:critical_path][:check]).to include(fork_ordered: true, ok: true)
     end
 
-    it "shows a gap between the later lane's end and the integration's start as a delta that fails the check" do
-      late = integration.merge("started_at" => at(30, 10))
-      path = described_class.lanes(rows, fork: fork, integration: late)[:critical_path]
-      expect(path[:check]).to include(delta: 10, ok: false)
+    it "reports the harness's lag as its own part, and warns only above the poll interval plus the tolerance" do
+      lag = ->(seconds) { described_class.lanes(rows, fork: fork, integration: integration.merge("started_at" => at(30, seconds)), first_item_at: at(0, 5))[:critical_path] }
+      expect(lag.call(10)).to include(harness_lag: 10, harness_lag_flagged: false)
+      expect(lag.call(10)[:check]).to include(ok: true)
+      expect(lag.call(25)).to include(harness_lag: 25, harness_lag_flagged: true)
+    end
+
+    it "fails the check when the parts, read from the run files, do not add up to the harness's own wall" do
+      path = described_class.lanes(rows, fork: fork, integration: integration, first_item_at: at(0, 40))[:critical_path]
+      expect(path[:check]).to include(delta: 35, ok: false)
     end
 
     it "gives no critical path without a lane B item or a fork goal row" do
@@ -293,11 +299,11 @@ RSpec.describe DemoCalculator2::Metrics do
     it "prints the wall, the critical path, the lock waits and the integration, and says so when the path does not add up" do
       rows = [{ran: true, lane: "A", goal: "01-add-sub", started_at: "2026-11-21T05:00:00Z", ended_at: "2026-11-21T05:04:00Z", wall: 240},
         {ran: true, lane: "B", goal: "06-json", started_at: "2026-11-21T05:03:00Z", ended_at: "2026-11-21T05:08:00Z", wall: 300}]
-      lanes = described_class.lanes(rows, fork: {"goal" => "01-add-sub"}, integration: {"started_at" => "2026-11-21T05:08:30Z", "ended_at" => "2026-11-21T05:09:00Z", "merge" => "clean", "first_pass" => true, "conflict" => false})
+      lanes = described_class.lanes(rows, fork: {"goal" => "01-add-sub"}, integration: {"started_at" => "2026-11-21T05:08:30Z", "ended_at" => "2026-11-21T05:09:00Z", "merge" => "clean", "first_pass" => true, "conflict" => false}, first_item_at: "2026-11-21T05:00:45Z")
       lines = described_class.lanes_lines(lanes, {"goal" => "01-add-sub"})
       expect(lines[0]).to start_with("wall: 9m00s  sequential equivalent: 9m30s")
       expect(lines[1]).to include("critical path: 01-03 4m00s + fork -1m00s")
-      expect(lines.join("\n")).to include("ERROR: the critical path differs from the wall", "lock waits: A 0s, B 0s", "integration: merge clean, first pass yes, conflict no")
+      expect(lines.join("\n")).to include("ERROR: the critical path differs from the harness's wall", "lock waits: A 0s, B 0s", "integration: merge clean, first pass yes, conflict no")
     end
 
     it "flags a nonzero lock wait" do

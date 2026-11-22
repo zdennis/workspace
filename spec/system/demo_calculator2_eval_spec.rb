@@ -346,7 +346,7 @@ RSpec.describe DemoCalculator2::LanesEvaluation do
      "acceptance_ref" => {"name" => "refs/demo-calc2/acceptance-base", "sha" => "a" * 40, "removal_sha" => "r" * 40},
      "goals" => %w[02-mul-div 03-div-zero], "items" => [{"workflow" => "deliver-goal-fast", "id" => "q1"}, {"workflow" => "deliver-goal-fast", "id" => "q2"}], "definitions" => {},
      "fork" => {"at" => "2026-11-21T05:12:20Z", "sha" => "f" * 40, "acceptance_base" => "a" * 40, "goal" => "03-div-zero", "item" => "q2"},
-     "lanes" => {"workflow" => "deliver-goal-fast", "started_at" => "2026-11-21T05:00:00Z", "fork_after" => "03-div-zero", "a" => {"workspace" => "ws", "goals" => %w[02-mul-div 03-div-zero]},
+     "lanes" => {"workflow" => "deliver-goal-fast", "started_at" => "2026-11-21T05:00:00Z", "first_item_at" => "2026-11-21T05:00:00Z", "fork_after" => "03-div-zero", "a" => {"workspace" => "ws", "goals" => %w[02-mul-div 03-div-zero]},
                  "b" => {"workspace" => "ws-b", "branch" => "calc-demo/20261121T050000Z-b", "goals" => %w[06-json],
                          "items" => [{"workflow" => "deliver-goal-fast", "id" => "q3", "goal" => "06-json"}]}},
      "integration" => integration}
@@ -423,7 +423,7 @@ RSpec.describe DemoCalculator2::LanesEvaluation do
     expect(text).to match(/^A 02-mul-div\s/)
     expect(text).to match(/^B 06-json\s/)
     expect(text).to match(/^step wall\s+A02\s+A03\s+B06/)
-    expect(text).to include("wall: 24m00s", "critical path: 01-03 12m00s + fork 30s + tail 7m30s (lane B;", "lock waits: A 0s, B 12s (nonzero", "integration: merge conflict, first pass no, conflict yes, integrate run attempts 5",
+    expect(text).to include("wall: 24m00s", "critical path: 01-03 12m00s + fork 30s + tail 7m30s + harness lag 0s (lane B;", "lock waits: A 0s, B 12s (nonzero", "integration: merge conflict, first pass no, conflict yes, integrate run attempts 5",
       "catches: lane A verify fixes 2, review rejections 2; lane B verify fixes 1, review rejections 1", "(the integrated branch)")
     expect(JSON.parse(File.read(File.join(run_dir, "eval.json"))).dig("lanes", "critical_path", "check", "ok")).to be(true)
   end
