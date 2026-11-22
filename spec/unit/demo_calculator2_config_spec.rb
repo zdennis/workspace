@@ -90,7 +90,8 @@ RSpec.describe DemoCalculator2 do
       expect(b.map { |_, argv| argv[argv.index("--dedupe-key") + 1] }).to eq(%w[calculator2-demo:06-json calculator2-demo:07-repl])
       (a + b).each { |_, argv| expect(argv).to include("acceptance=script/demo_calculator2/acceptance_runner_lanes") }
       expect(a.map { |_, argv| argv[argv.index("--prompt") + 1] }).to all(satisfy { |text| text.start_with?("Deliver the goal in demo/calculator2/goals/0") && !text.include?("Earlier goals") })
-      expect(b.map { |_, argv| argv[argv.index("--prompt") + 1] }).to all(end_with("Earlier goals here means 01, 02 and 03. This branch holds only their work; do not read or build goals 04 or 05."))
+      expect(b.map { |_, argv| argv[argv.index("--prompt") + 1] }).to all(end_with(DemoCalculator2::LANE_B_PROMPT))
+      expect(DemoCalculator2::LANE_B_PROMPT).to include("do not read or build goals 04 or 05", "such as `2 & 3`")
     end
 
     it "takes each lane's goals from the goals of the run" do

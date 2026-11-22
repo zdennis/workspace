@@ -34,6 +34,9 @@ plain acceptance run on goal 07. A conflict or a failed check queues a repair in
 - Duplicate test method names in the merged `test/calc_test.rb` fail the first pass.
 - The merge driver for `calc_test.rb` is configured as `ruby "$(git rev-parse --show-toplevel)/script/demo_calculator2/merge_test_methods" %O %A %B`.
   The command names no checkout path, so every worktree runs its own copy.
+- The driver merges `calc_test.rb` method by method against the fork point. Lane B's new tests, helpers and `require`
+  lines go in, and a method only lane B changed or removed takes lane B's version. Both lanes changing one method, or
+  lane B changing any other line, is a conflict.
 
 ## Running a lanes series
 
