@@ -25,7 +25,17 @@ RSpec.describe "the plan step's requirements check in the shipped presets" do
   after { FileUtils.remove_entry(dir) }
 
   def plan_check(id)
-    catalog.find(id).to_h["steps"].find { |step| step["id"] == "plan" }["status"]["run"]
+    definition = (id == "deliver-goal") ? deliver_goal : catalog.find(id).to_h
+    definition["steps"].find { |step| step["id"] == "plan" }["status"]["run"]
+  end
+
+  def deliver_goal
+    path = File.join(PROJECT_ROOT, "demo", "calculator2", "workflows", "deliver-goal.yml")
+    lookup = lambda do |id, below: nil|
+      file = File.join(PROJECT_ROOT, "lib", "workflows", "#{id}.yml")
+      {"text" => File.read(file), "path" => file, "source" => "builtin"} if File.file?(file) && below.nil?
+    end
+    Workspace::WorkflowDefinition.parse(File.read(path), id: "deliver-goal", source: "global", path: path, parent_lookup: lookup).to_h
   end
 
   def write_plan(details)
@@ -52,7 +62,7 @@ RSpec.describe "the plan step's requirements check in the shipped presets" do
     Open3.capture3(env, "sh", "-c", plan_check(id), chdir: dir)
   end
 
-  %w[rpiv rpiv-auto-approve-v2 rpiv-auto-approve].each do |id|
+  %w[rpiv rpiv-auto-approve-v2 rpiv-auto-approve deliver-goal].each do |id|
     context "in #{id}" do
       before { File.write(File.join(artifacts, "requirements.md"), "R1 Export a PDF\nR2 Name it by date\nR3 Keep the old CSV\n\nNo ambiguity.\n") }
 

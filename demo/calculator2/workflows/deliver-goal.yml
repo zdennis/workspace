@@ -86,8 +86,8 @@ replace:
       the path of the plan file. Do not copy the task list into it. The step is not
       finished until plan.md exists.
       Say in plan.md how each of the reviewer's objections, if any, was answered.
-      No person reads the plan before it is built, so record each reading chosen in
-      {{artifacts}}/requirements.md for an open part with
+      No person reads the plan before it is built, so for each reading
+      {{artifacts}}/requirements.md gives an open part, also run
       `workspace ask "<the open question>" --default "<the reading chosen>"`, once each, and
       carry on without waiting for an answer.
       Don't change code.

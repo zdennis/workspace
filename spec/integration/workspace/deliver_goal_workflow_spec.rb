@@ -68,6 +68,24 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(Workspace::WorkflowDefinition.direct_review?(definition.to_h, plan)).to be(true)
   end
 
+  it "guards plan with config, so a commit loop back to it can retry" do
+    plan = definition.to_h["steps"].find { |each| each["id"] == "plan" }
+    expect(plan["guard"]).to eq("config")
+  end
+
+  it "has deliver-goal-fast's research write requirements.md beside research.md" do
+    fast_path = File.join(PROJECT_ROOT, "demo", "calculator2", "workflows", "deliver-goal-fast.yml")
+    demo_lookup = lambda do |id, below: nil|
+      next {"text" => File.read(path), "path" => path, "source" => "global"} if id == "deliver-goal" && below.nil?
+      lookup.call(id, below: below)
+    end
+    fast = Workspace::WorkflowDefinition.parse(File.read(fast_path), id: "deliver-goal-fast", source: "global", path: fast_path, parent_lookup: demo_lookup).to_h
+    research = fast["steps"].find { |each| each["id"] == "research" }
+    expect(research["produces"]).to eq(%w[research.md requirements.md])
+    expect(research["prompt"]).to include("{{artifacts}}/requirements.md")
+    expect(research["prompt"]).not_to match(/accept|calc/i)
+  end
+
   def fresh(result, id) = result["steps"].find { |each| each["id"] == id }["attempts"].map { |each| each["fresh"] }
 
   it "overrides only the prompt of implement, which tells it to start no sub-agents and finish before its status line" do
