@@ -126,10 +126,17 @@ RSpec.describe Workspace::QuestionClosedCheck do
   describe "with scrollback rows" do
     let(:capture) { Struct.new(:raw, :history_rows) }
 
-    it "reads nothing from a 12-row screen with 5 history rows above it" do
+    it "reads nothing when the visible rows are under MIN_ROWS, whatever history sits above them" do
       raw = (Array.new(5) { "old" } + ["────────", "❯ ", "────────"] + Array.new(9) { "" }).join("\n")
 
       expect(check.reading("claude", capture.new(raw, 5))).to be_nil
+    end
+
+    it "reads a tall screen whose box top rule is the last history row" do
+      raw = [*Array.new(4) { "old" }, "────────", "❯ ", "────────", *Array.new(18) { "" }].join("\n")
+
+      expect(raw.lines.size - 5).to be >= described_class::MIN_ROWS
+      expect(check.reading("claude", capture.new(raw, 5))).to be_a(String)
     end
 
     it "gives a tall screen the same digest whatever the history rows hold" do
