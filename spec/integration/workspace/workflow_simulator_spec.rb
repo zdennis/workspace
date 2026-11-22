@@ -445,12 +445,12 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
     let(:step) { {"id" => "t", "require" => [{"commits" => 1}, {"nonempty" => "f"}]} }
 
     it "answers the first failing proof from the entry it is asked to start at, as proven" do
-      first = described_class.new(script).check(step: step, attempt: {"n" => 1})
-      later = described_class.new(script).check(step: step, attempt: {"n" => 1}, from: 1)
+      first = described_class.new(script, Workspace::WorkflowSimulator::SimGuard.new).check(step: step, attempt: {"n" => 1})
+      later = described_class.new(script, Workspace::WorkflowSimulator::SimGuard.new).check(step: step, attempt: {"n" => 1}, from: 1)
 
       expect(first).to include("proof" => "commits", "code" => "require_commits", "unproven" => false)
       expect(later).to include("proof" => "nonempty")
-      expect(described_class.new(script).check(step: step, attempt: {"n" => 1}, from: 2)).to be_nil
+      expect(described_class.new(script, Workspace::WorkflowSimulator::SimGuard.new).check(step: step, attempt: {"n" => 1}, from: 2)).to be_nil
     end
 
     describe "exec entries" do
@@ -462,7 +462,7 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
       end
 
       def ask(script, from: 0)
-        described_class.new(script).check(step: step, attempt: {"n" => 1}, from: from)
+        described_class.new(script, Workspace::WorkflowSimulator::SimGuard.new).check(step: step, attempt: {"n" => 1}, from: from)
       end
 
       it "gives the i-th exec entry the i-th answer, so the second can fail while the first passes" do
@@ -633,6 +633,45 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
       expect(attempts_by_step(result)).to eq("plan" => 1, "reproduce" => 2, "fix" => 3)
       expect(result["run"]["loops"]).to eq("fix->fix" => 1, "fix->reproduce" => 1)
     end
+  end
+
+  # The shipped presets' commit loop: a committing step's failure goes back to a read-only step before it. Once the
+  # commits proof has passed, a `guard: unchanged` step finds the commit and stops; `guard: config` lets it rerun.
+  describe "a failure after a commit that loops back to a guarded step" do
+    def looped(guard)
+      definition("schema_version: 1\nid: demo\ntitle: D\nmax_attempts: 10\nsteps:\n" \
+        "  plan:\n    prompt: p\n    produces: [plan.md]\n    guard: #{guard}\n" \
+        "  implement:\n    prompt: p\n    status: {run: \"true\"}\n    require:\n      - commits: 1\n")
+    end
+
+    let(:script) { "steps:\n  implement: [{check: fail}, {}]\n" }
+
+    it "stops head_moved under guard: unchanged" do
+      result = play(looped("unchanged"), script)
+
+      expect(result).to include("outcome" => "stopped")
+      expect(result["stopped"]).to include("step" => "plan", "attempt" => 2)
+      expect(result["steps"].first["attempts"].last).to include("code" => "head_moved")
+    end
+
+    it "reruns the step and finishes under guard: config" do
+      result = play(looped("config"), script)
+
+      expect(result).to include("outcome" => "completed")
+      expect(result["steps"].to_h { |step| [step["id"], step["attempts"].size] }).to eq("plan" => 2, "implement" => 2)
+      expect(result["run"]["loops"]).to eq("implement->plan" => 1)
+    end
+  end
+
+  it "stubs a guard that finds head_moved only under unchanged, once a commits proof has passed" do
+    guard = described_class::SimGuard.new
+    script = Workspace::WorkflowSimScript.parse("steps: {}\n", definition: {"id" => "d", "inputs" => {}, "steps" => [{"id" => "t", "require" => [{"commits" => 1}]}]}, source: "s")
+    expect(guard.check("tree", {}, "unchanged")).to be_nil
+
+    described_class::SimRequire.new(script, guard).check(step: {"id" => "t", "require" => [{"commits" => 1}]}, attempt: {"n" => 1})
+
+    expect(guard.check("tree", {}, "unchanged")).to eq("code" => "head_moved", "paths" => [], "base_sha" => described_class::SimGuard::BASE_SHA, "head" => described_class::SimGuard::HEAD_SHA)
+    expect(guard.check("tree", {}, "config")).to be_nil
   end
 
   it "simulates a step whose exec proof uses {{changed.tests}} and a program that is not installed" do

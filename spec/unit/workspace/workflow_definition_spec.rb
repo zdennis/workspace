@@ -330,17 +330,10 @@ RSpec.describe Workspace::WorkflowDefinition do
     it "warns for no shipped preset" do
       presets = File.join(PROJECT_ROOT, "lib", "workflows")
       lookup = ->(id, below: nil) { {"text" => File.read(File.join(presets, "#{id}.yml")), "path" => File.join(presets, "#{id}.yml"), "source" => "builtin"} }
-      # Known hits: a guarded step before the committing step that a later step's failure loops back into. Shrinks as presets are fixed.
-      known = {
-        "bugfix" => [["guard_unchanged_loop_back", "reproduce"]],
-        "rpiv" => [["guard_unchanged_loop_back", "plan"]],
-        "rpiv-auto-approve" => [["guard_unchanged_loop_back", "plan_review"]],
-        "rpiv-auto-approve-v2" => [["guard_unchanged_loop_back", "plan"]]
-      }
       Dir[File.join(presets, "*.yml")].each do |file|
         id = File.basename(file, ".yml")
         found = described_class.parse(File.read(file), id: id, source: "builtin", path: file, parent_lookup: lookup).warnings
-        expect(found.map { |w| [w["code"], w["step"]] }).to eq(known.fetch(id, []))
+        expect(found.map { |w| [w["code"], w["step"]] }).to eq([]), id
       end
     end
   end

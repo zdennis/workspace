@@ -40,7 +40,7 @@ steps:
       the test must be a new file (a case that belongs in an existing test file goes in a new
       file now; the fix step may move it), named so the project's commands.test_files match it.
       If the reproduction needs a tracked file changed (a spec helper, a factory), don't change
-      it: the run fails the step on any tracked change. Run `workspace step done --status fail
+      it: tracked changes belong to the fix step. Run `workspace step done --status fail
       --summary "<the tracked file it needs and why>"` and end your turn.
       The run's check runs every untracked file that matches commands.test_files, not only yours.
       On a rerun (after a rejected gate or a resume), delete or replace the test files an earlier
@@ -55,7 +55,7 @@ steps:
       timestamps or random seeds. The run checks that the new test fails with that text before
       the gate.
     produces: [repro.md, failure.txt]
-    guard: unchanged
+    guard: config
     require:
       # --timeout must stay below this entry's timeout: 15m (840s < 900s)
       - exec: "workspace step expect-fail --timeout 840 --match-file {{artifacts}}/failure.txt -- {{changed.tests}}"

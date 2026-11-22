@@ -176,7 +176,7 @@ steps:
       rpiv-auto-approve:{{run}} --reopen --expires 168h`, its text the four summary lines.
       Do not edit the plan, the verdict files, or code.
     produces: [plan-approval.md]
-    guard: unchanged
+    guard: config
     # Done only when every verdict file is there, each names its own role and the plan as it
     # stands now, the summary matches the verdicts, and the skeptic plus one other approved.
     # A rejection or a malformed round goes back to plan. A plan edited during review reports

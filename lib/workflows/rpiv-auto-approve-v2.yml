@@ -69,7 +69,7 @@ replace:
       Say in plan.md how each reviewer objection, if any, was answered.
       Don't change code.
     produces: [plan.md]
-    guard: unchanged
+    guard: config
     # Done only when the workspace plan exists and has at least one task.
     status:
       run: |

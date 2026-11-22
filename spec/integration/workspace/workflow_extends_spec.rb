@@ -421,7 +421,18 @@ RSpec.describe "workflow extends" do
       expect(data).to include("max_attempts" => 21, "timeout" => 28_800.0, "timeout_action" => "hold", "budget" => {"action" => "stop", "tokens" => 40_000_000})
       expect(data["inputs"]).to eq(rpiv.to_h["inputs"])
       expect(data["reviewers"].keys).to eq(%w[supportive skeptical implementer])
-      expect(v2.warnings.map { |w| [w["code"], w["step"]] }).to eq([["guard_unchanged_loop_back", "plan"]])
+      expect(v2.warnings).to eq([])
+    end
+
+    # v2's shape before its plan was guard: config: a child that replaces the parent's plan with an unchanged one, which
+    # the parent's committing implement loops back into, is warned of on the resolved steps.
+    it "warns of a replaced step that a parent step's failure loops back into after a commit" do
+      write(builtin_dir, "looping", "title: Looping\nsteps:\n  plan:\n    prompt: Plan\n    produces: [plan.md]\n    guard: config\n" \
+        "  implement:\n    prompt: Build\n    require:\n      - commits: 1\n")
+      write(global_dir, "child", "extends: looping\nreplace:\n  plan:\n    prompt: Plan again\n    produces: [plan.md]\n    guard: unchanged\n")
+
+      expect(catalog.find("looping").warnings).to eq([])
+      expect(catalog.find("child").warnings.map { |w| [w["code"], w["step"]] }).to eq([["guard_unchanged_loop_back", "plan"]])
     end
 
     it "resolves its sha over rpiv's text, and leaves the old preset's pin alone" do

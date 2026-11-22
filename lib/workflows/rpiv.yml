@@ -51,7 +51,7 @@ steps:
       finished until plan.md exists.
       Don't change code.
     produces: [plan.md]
-    guard: unchanged
+    guard: config
     # Done only when the workspace plan exists and has at least one task.
     status:
       run: |
