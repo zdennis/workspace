@@ -30,9 +30,9 @@ module Workspace
       @tmux.capture_screen(@id)
     end
 
-    # @return [String, nil] the screen with its styling, nil when tmux could not read it
+    # @return [Tmux::StyledCapture, nil] the screen with its styling and a few rows of scrollback, nil when tmux could not read it
     def capture_styled
-      @tmux.capture_screen_styled(@id)
+      @tmux.capture_screen_scrollback(@id)
     end
 
     # @return [Tmux::Delivery]
