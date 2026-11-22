@@ -1,6 +1,7 @@
 require "fileutils"
 require "json"
 require "open3"
+require "shellwords"
 require "time"
 require_relative "../demo_calculator/demo"
 require_relative "config"
@@ -18,7 +19,9 @@ module DemoCalculator2
   # Every command goes through the injected `exec`, so the fork and the integrate decision run in specs without git
   # or `workspace`.
   class Lanes
-    ATTRIBUTES_LINE = "#{DEMO_DIR}/test/calc_test.rb merge=union".freeze
+    MERGE_DRIVER = "calc-demo-tests".freeze
+    ATTRIBUTES_LINE = "#{DEMO_DIR}/test/calc_test.rb merge=#{MERGE_DRIVER}".freeze
+    DRIVER_SCRIPT = File.expand_path("merge_test_methods", __dir__).freeze
     # Queue outcomes that count as a goal delivered.
     SUCCESS = %w[succeeded completed].freeze
     # What joins a project name to a worktree suffix in a workspace name (Workspace::WorkspaceName::SEPARATOR).
@@ -86,7 +89,7 @@ module DemoCalculator2
       demo = DemoCalculator::Demo.new(root: @root, workspace: @workspace, name: @name, dry_run: @dry_run, out: @out, err: @err, base: @base,
         out_dir: @out_dir, clock: -> { started }, config: config)
       record = demo.run
-      write_attributes
+      write_attributes(demo.record_path)
       write_out_exclude(demo.record_path)
       if @dry_run
         say "would wait for lane A's #{fork_goal}, then in lane B: git checkout -B #{branch_b} <#{fork_goal}'s final head>, queue #{b_goals.join(", ")} and enable its queue"
@@ -165,12 +168,26 @@ module DemoCalculator2
       raise ForkCheckFailed, "#{ACCEPTANCE_REF} is not an ancestor of the fork point #{sha[0, 12]}" unless ancestor
     end
 
-    # Adds `calc_test.rb merge=union` to `info/attributes` in the shared git dir, once: every goal appends tests to that file,
-    # and `union` keeps both lanes' added lines when they merge. The file is shared by every worktree and is part of no diff.
+    # Adds `calc_test.rb merge=calc-demo-tests` to `info/attributes` in the shared git dir, once, and sets `merge.calc-demo-tests.name`
+    # and `.driver` in that repository's local config. Every goal appends test methods to that file, and the driver
+    # (`merge_test_methods`) keeps both lanes' added methods whole, where `merge=union` interleaved their `end` lines. The driver is
+    # named by the absolute path of this checkout's copy of the script (lane A's, where the merge runs), so it resolves from any directory.
+    # The file and the config are shared by every worktree and are part of no diff. The run record gets `merge_driver` with what was written.
     #
+    # @param record_path [String, nil] the run.json to record what was written in
     # @return [void]
-    def write_attributes
-      append_info_line("attributes", ATTRIBUTES_LINE)
+    def write_attributes(record_path = nil)
+      path = append_info_line("attributes", ATTRIBUTES_LINE)
+      command = "ruby #{Shellwords.escape(DRIVER_SCRIPT)} %O %A %B"
+      config = {"merge.#{MERGE_DRIVER}.name" => "calc_test.rb: keep both lanes' added test methods", "merge.#{MERGE_DRIVER}.driver" => command}
+      config.each do |key, value|
+        say "+ git config --local #{key} #{value.inspect}"
+        git(@root, "config", "--local", key, value) unless @dry_run
+      end
+      return if @dry_run || record_path.nil?
+      @record_path = record_path
+      record = JSON.parse(File.read(record_path))
+      save(record.merge("merge_driver" => {"attributes_path" => path, "attributes_line" => ATTRIBUTES_LINE, "config_section" => "merge.#{MERGE_DRIVER}", "driver" => command}))
     end
 
     # Adds an anchored line for the run's own output directory (`--out`, else the default under `tmp/`) to `info/exclude` in the shared git dir, once, so no process that

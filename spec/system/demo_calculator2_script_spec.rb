@@ -272,15 +272,15 @@ RSpec.describe "script/demo-calculator2" do
 
     after { ENV.delete("WORKSPACE_BIN") }
 
-    it "prints a dry run with the group coverage check, the sources entry, the union line and the fork, and changes nothing" do
+    it "prints a dry run with the group coverage check, the sources entry, the merge driver line and the fork, and changes nothing" do
       expect(main(*lane_args, "--goals", "01,06", "--dry-run")).to eq(0), err.string
       expect(out.string).to include("group coverage of each item's own check (acceptance_runner_lanes):", "lane A: 01 groups 1", "lane B: 06 groups 1,2,3,6",
         "covered only by the plain 07-repl run after the merge (groups 1..7): 4,5,7",
-        "+ workspace config set workflows.sources ", "calc_test.rb merge=union", "would wait for lane A's 01-add-sub, then in lane B: git checkout -B calc-demo/")
+        "+ workspace config set workflows.sources ", "calc_test.rb merge=calc-demo-tests", "would wait for lane A's 01-add-sub, then in lane B: git checkout -B calc-demo/")
       expect(out.string).to match(%r{ workspace work-queue add workflow deliver-goal-fast .*goals/01-add-sub\.md})
       expect(out.string).not_to include("goals/06-json.md --")
       expect(File.exist?(log)).to be(false)
-      expect(attributes_text).not_to include("merge=union")
+      expect(attributes_text).not_to include("merge=calc-demo-tests")
       expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("demo-branch")
     end
 
@@ -289,14 +289,15 @@ RSpec.describe "script/demo-calculator2" do
       expect(out.string).to include("covered only by the plain 07-repl run after the merge (groups 1..7): none")
     end
 
-    it "queues only 01-05 in lane A under the fast workflow and the lanes' runner, empties lane B's queue, adds the union line and records the lanes" do
+    it "queues only 01-05 in lane A under the fast workflow and the lanes' runner, empties lane B's queue, adds the merge driver line and records the lanes" do
       expect(main(*lane_args)).to eq(0), err.string
       adds = calls.grep(/\Awork-queue add workflow /)
       expect(adds.map { |line| line[%r{goals/(0\d-[a-z-]+)\.md}, 1] }).to eq(DemoCalculator2::LANES[:a])
       expect(adds).to all(include("deliver-goal-fast", "acceptance=script/demo_calculator2/acceptance_runner_lanes", "--name ws"))
       expect(calls).to include("work-queue disable --name ws-b", "work-queue resume --name ws-b")
       expect(calls.grep(/\Aconfig set workflows.sources /).size).to eq(1)
-      expect(File.read(info_attributes).lines.map(&:strip)).to include("demo/calculator2/test/calc_test.rb merge=union")
+      expect(File.read(info_attributes).lines.map(&:strip)).to include("demo/calculator2/test/calc_test.rb merge=calc-demo-tests")
+      expect(git(work_dir, "config", "--local", "merge.calc-demo-tests.driver")).to include("merge_test_methods %O %A %B")
       record = JSON.parse(File.read(Dir.glob(File.join(work_dir, "tmp/demo-calculator2/runs/*/run.json")).first))
       branch = record["branch"]
       expect(record.dig("out_exclude", "line")).to match(%r{\A/.+/\z})
@@ -326,7 +327,7 @@ RSpec.describe "script/demo-calculator2" do
         expect(err.string).to include(message)
         expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("demo-branch")
         expect(calls.grep(/work-queue (add|enable|advance)/)).to be_empty
-        expect(attributes_text).not_to include("merge=union")
+        expect(attributes_text).not_to include("merge=calc-demo-tests")
       end
 
       context "with a pane that is working" do
