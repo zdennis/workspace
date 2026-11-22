@@ -62,7 +62,7 @@ module Workspace
       # Longest notification message forwarded to the daemon. The message is
       # shown in `sessions --json` and handed to the notify command; a long
       # one is cut rather than dropped.
-      MAX_MESSAGE_LENGTH = SessionMonitor::MAX_MESSAGE_LENGTH
+      MAX_MESSAGE_LENGTH = AgentProtocol::MAX_MESSAGE_LENGTH
 
       # Longest text of composed packs added to a binding's reminder; a longer one is cut.
       MAX_PACKS_CONTEXT = 12_000
