@@ -2,7 +2,7 @@ module Workspace
   # The one way a workflow run changes: under the run's lock, with the attempt record's reasons kept before and
   # after the change, the history lines its block wrote ({#event}) queued and written with `from_state`, `to_state`, `actor` and `cause`
   # once the run is stored and before the lock is given up, `workflow_changed` written when what a reader sees moved, alerts fired once the lock is given
-  # up with what the block registered to follow it ({Context#after_lock}), and then the line of each step the change started typed, through +deliver+, one after another. It never runs a check, a review round or a window close: a
+  # up with what the block registered to follow it ({Context#after_lock}), and then the line of each step the change started typed, through +deliver+, one after another, and the warm review window it registered opened ({Context#prewarm}). It never runs a check, a review round or a window close: a
   # block that registers one reads it back from its {Context} and the caller runs it through
   # {WorkflowEvaluation#finish_follow_ups}.
   class WorkflowRunChange
@@ -90,6 +90,15 @@ module Workspace
         found ? @close_review = found : @close_review
       end
 
+      # With an argument, registers the warm review window to open once the lock is given up and the change's lines
+      # are typed ({WorkflowDispatch#prewarm}); without, the one registered.
+      #
+      # @param found [Hash{String=>Object}, nil] "step" and "attempt" of the attempt whose line the change types
+      # @return [Hash{String=>Object}, nil]
+      def prewarm(found = nil)
+        found ? @prewarm = found : @prewarm
+      end
+
       # Registers a block {WorkflowRunChange#call} runs once the lock is given up and the change stored, given the run
       # as stored, as alerts fire: a notice to a person that must not hold the run's lock. A block that raises is
       # dropped; it never fails the change.
@@ -122,10 +131,14 @@ module Workspace
     # @param deliver [#call] types a registered line, given the run id and the delivery; its result is the change's
     # @param alerts [Workspace::WorkflowAlerts, nil] reads the marks before and after, and fires what moved
     # @param event_log [Workspace::EventLog, nil] gets `workflow_changed`
-    def initialize(store:, attempt_record:, deliver:, alerts: nil, event_log: nil)
+    # @param prewarm [#call, nil] runs a registered {Context#prewarm} after the lines are typed, given the run id and
+    #   what was registered; one that raises {Workspace::Error}, a SystemCallError or Timeout::Error never fails the
+    #   change and leaves a `review_prewarm_failed` line (`step`, `code`, `message`) in the run's history (nil: none runs)
+    def initialize(store:, attempt_record:, deliver:, alerts: nil, event_log: nil, prewarm: nil)
       @store = store
       @attempt_record = attempt_record
       @deliver = deliver
+      @prewarm = prewarm
       @alerts = alerts
       @event_log = event_log
     end
@@ -167,7 +180,9 @@ module Workspace
       @alerts&.fire(alert_before, run)
       ctx.after_locks.each { |each| after_lock(each, run) }
       return run if ctx.deliveries.empty?
-      ctx.deliveries.map { |delivery| @deliver.call(run_id, delivery) }.last
+      typed = ctx.deliveries.map { |delivery| @deliver.call(run_id, delivery) }.last
+      prewarm(run_id, ctx.prewarm) if ctx.prewarm
+      typed
     end
 
     # Appends one line to the run's history. Inside the block of a {#call} for the same run on this thread, the line
@@ -214,6 +229,20 @@ module Workspace
     def after_lock(block, run)
       block.call(run)
     rescue
+      nil
+    end
+
+    def prewarm(run_id, found)
+      @prewarm&.call(run_id, found)
+    rescue Workspace::Error, SystemCallError, Timeout::Error => e
+      prewarm_failed(run_id, found, e)
+    end
+
+    # The history line of a warm open that broke; a line that cannot be written is let go, as a queued one is.
+    def prewarm_failed(run_id, found, error)
+      @store.record_event(run_id, "review_prewarm_failed", {"step" => found["step"], "code" => error.respond_to?(:code) ? error.code : "error",
+        "message" => error.message.lines.first.to_s.scrub.strip, "actor" => "engine", "cause" => "review_prewarm", "from_state" => nil, "to_state" => nil})
+    rescue Workspace::Error, SystemCallError
       nil
     end
 

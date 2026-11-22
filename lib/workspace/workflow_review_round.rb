@@ -153,6 +153,32 @@ module Workspace
       nil
     end
 
+    # Closes the warm review window (`review_window` with `warm: true`) of every step but the current one: kills the
+    # window by the id the slot holds, then drops the slot in a run change, only while that step is still not current
+    # and its slot is unchanged. A change that fails leaves the slot, which a later read finds pointing at no window.
+    #
+    # @param run [WorkflowRun, Hash] the run as read
+    # @return [WorkflowRun] the run afterwards
+    def close_warm(run)
+      run = WorkflowRun.from_h(run)
+      warm = run.steps.filter_map do |id, step|
+        slot = step&.to_h&.dig("review_window")
+        [id, slot] if id != run.current && slot.is_a?(Hash) && slot["warm"] == true
+      end
+      return run if warm.empty?
+      warm.each { |_, slot| @tmux.kill_window(slot["window"], timeout: WorkflowPanes::TMUX_READ_TIMEOUT) if slot["window"].is_a?(String) }
+      @change.call(run.id, actor: "engine", cause: "review_prewarm") do |read|
+        hash = read.thawed
+        warm.each do |id, slot|
+          state = hash.dig("steps", id)
+          state.delete("review_window") if hash["current"] != id && state.is_a?(Hash) && state["review_window"] == slot
+        end
+        WorkflowRun.from_h(hash)
+      end
+    rescue Workspace::Error, SystemCallError, Timeout::Error
+      run
+    end
+
     # The run is still on the step and attempt the window was opened for, not reviewing, and no round started since.
     def prewarm_wanted?(hash, state, step_id, attempt, round)
       return false unless state.is_a?(Hash) && hash["current"] == step_id && state["state"] != "reviewing"

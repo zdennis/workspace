@@ -71,7 +71,10 @@ module Workspace
     # @param event_log [Workspace::EventLog, nil] gets the run's lock events
     # @param downtime [Workspace::WorkflowDowntime, nil] its spans are cut from the run's timeout clock (nil: none)
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, resources:, panes:, prompt:, attempt_record:, guard:, env_stopper: nil, event_log: nil, downtime: nil, clock: -> { Time.now })
+    # @param prewarm [#prewarm, #close_warm, nil] opens a reviewed step's next round window once its line is typed, and
+    #   closes the warm windows of steps the run has left ({WorkflowReviewRound}); nil opens and closes none
+    def initialize(change:, store:, resources:, panes:, prompt:, attempt_record:, guard:, env_stopper: nil, event_log: nil, downtime: nil, clock: -> { Time.now }, prewarm: nil)
+      @prewarm = prewarm
       @change = change
       @store = store
       @resources = resources
@@ -160,6 +163,24 @@ module Workspace
       # Cancelled while the line was on its way: the cancel stands.
       raise unless e.code == "run_not_active"
       @store.run(run_id)
+    end
+
+    # The follow-up {#dispatch} registers on the change ({WorkflowRunChange::Context#prewarm}), run once the step's line
+    # is typed, outside the run lock: it closes the warm review windows of every step but the current one, then, when
+    # the line was delivered (the run, read again after the close, still going and on that attempt, with no delivery
+    # mark, outcome or pause hold left) and the step has `review:`, opens the window of the step's next round
+    # ({WorkflowReviewRound#prewarm}, which has the skip rules), so a run cancelled meanwhile gets none. `WorkflowEngine#resume` dispatches, so infra retry and `workflow recover` reach it too.
+    #
+    # @param run_id [String]
+    # @param found [Hash{String=>Object}] "step" and "attempt" of the dispatched attempt
+    # @return [void]
+    def prewarm(run_id, found)
+      return unless @prewarm
+      @prewarm.close_warm(@store.run(run_id))
+      run = @store.run(run_id)
+      return if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
+      return unless delivered?(run, found["step"], found["attempt"]) && WorkflowDefinition.review(step_def_for(run.to_h, found["step"]))
+      @prewarm.prewarm(run, found["step"], found["attempt"])
     end
 
     # Types the continue line ({WorkflowTransitions::CONTINUE_LINE}) into a pane whose turn `pause --interrupt`
@@ -593,11 +614,31 @@ module Workspace
                 "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh",
                 "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"], "cause" => cause}
         # A fan_out sibling's line is typed after its siblings'; any other step's is the change's one line.
-        WorkflowRun.step_scoped?(run, step["id"]) ? ctx.add_delivery(line) : ctx.deliver(line)
+        if WorkflowRun.step_scoped?(run, step["id"])
+          ctx.add_delivery(line)
+        else
+          ctx.deliver(line)
+          ctx.prewarm({"step" => step["id"], "attempt" => attempt["n"]}) if prewarm_wanted?(run, step)
+        end
       end
     rescue Workspace::Error, SystemCallError, EncodingError => e
       # The step could not be started (no pane, an unreadable pack, a checkout that is gone, text that can't be written as UTF-8).
       not_delivered(run, state, attempt, {code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.strip})
+    end
+
+    # Whether a dispatch registers the {#prewarm} follow-up: the step has `review:`, or another step keeps a warm window.
+    def prewarm_wanted?(run, step)
+      return false unless @prewarm
+      return true if WorkflowDefinition.review(step)
+      (run["steps"] || {}).any? { |id, state| id != step["id"] && state.is_a?(Hash) && state.dig("review_window", "warm") == true }
+    end
+
+    # The attempt's line was typed: the run is on it, and it holds no delivery mark, outcome or pause hold.
+    def delivered?(run, step_id, n)
+      attempt = run.step(step_id)&.last_attempt
+      return false unless run.current == step_id && attempt&.n == n
+      hash = attempt.to_h
+      !hash.key?("delivery") && !hash.key?("outcome") && !run.pause_hold_for(step_id)
     end
 
     # The delivery line a `subagents` group's (or one re-attempted subagent sibling's) shared line is: the run pane's

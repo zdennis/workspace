@@ -123,6 +123,63 @@ RSpec.describe Workspace::WorkflowRunChange do
       expect(delivered).to eq([[run_id, {"step" => "a", "pane" => "%1"}, false]])
     end
 
+    describe "the prewarm follow-up" do
+      let(:prewarmed) { [] }
+
+      def prewarming(prewarm)
+        described_class.new(store: store, attempt_record: attempt_record, deliver: deliver, alerts: alerts, event_log: event_log, prewarm: prewarm)
+      end
+
+      it "runs a registered one after the lines are typed, outside the lock, and returns what deliver returns" do
+        change = prewarming(->(id, found) { prewarmed << [id, found, locked?(id), delivered.size] })
+
+        result = change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
+          ctx.deliver({"step" => "a"})
+          ctx.prewarm({"step" => "a", "attempt" => 1})
+          nil
+        end
+
+        expect(result).to eq(:typed)
+        expect(prewarmed).to eq([[run_id, {"step" => "a", "attempt" => 1}, false, 1]])
+      end
+
+      def prewarm_lines = File.readlines(store.events_path(run_id)).map { |line| JSON.parse(line) }.select { |line| line["type"] == "review_prewarm_failed" }
+
+      it "drops one that raises a Workspace::Error, recording why in the run's history" do
+        change = prewarming(->(_id, _found) { raise Workspace::Error.new("tmux went away\nmore", code: "tmux_failed") })
+        result = change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
+          ctx.deliver({"step" => "a"})
+          ctx.prewarm({"step" => "a", "attempt" => 1})
+          nil
+        end
+        expect(result).to eq(:typed)
+        expect(prewarm_lines.size).to eq(1)
+        expect(prewarm_lines.first).to include("step" => "a", "code" => "tmux_failed", "message" => "tmux went away", "actor" => "engine", "cause" => "review_prewarm")
+      end
+
+      it "lets a code bug in one raise" do
+        change = prewarming(->(_id, _found) { raise NoMethodError, "undefined method" })
+        expect do
+          change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
+            ctx.deliver({"step" => "a"})
+            ctx.prewarm({"step" => "a", "attempt" => 1})
+            nil
+          end
+        end.to raise_error(NoMethodError)
+      end
+
+      it "runs none when nothing registered one, or with no prewarm given" do
+        prewarming(->(id, found) { prewarmed << [id, found] }).call(run_id, actor: "engine", cause: "test") { |_run, ctx| ctx.deliver({"step" => "a"}) && nil }
+        result = change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
+          ctx.deliver({"step" => "a"})
+          ctx.prewarm({"step" => "a", "attempt" => 1})
+          nil
+        end
+        expect(prewarmed).to be_empty
+        expect(result).to eq(:typed)
+      end
+    end
+
     it "lets deliver make a change of its own after the first one is written" do
       nested = nil
       nested = described_class.new(store: store, attempt_record: attempt_record, alerts: alerts, event_log: event_log,

@@ -49,13 +49,13 @@ end
 # Fake of Workspace::WorkflowRunChange over the run Hashes a RecordingRunStore holds: +call+ yields the stored run
 # as a frozen WorkflowRun and a real Context, writes the run the block returns (the one read for nil) back into the Hash,
 # keeps the line a block registered in +deliveries+ (it types nothing), the review round in +reviews+, the ended round whose
-# revision is computed again in +review_ends+, the window to close in +closes+ and the lines queued with Context#event in
+# revision is computed again in +review_ends+, the window to close in +closes+, the warm window to open in +prewarms+ and the lines queued with Context#event in
 # +events+ (as +event+ does, with no from_state or to_state), and returns the run;
 # a +nonblocking+ call on a run it was told is busy answers nil without yielding.
 class RecordingRunChange
-  CONTROL_METHODS = %i[calls events deliveries reviews review_ends closes].freeze
+  CONTROL_METHODS = %i[calls events deliveries reviews review_ends closes prewarms].freeze
 
-  attr_reader :calls, :events, :deliveries, :reviews, :review_ends, :closes
+  attr_reader :calls, :events, :deliveries, :reviews, :review_ends, :closes, :prewarms
 
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param finished [Array<String>] ids whose change raises `run_not_active`, as for a run cancelled meanwhile
@@ -77,6 +77,7 @@ class RecordingRunChange
     @reviews = []
     @review_ends = []
     @closes = []
+    @prewarms = []
   end
 
   def call(run_id, actor:, cause:, nonblocking: false)
@@ -96,6 +97,7 @@ class RecordingRunChange
     @reviews << ctx.review if ctx.review
     @review_ends << ctx.review_end if ctx.review_end
     @closes << ctx.close_review if ctx.close_review
+    @prewarms << ctx.prewarm if ctx.prewarm
     ctx.after_locks.each do |each|
       each.call(changed)
     rescue

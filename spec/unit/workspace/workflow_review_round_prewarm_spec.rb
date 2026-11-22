@@ -15,9 +15,11 @@ RSpec.describe Workspace::WorkflowReviewRound, "#prewarm" do
   let(:change) { RecordingRunChange.new(store.runs) }
   let(:moving_tmux) do
     Class.new(FakeTmux) do
-      attr_accessor :after_open
+      attr_accessor :after_open, :after_kill
 
       def open_window(...) = super.tap { after_open&.call }
+
+      def kill_window(...) = super.tap { after_kill&.call }
     end
   end
   let(:tmux) { moving_tmux.new(session_name: "app") }
@@ -264,6 +266,51 @@ RSpec.describe Workspace::WorkflowReviewRound, "#prewarm" do
       original = digest
       File.write(File.join(worktree, "README.md"), "x")
       expect(digest).to eq(original)
+    end
+  end
+
+  describe "#close_warm" do
+    let(:warm_slot) { {"round" => 1, "window" => "@7", "pane" => "%7", "warm" => true} }
+
+    before do
+      store.runs["wr_1"]["current"] = "build"
+      store.runs["wr_1"]["definition"]["steps"] << {"id" => "build", "produces" => []}
+      store.runs["wr_1"]["steps"]["build"] = {"state" => "running", "attempts" => [{"n" => 1}]}
+      step_hash["review_window"] = warm_slot
+      tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%7", pid: 1, store: nil},
+        {window: "@8", name: "review-other", review: "wr_2:plan:1", pane: "%8", pid: 1, store: nil}]
+    end
+
+    it "kills a step's warm window by its id and drops its slot once the run left the step" do
+      after = runner.close_warm(run)
+      expect(tmux.killed_windows).to eq(["@7"])
+      expect(slot).to be_nil
+      expect(after.steps["plan"].to_h).not_to have_key("review_window")
+    end
+
+    it "leaves the current step's warm window and a kept, not warm, window alone" do
+      store.runs["wr_1"]["current"] = "plan"
+      runner.close_warm(run)
+      store.runs["wr_1"]["current"] = "build"
+      step_hash["review_window"] = warm_slot.except("warm")
+      runner.close_warm(run)
+      expect(tmux.killed_windows).to be_empty
+      expect(change.calls).to be_empty
+    end
+
+    it "keeps a slot the step got back, or that changed, before the drop" do
+      tmux.after_kill = -> { store.runs["wr_1"]["current"] = "plan" }
+      runner.close_warm(run)
+      expect(tmux.killed_windows).to eq(["@7"])
+      expect(slot).to eq(warm_slot)
+    end
+
+    it "answers the run as read when the change fails" do
+      change = RecordingRunChange.new(store.runs, finished: %w[wr_1])
+      runner = described_class.new(store: store, change: change, tmux: tmux, panes: RecordingWorkflowPanes.new, readiness: RecordingPaneReadiness.new(tmux: tmux),
+        main_agent: Workspace::MainAgent.new(project_config: project_config), revision: nil, prompt: nil, round_dirs: nil, holder: -> {}, home: home)
+      expect(runner.close_warm(run).id).to eq("wr_1")
+      expect(slot).to eq(warm_slot)
     end
   end
 end

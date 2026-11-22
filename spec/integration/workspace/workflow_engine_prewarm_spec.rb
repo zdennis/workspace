@@ -1,0 +1,224 @@
+require "spec_helper"
+require "tmpdir"
+require "yaml"
+
+# The warm review window over a whole engine: a real run store in a temporary directory, the real WorkflowReviewRound
+# built through `review_runner:` with `prewarm: true` (as `build_cli` builds it), over FakeTmux, so nothing starts a process.
+RSpec.describe Workspace::WorkflowEngine, "warm review window" do
+  around do |example|
+    Dir.mktmpdir("wf-engine-prewarm") do |dir|
+      @dir = File.realpath(dir)
+      example.run
+    end
+  end
+
+  after { EventKeysCheck.verify!(runs_dir, archive_dir) }
+
+  let(:worktree) { File.join(@dir, "app") }
+  let(:home) { File.join(@dir, "home") }
+  let(:runs_dir) { File.join(@dir, "state", ".workflows", "runs") }
+  let(:archive_dir) { File.join(@dir, "state", ".workflows", "archive") }
+  let(:lock_dir) { File.join(@dir, "state", "locks", "ns") }
+  let(:now) { [Time.utc(2026, 11, 14, 12, 0, 0)] }
+  let(:ids) { %w[wr_1 wr_2] }
+  let(:store) { Workspace::WorkflowRunStore.new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, id_generator: -> { ids.shift }) }
+  let(:liveness) { RunFileLiveness.new(runs_dir) }
+  let(:lock_namespace) { instance_double(Workspace::LockNamespace) }
+  let(:resources) { Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: liveness, wall_clock: -> { now.first.to_i }) }
+  let(:panes) { InterruptibleWorkflowPanes.new }
+  let(:review_panes) { RecordingWorkflowPanes.new }
+  # Runs +before_open+ once, just before the next window opens, and +after_open+ once, just after, so a spec can put
+  # the run where a race leaves it.
+  let(:racing_tmux) do
+    Class.new(FakeTmux) do
+      attr_accessor :before_open, :after_open
+
+      def open_window(...)
+        hook = before_open
+        self.before_open = nil
+        hook&.call
+        opened = super
+        hook = after_open
+        self.after_open = nil
+        hook&.call
+        opened
+      end
+    end
+  end
+  let(:tmux) { racing_tmux.new(session_name: "app") }
+  let(:tally) { RecordingReviewTally.new }
+  let(:holder) { {"pid" => 4321, "started" => "Sat Nov 14 11:59:00 2026"} }
+  let(:config_path) { File.join(@dir, "app.yml") }
+  let(:project_config) do
+    instance_double(Workspace::ProjectConfig, config_path_for: config_path, agent_pane_command: nil).tap do |config|
+      allow(config).to receive(:with_configured_program) { |command, _kind, _workspace| command }
+    end
+  end
+  let(:commands_config) { instance_double(Workspace::CommandsConfig, for_project: {test: nil, lint: nil}) }
+  let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app")) }
+  let(:git) { FakeGit.new(worktree_branch: "feature/x") }
+  let(:guard) { instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}, head: "1" * 40, round_snapshot: {"head" => "1" * 40, "tree_sha256" => "t" * 64}, round_check: nil) }
+  let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => File.join(@dir, "notes")}) }
+
+  def build_engine(prewarm: true, review_runner: true)
+    Workspace.build_workflow_engine(store: store, resources: resources, composer: FakeStepComposer.new, panes: panes, checker: ->(**) { {exit_code: 0, timed_out: false} },
+      commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git),
+      gate_note: Workspace::WorkflowGateNote.new(notes: notes), env_stopper: ->(**) {}, workspace_known: ->(_) { false }, event_log: instance_double(Workspace::EventLog, record: nil),
+      task_store: instance_double(Workspace::TaskStore, active_for: {"id" => "t1"}), review_tally: tally, round_holder: -> { holder }, prewarm: prewarm,
+      review_runner: review_runner && ->(change:, store:, prompt:) do
+        Workspace::WorkflowReviewRound.new(store: store, change: change, tmux: tmux, panes: review_panes, readiness: RecordingPaneReadiness.new(tmux: tmux),
+          main_agent: Workspace::MainAgent.new(project_config: project_config), revision: RecordingReviewRevision.new({revision: "rev1", problem: nil}),
+          prompt: prompt, round_dirs: tally, holder: -> { holder }, shell: "/bin/zsh", which: ->(_) { "/usr/local/bin/claude" },
+          error_output: StringIO.new, clock: -> { now.first }, home: home)
+      end,
+      clock: -> { now.first })
+  end
+
+  subject(:engine) { build_engine }
+
+  before do
+    FileUtils.mkdir_p([worktree, home])
+    File.write(config_path, YAML.dump("name" => "app", "windows" => [{"main" => {"panes" => ["claude"]}}]))
+    allow(lock_namespace).to receive(:resolve).with(cwd: worktree).and_return(key: "ns", display: "app", dir: lock_dir)
+  end
+
+  let(:flow) do
+    Workspace::WorkflowDefinition.parse(<<~YAML, id: "flow", source: "global", path: "/defs/flow.yml")
+      max_attempts: 5
+      reviewers:
+        skeptic: {prompt: Find what is wrong.}
+      steps:
+        plan:
+          prompt: Write {{artifacts}}/plan.md.
+          produces: [plan.md]
+          review: [skeptic]
+        build:
+          prompt: Build it.
+    YAML
+  end
+
+  def start = engine.start(actor: "person", definition: flow, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+
+  def run = stored_run(store, "wr_1")
+
+  def slot = run["steps"]["plan"]["review_window"]
+
+  def lines(type) = File.readlines(store.events_path("wr_1")).map { |line| JSON.parse(line) }.select { |line| line["type"] == type }
+
+  def author_done
+    path = File.join(worktree, ".workflow", "wr_1", "plan.md")
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "done\n")
+    File.utime(now.first, now.first, path)
+    engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+  end
+
+  it "opens the window of the plan step's first round once the author's line is typed, and the round adopts it" do
+    start
+
+    expect(panes.kicks.size).to eq(1)
+    expect(tmux.opened_windows.map { |each| each.slice(:name, :option) }).to eq([{name: "review-plan", option: "wr_1:plan:1"}])
+    expect(slot).to include("round" => 1, "window" => "@100", "pane" => "%100", "warm" => true)
+    expect(review_panes.calls).to be_empty
+
+    author_done
+
+    expect(tmux.opened_windows.size).to eq(1)
+    expect(tmux.killed_windows).to be_empty
+    expect(run["steps"]["plan"]["review"]).to include("window" => "@100", "pane" => "%100", "delivery" => nil)
+    expect(slot).to be_nil
+    expect(lines("review_delivered").last).to include("window" => "@100", "warm" => true, "reused" => false)
+    expect(lines("review_delivered").last).not_to have_key("cleared")
+  end
+
+  it "opens none when the author's line was not typed" do
+    panes.kick_result = {ok: false, code: "pane_busy", message: "busy"}
+    start
+    expect(tmux.opened_windows).to be_empty
+    expect(slot).to be_nil
+  end
+
+  it "opens none with prewarm: false, and the round opens its window at delivery" do
+    engine = build_engine(prewarm: false)
+    engine.start(actor: "person", definition: flow, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+    expect(tmux.opened_windows).to be_empty
+    path = File.join(worktree, ".workflow", "wr_1", "plan.md")
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "done\n")
+    File.utime(now.first, now.first, path)
+    engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+    expect(tmux.opened_windows.size).to eq(1)
+    expect(lines("review_delivered").last).not_to have_key("warm")
+  end
+
+  it "refuses prewarm: true with no review_runner:" do
+    expect { build_engine(review_runner: false) }.to raise_error(ArgumentError, /review_runner/)
+  end
+
+  describe "a restart of the step (infra retry, `workflow recover`)" do
+    def restart = engine.resume("wr_1", actor: "person", restart_step: true, bound: "idle")
+
+    it "keeps an open warm window" do
+      start
+      restart
+      expect(run["steps"]["plan"]["attempts"].size).to eq(2)
+      expect(tmux.opened_windows.size).to eq(1)
+      expect(tmux.killed_windows).to be_empty
+      expect(slot).to include("window" => "@100", "warm" => true)
+    end
+
+    it "opens a new one when the slot's window is gone" do
+      start
+      tmux.kill_window("@100")
+      restart
+      expect(tmux.opened_windows.map { |each| each[:option] }).to eq(%w[wr_1:plan:1 wr_1:plan:1])
+      expect(slot).to include("window" => "@101", "warm" => true)
+    end
+  end
+
+  it "has the round open cold when it is delivered before the slot is written, and the late slot write records nothing and kills only its own window" do
+    other = {window: "@5", name: "review-other", review: "wr_9:plan:1", pane: "%5", pid: 1, store: nil}
+    tmux.review_window_list << other
+    # The author's turn ends, and the round is delivered, while the warm window is opening.
+    tmux.before_open = -> { author_done }
+    start
+
+    # The round's own delivery opened its window first (@100); the warm open that was under way came after it (@101).
+    expect(run["steps"]["plan"]["review"]).to include("window" => "@100", "delivery" => nil)
+    expect(lines("review_delivered").last).not_to have_key("warm")
+    expect(tmux.killed_windows).to eq(["@101"])
+    expect(slot).to be_nil
+    expect(tmux.review_windows("app").map { |each| each[:window] }).to contain_exactly("@5", "@100")
+  end
+
+  it "has the round kill the unslotted window and open cold when the author's turn ends after the open and before the slot write" do
+    other = {window: "@5", name: "review-other", review: "wr_9:plan:1", pane: "%5", pid: 1, store: nil}
+    tmux.review_window_list << other
+    tmux.after_open = -> { author_done }
+    start
+
+    # The warm open made @100; the round found it marked with no slot, killed it and delivered into a new @101.
+    expect(tmux.opened_windows.map { |each| each[:window] }).to eq(%w[@100 @101])
+    expect(run["steps"]["plan"]["review"]).to include("window" => "@101", "delivery" => nil)
+    expect(lines("review_delivered").last).not_to have_key("warm")
+    # The late slot write records nothing; its kill of @100 is the only other kill, of its own window.
+    expect(slot).to be_nil
+    expect(tmux.killed_windows.uniq).to eq(["@100"])
+    expect(tmux.review_windows("app").map { |each| each[:window] }).to contain_exactly("@5", "@101")
+  end
+
+  it "closes a warm window of a step the run has left, at the next dispatch" do
+    start
+    # The plan step failed and the run went on to build, whose line could not be typed: a resume dispatches it again.
+    edit_run(store, "wr_1") do |stored|
+      stored["steps"]["plan"]["state"] = "failed"
+      stored.merge!("current" => "build", "state" => "waiting",
+        "reason" => {"code" => "waiting_you", "since" => "2026-11-14T12:00:00Z", "details" => {"kind" => "dispatch", "step" => "build"}})
+    end
+    engine.resume("wr_1", actor: "person")
+
+    expect(run["current"]).to eq("build")
+    expect(tmux.killed_windows).to eq(["@100"])
+    expect(slot).to be_nil
+  end
+end
