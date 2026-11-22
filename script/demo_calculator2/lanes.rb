@@ -5,6 +5,7 @@ require "shellwords"
 require "time"
 require_relative "../demo_calculator/demo"
 require_relative "config"
+require_relative "shared_values"
 require_relative "test_names"
 
 module DemoCalculator2
@@ -22,7 +23,6 @@ module DemoCalculator2
   class Lanes
     MERGE_DRIVER = "calc-demo-tests".freeze
     ATTRIBUTES_LINE = "#{DEMO_DIR}/test/calc_test.rb merge=#{MERGE_DRIVER}".freeze
-    DRIVER_SCRIPT = File.expand_path("merge_test_methods", __dir__).freeze
     # Queue outcomes that count as a goal delivered.
     SUCCESS = %w[succeeded completed].freeze
     # What joins a project name to a worktree suffix in a workspace name (Workspace::WorkspaceName::SEPARATOR).
@@ -169,26 +169,41 @@ module DemoCalculator2
       raise ForkCheckFailed, "#{ACCEPTANCE_REF} is not an ancestor of the fork point #{sha[0, 12]}" unless ancestor
     end
 
-    # Adds `calc_test.rb merge=calc-demo-tests` to `info/attributes` in the shared git dir, once, and sets `merge.calc-demo-tests.name`
+    # Adds `calc_test.rb merge=calc-demo-tests` to `info/attributes` in the shared git dir, and sets `merge.calc-demo-tests.name`
     # and `.driver` in that repository's local config. Every goal appends test methods to that file, and the driver
-    # (`merge_test_methods`) keeps both lanes' added methods whole, where `merge=union` interleaved their `end` lines. The driver is
-    # named by the absolute path of this checkout's copy of the script (lane A's, where the merge runs), so it resolves from any directory.
-    # The file and the config are shared by every worktree and are part of no diff. The run record gets `merge_driver` with what was written (the line and the config section), for whoever removes them; nothing in the harness removes them.
+    # (`merge_test_methods`) keeps both lanes' added methods whole, where `merge=union` interleaved their `end` lines. The driver
+    # command names no path (`$(git rev-parse --show-toplevel)`), so every checkout writes the same value and a killed worktree cannot leave it dangling.
+    # Each value is classified first ({SharedValues}): written when absent or dangling, left when equal, and a driver that belongs to
+    # another live checkout refuses the run. The file and the config are shared by every worktree and are part of no diff. The run
+    # record gets `merge_driver` with what was written (the line and the config section), whether anything was, and the driver value it replaced.
     #
     # @param record_path [String, nil] the run.json to record what was written in
     # @return [void]
+    # @raise [DemoCalculator::Refused] when the driver config names another live checkout
     def write_attributes(record_path = nil)
-      path = append_info_line("attributes", ATTRIBUTES_LINE)
-      command = "ruby #{Shellwords.escape(DRIVER_SCRIPT)} %O %A %B"
-      config = {"merge.#{MERGE_DRIVER}.name" => "calc_test.rb: keep both lanes' added test methods", "merge.#{MERGE_DRIVER}.driver" => command}
+      config = {"merge.#{MERGE_DRIVER}.name" => "calc_test.rb: keep both lanes' added test methods", "merge.#{MERGE_DRIVER}.driver" => SharedValues::DRIVER_COMMAND}
+      live = config.keys.to_h { |key| [key, live_config(key)] }
+      states = config.to_h { |key, value| [key, shared_state("git-config:#{key}", live[key], value)] }
+      driver_key = "merge.#{MERGE_DRIVER}.driver"
+      if states[driver_key] == :foreign_live
+        value = live[driver_key]
+        raise DemoCalculator::Refused, SharedValues.refusal(SharedValues::DRIVER_KEY, value, SharedValues.owner_path(SharedValues::DRIVER_KEY, value))
+      end
+      line_state = shared_state("attributes:#{ATTRIBUTES_LINE}", live_attributes_line, ATTRIBUTES_LINE)
+      path = (line_state == :equal) ? attributes_path : append_info_line("attributes", ATTRIBUTES_LINE)
+      written = line_state != :equal
       config.each do |key, value|
+        next if states[key] == :equal
+        written = true
         say "+ git config --local #{key} #{value.inspect}"
         git(@root, "config", "--local", key, value) unless @dry_run
       end
       return if @dry_run || record_path.nil?
+      replaced = (states[driver_key] == :dangling) ? live[driver_key] : nil
       @record_path = record_path
       record = JSON.parse(File.read(record_path))
-      save(record.merge("merge_driver" => {"attributes_path" => path, "attributes_line" => ATTRIBUTES_LINE, "config_section" => "merge.#{MERGE_DRIVER}", "driver" => command}))
+      save(record.merge("merge_driver" => {"attributes_path" => path, "attributes_line" => ATTRIBUTES_LINE, "config_section" => "merge.#{MERGE_DRIVER}",
+                                           "driver" => SharedValues::DRIVER_COMMAND, "written" => written, "replaced" => replaced}))
     end
 
     # Adds an anchored line for the run's own output directory (`--out`, else the default under `tmp/`) to `info/exclude` in the shared git dir, once, so no process that
@@ -209,10 +224,31 @@ module DemoCalculator2
       save(record.merge("out_exclude" => {"path" => path, "line" => line}))
     end
 
-    def append_info_line(file, line)
+    def info_path(file)
       dir, ok = git(@root, "rev-parse", "--git-common-dir")
       raise DemoCalculator::Refused, "cannot find the shared git dir in #{@root}" unless ok
-      path = File.join(File.expand_path(dir.strip, @root), "info", file)
+      File.join(File.expand_path(dir.strip, @root), "info", file)
+    end
+
+    def attributes_path = info_path("attributes")
+
+    def live_config(key)
+      out, ok = git(@root, "config", "--local", "--get", key)
+      (ok && !out.to_s.strip.empty?) ? out.to_s.strip : nil
+    end
+
+    def live_attributes_line
+      path = attributes_path
+      return nil unless File.exist?(path)
+      File.readlines(path, chomp: true).map(&:strip).reverse.find { |line| line.start_with?("#{DEMO_DIR}/test/calc_test.rb ") }
+    end
+
+    def shared_state(key, live, wanted)
+      SharedValues.classify(key, live: live, wanted: wanted, path_exists: ->(path) { File.directory?(path) })
+    end
+
+    def append_info_line(file, line)
+      path = info_path(file)
       say "+ add `#{line}` to #{path}"
       return path if @dry_run
       existing = File.exist?(path) ? File.read(path) : ""

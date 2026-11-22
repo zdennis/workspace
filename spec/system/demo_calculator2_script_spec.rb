@@ -297,7 +297,7 @@ RSpec.describe "script/demo-calculator2" do
       expect(calls).to include("work-queue disable --name ws-b", "work-queue resume --name ws-b")
       expect(calls.grep(/\Aconfig set workflows.sources /).size).to eq(1)
       expect(File.read(info_attributes).lines.map(&:strip)).to include("demo/calculator2/test/calc_test.rb merge=calc-demo-tests")
-      expect(git(work_dir, "config", "--local", "merge.calc-demo-tests.driver")).to include("merge_test_methods %O %A %B")
+      expect(git(work_dir, "config", "--local", "merge.calc-demo-tests.driver")).to eq(DemoCalculator2::SharedValues::DRIVER_COMMAND + "\n")
       record = JSON.parse(File.read(Dir.glob(File.join(work_dir, "tmp/demo-calculator2/runs/*/run.json")).first))
       branch = record["branch"]
       expect(record.dig("out_exclude", "line")).to match(%r{\A/.+/\z})

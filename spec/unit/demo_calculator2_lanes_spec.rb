@@ -408,37 +408,74 @@ RSpec.describe DemoCalculator2::Lanes do
 
   describe "#write_attributes" do
     let(:dir) { File.join(tmp, "common") }
-    let(:driver) { "ruby #{Shellwords.escape(described_class::DRIVER_SCRIPT)} %O %A %B" }
+    let(:driver) { DemoCalculator2::SharedValues::DRIVER_COMMAND }
+    let(:driver_key) { "merge.calc-demo-tests.driver" }
+    let(:line) { "demo/calculator2/test/calc_test.rb merge=calc-demo-tests" }
+    let(:live) { {} }
 
     before do
       on("git", "rev-parse", "--git-common-dir") { ["#{dir}\n", true] }
-      on("git", "config") { ["", true] }
+      on("git", "config", "--local", "--get") { |argv| live.key?(argv.last) ? ["#{live[argv.last]}\n", true] : ["", false] }
+      on("git", "config", "--local", /\Amerge/) { ["", true] }
     end
 
-    it "adds the driver line to the shared git dir's info/attributes once and sets the driver in the local config" do
+    def config_writes = calls.select { |argv| argv[0, 3] == %w[git config --local] && argv[3] != "--get" }
+
+    it "adds the path-agnostic driver line and config on a repository with none, and writes it once" do
       2.times { lanes.write_attributes }
-      expect(File.read(File.join(dir, "info", "attributes"))).to eq("demo/calculator2/test/calc_test.rb merge=calc-demo-tests\n")
-      expect(calls).to include(["git", "config", "--local", "merge.calc-demo-tests.driver", driver])
-      expect(calls.map { |argv| argv[0, 4] }).to include(%w[git config --local merge.calc-demo-tests.name])
+      expect(File.read(File.join(dir, "info", "attributes"))).to eq("#{line}\n")
+      expect(driver).not_to include(tmp)
+      expect(config_writes).to include(["git", "config", "--local", driver_key, driver])
+      expect(config_writes.map { |argv| argv[3] }).to include("merge.calc-demo-tests.name")
     end
 
     it "keeps a line already there and puts its own on a new line" do
       FileUtils.mkdir_p(File.join(dir, "info"))
       File.write(File.join(dir, "info", "attributes"), "*.txt -text")
       lanes.write_attributes
-      expect(File.read(File.join(dir, "info", "attributes"))).to eq("*.txt -text\ndemo/calculator2/test/calc_test.rb merge=calc-demo-tests\n")
+      expect(File.read(File.join(dir, "info", "attributes"))).to eq("*.txt -text\n#{line}\n")
     end
 
     it "records what it wrote in run.json so cleanup can remove it" do
       lanes.write_attributes(record_path)
-      expect(saved["merge_driver"]).to eq("attributes_path" => File.join(dir, "info", "attributes"), "attributes_line" => "demo/calculator2/test/calc_test.rb merge=calc-demo-tests",
-        "config_section" => "merge.calc-demo-tests", "driver" => driver)
+      expect(saved["merge_driver"]).to eq("attributes_path" => File.join(dir, "info", "attributes"), "attributes_line" => line,
+        "config_section" => "merge.calc-demo-tests", "driver" => driver, "written" => true, "replaced" => nil)
+    end
+
+    it "rewrites a driver that names a checkout that no longer exists and records the old value" do
+      old = "ruby #{Shellwords.escape(File.join(tmp, "gone"))}/script/demo_calculator2/merge_test_methods %O %A %B"
+      live[driver_key] = old
+      lanes.write_attributes(record_path)
+      expect(config_writes).to include(["git", "config", "--local", driver_key, driver])
+      expect(saved["merge_driver"]).to include("written" => true, "replaced" => old)
+    end
+
+    it "writes nothing when the line and both config values are already ours" do
+      FileUtils.mkdir_p(File.join(dir, "info"))
+      File.write(File.join(dir, "info", "attributes"), "#{line}\n")
+      live["merge.calc-demo-tests.name"] = "calc_test.rb: keep both lanes' added test methods"
+      live[driver_key] = driver
+      lanes.write_attributes(record_path)
+      expect(config_writes).to be_empty
+      expect(saved["merge_driver"]).to include("written" => false, "replaced" => nil)
+    end
+
+    it "refuses a driver that names another checkout that exists, naming the key, the value and the owner" do
+      other = File.join(tmp, "other")
+      FileUtils.mkdir_p(other)
+      old = "ruby #{Shellwords.escape(other)}/script/demo_calculator2/merge_test_methods %O %A %B"
+      live[driver_key] = old
+      expect { lanes.write_attributes(record_path) }.to raise_error(DemoCalculator::Refused) { |error|
+        expect(error.message).to include("git-config:merge.calc-demo-tests.driver", old.inspect, other)
+      }
+      expect(config_writes).to be_empty
+      expect(File.exist?(File.join(dir, "info", "attributes"))).to be(false)
     end
 
     it "writes nothing on a dry run" do
       dry = described_class.new(root: tmp, workspace: "ws-bin", lane_b: "ws-b", name: "ws", out: out, err: err, clock: clock, sleeper: ->(_) {}, exec: exec, dry_run: true)
       dry.write_attributes(record_path)
-      expect(calls.grep(%w[git config])).to be_empty
+      expect(config_writes).to be_empty
       expect(File.exist?(File.join(dir, "info", "attributes"))).to be(false)
     end
   end
