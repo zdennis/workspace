@@ -15,6 +15,7 @@ require "optparse"
 require_relative "demo_calculator/demo"
 require_relative "demo_calculator2/config"
 require_relative "demo_calculator2/evaluation"
+require_relative "demo_calculator2/event_waiter"
 require_relative "demo_calculator2/lanes"
 require_relative "demo_calculator2/lanes_evaluation"
 
@@ -43,6 +44,7 @@ module DemoCalculator2
     args[:workflow] = options[:workflow] if options[:workflow]
     args[:stub_ref] = options[:stub_ref] if options[:stub_ref]
     args[:goals] = pick_goals(options[:goals]) if options[:goals]
+    args[:waiter] = EventWaiter.new
     Lanes.new(**args)
   end
 

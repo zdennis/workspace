@@ -5,6 +5,7 @@ require "shellwords"
 require "time"
 require_relative "../demo_calculator/demo"
 require_relative "config"
+require_relative "event_waiter"
 require_relative "shared_values"
 require_relative "test_names"
 
@@ -38,12 +39,13 @@ module DemoCalculator2
     # @param exec [#call] `call(argv, chdir:)` runs one command and returns `[stdout, success]`
     # @param clock [#call] returns the current Time
     # @param sleeper [#call] sleeps for the given seconds
-    # @param poll [Numeric] seconds between polls
+    # @param waiter [#call, nil] `call(seconds, workspaces:)` returns when a queue event arrives or the seconds pass (and may answer `close`); nil sleeps with `sleeper`
+    # @param poll [Numeric] the longest seconds one wait lasts
     # @param timeout [Numeric] seconds `--wait` may run in all
     # @param held_limit [Numeric] seconds an item may stay held
     def initialize(root:, workspace:, lane_b: nil, workflow: WORKFLOW_ID, name: nil, goals: GOALS, stub_ref: "main", base: nil, out_dir: nil,
       dry_run: false, wait: false, out: $stdout, err: $stderr, clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) },
-      poll: 15, timeout: 14_400, held_limit: 1200,
+      waiter: nil, poll: 5, timeout: 14_400, held_limit: 1200,
       exec: ->(argv, chdir:) {
         out, status = Open3.capture2(*argv, chdir: chdir)
         [out, status.success?]
@@ -63,6 +65,7 @@ module DemoCalculator2
       @err = err
       @clock = clock
       @sleeper = sleeper
+      @waiter = waiter || ->(seconds, workspaces: nil) { sleeper.call(seconds) }
       @poll = poll
       @timeout = timeout
       @held_limit = held_limit
@@ -378,6 +381,8 @@ module DemoCalculator2
     rescue DemoCalculator::Refused, SystemCallError, JSON::ParserError, ArgumentError, TypeError => e
       @err.puts "demo-calculator2: #{e.message}"
       stop_run(record, {"reason" => "error", "item" => nil})
+    ensure
+      @waiter.close if @waiter.respond_to?(:close)
     end
 
     def stop_run(record, stop)
@@ -477,7 +482,7 @@ module DemoCalculator2
         rows.zip(watch).each do |row, (_, name)|
           workspace_do("work-queue", "advance", *name_args(name)) if DemoCalculator::Wait.advance?(row, work_queue_feature: feature)
         end
-        @sleeper.call(@poll)
+        @waiter.call(@poll, workspaces: [@name, @lane_b].compact.uniq)
       end
     end
 

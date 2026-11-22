@@ -14,6 +14,26 @@ RSpec.describe DemoCalculator2::Lanes do
   let(:err) { StringIO.new }
   let(:calls) { [] }
   let(:slept) { [] }
+  let(:waited) { [] }
+  let(:waiter) do
+    Class.new do
+      attr_reader :closed
+
+      def initialize(waited)
+        @waited = waited
+        @workspaces = []
+      end
+
+      def call(seconds, workspaces: nil)
+        @waited << seconds
+        @workspaces << workspaces
+      end
+
+      attr_reader :workspaces
+
+      def close = @closed = true
+    end.new(waited)
+  end
   let(:rules) { [] }
   let(:now) { [Time.utc(2026, 11, 21, 5, 24, 0)] }
   let(:clock) { -> { now[0] += 10 } }
@@ -31,7 +51,7 @@ RSpec.describe DemoCalculator2::Lanes do
   end
   let(:lanes) do
     described_class.new(root: tmp, workspace: "ws-bin", lane_b: "ws-b", name: "ws", workflow: "deliver-goal-fast", out: out, err: err, clock: clock,
-      sleeper: ->(seconds) { slept << seconds }, exec: exec, held_limit: 0, timeout: 10**9)
+      sleeper: ->(seconds) { slept << seconds }, waiter: waiter, exec: exec, held_limit: 0, timeout: 10**9)
   end
 
   before do
@@ -156,7 +176,10 @@ RSpec.describe DemoCalculator2::Lanes do
       end
       on("ws-bin", "work-queue", "list") { [JSON.generate("queues" => [(calls.any? { |argv| argv[1] == "checkout" }) ? {"state" => "on", "items" => []} : queue_state]), true] }
       lanes.wait_run(record_path)
-      expect(slept).to eq([15])
+      expect(waited).to eq([5])
+      expect(waiter.workspaces).to eq([%w[ws ws-b]])
+      expect(slept).to be_empty
+      expect(waiter.closed).to be(true)
       expect(calls).to include(["git", "checkout", "-B", branch, "2" * 40])
     end
 
@@ -172,7 +195,7 @@ RSpec.describe DemoCalculator2::Lanes do
       on("ws-bin", "work-queue", "list") { [JSON.generate("queues" => [{"state" => "on", "items" => []}]), true] }
       lanes.wait_run(record_path)
       expect(calls).to include(["git", "checkout", "-B", branch, "2" * 40])
-      expect(slept).to be_empty
+      expect(waited).to be_empty
     end
 
     it "stops with fork_check when lane A drains and the fork goal's item never shows in the history" do
@@ -217,6 +240,8 @@ RSpec.describe DemoCalculator2::Lanes do
       queue_state["items"] = [{"id" => "a3", "state" => "held"}]
       lanes.wait_run(record_path)
       expect(out.string).to include("LOOP DONE: stopped reason=held item=a3")
+      expect(waited).to be_empty
+      expect(waiter.closed).to be(true)
     end
 
     it "stops on the timeout" do
@@ -225,6 +250,15 @@ RSpec.describe DemoCalculator2::Lanes do
       limited = described_class.new(root: tmp, workspace: "ws-bin", lane_b: "ws-b", name: "ws", out: out, err: err, clock: clock, sleeper: ->(_) {}, exec: exec, timeout: 5)
       limited.wait_run(record_path)
       expect(out.string).to include("LOOP DONE: stopped reason=timeout")
+    end
+
+    it "sleeps with the sleeper for the poll when no waiter is given" do
+      finished("a1", "a2")
+      queue_state["items"] = [{"id" => "a3", "state" => "active"}]
+      polls = 0
+      on("ws-bin", "work-queue", "list") { [JSON.generate("queues" => [((polls += 1) > 2) ? {"state" => "on", "items" => [], "paused" => true} : queue_state]), true] }
+      described_class.new(root: tmp, workspace: "ws-bin", lane_b: "ws-b", name: "ws", out: out, err: err, clock: clock, sleeper: ->(seconds) { slept << seconds }, exec: exec, held_limit: 0, timeout: 10**9).wait_run(record_path)
+      expect(slept).to all(eq(5))
     end
 
     it "ends a clean run with one LOOP DONE line that carries the wall, the integration and the items" do
