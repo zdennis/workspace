@@ -440,6 +440,7 @@ New per-file detail goes there, never here.
 - `spec/unit/dependency_direction_spec.rb` — Checks the tree against the dependency-direction rules and the allow-list.
 - `lib/workspace/terminal_text.rb` — The one escaper for text printed to a terminal.
 - `script/hook-timeline` — Times a headless Claude Code session's hooks through logging shims and prints per-hook medians, the PreToolUse-to-PostToolUse gap X and the predicted Read delta.
+- `script/hook-latency` — Prints n, median and p90 of a workspace's tool_started-to-tool_finished delta from its hook event log, or with `--process N` the median wall time of `session-event` run in a throwaway HOME.
 
 - State tracked in `~/.workspace-state.json`
 - Configs installed to `~/.config/tmuxinator/`
