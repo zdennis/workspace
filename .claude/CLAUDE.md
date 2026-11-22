@@ -323,6 +323,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/commands/sessions.rb` — Shows which panes in a workspace are running a coding agent, whether each is working, idle, or waiting on a person, and what sub-agents they have started.
 - `lib/workspace/commands/wait_until_content.rb` — Polls a tmux pane's scrollback until it contains a target string, then execs a follow-up command so it replaces this process and owns the terminal (direct Ctrl-C, untouched STDIN/STDOUT/STDERR).
 - `lib/workspace/session_workspace.rb` — The one map from a tmux session to the workspace whose agentd owns it.
+- `lib/workspace/tmuxinator_config_names.rb` — Lists the sorted workspace names that have a tmuxinator config, template files left out; a stand-in for `ProjectConfig` where only `available_projects` is needed.
 - `lib/workspace/tmux_pane.rb` — Resolves a pane specification to a tmux pane index.
 - `lib/workspace/transcript_label.rb` — Reads the title and last prompt Claude Code keeps in a session's transcript, so `sessions --json` can label a pane by what it is doing.
 - `lib/workspace/scan_slot_limiter.rb` — Bounds how many session monitors scan at once, machine-wide.
