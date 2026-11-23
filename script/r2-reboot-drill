@@ -1,0 +1,690 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Experiment R2: the reboot drill on a live run. In a lab directory under /tmp (`--lab DIR` or R2_LAB, else a new
+# /tmp/r2-XXXX) it sets HOME, XDG_STATE_HOME, XDG_CONFIG_HOME and TMUX_TMPDIR, unsets TMUX and TMUX_PANE, and puts
+# $LAB/shims first on a PATH with no ~/bin: a `workspace` shim that runs this checkout's bin/workspace, `claude-dev`,
+# and `osascript` and `window-tool` tripwires that log their argv to $LAB/osascript.log and exit 1. It refuses to run
+# when a state, config, socket or tmux path resolves outside the lab.
+#
+#   setup [--dry-run]       lab config and shims; for real also a clone of this repo's main (no remote), `workspace init`,
+#                           config and the headless lab workspace r2lab
+#   run ID [--dry-run]      one uninterrupted calculator2 run (goals 01,02, deliver-goal-fast) and its record
+#   kill-at STEP ID         the same run, killed at research, plan (review window open) or verify (running), then recovered
+#   check-target --session NAME --pid PID   exits 1 unless NAME is the lab session and PID the lab workspace's agentd
+#   table                   the per-kill Markdown table and the baselines, from $LAB/runs/*.json
+#   env                     the lab environment as shell export lines
+#   teardown [--keep]       ends the lab tmux sessions and agentd and removes the lab unless --keep
+#
+# Exit status: 0; 3 when a run's demo did not exit 0; 4 when kill-at missed its point; 1 a refusal; 2 a usage error.
+
+require "etc"
+require "fileutils"
+require "json"
+require "open3"
+require "optparse"
+require "securerandom"
+require "shellwords"
+require "time"
+
+module R2RebootDrill
+  ROOT = File.expand_path("..", __dir__)
+  BIN = File.join(ROOT, "bin", "workspace")
+  BRANCH = "r2lab"
+  DEFAULT_WORKSPACE = "repo.worktree-r2lab"
+  # tmux's name for the session (project_config.rb worktree_session_name, then tmux.rb stored_session_name).
+  DEFAULT_SESSION = "repo-wt-r2lab"
+  LAB_PATTERN = %r{\A(/private)?/tmp/r2-[^/]+/?\z}
+  DOCTOR_WARN_BAD = %w[workflow-runs workflow-review-window-orphaned agentd-orphans].freeze
+  POINTS = %w[research plan verify].freeze
+  STEP_ORDER = %w[research plan implement verify acceptance].freeze
+  TERMINAL = %w[completed failed cancelled].freeze
+  POLL_SECONDS = 5
+  SETTLE_SECONDS = 30
+  DRAIN_CAP_SECONDS = 90 * 60
+  ID_PATTERN = /\A[a-z][a-z0-9]*\z/
+
+  class Refused < StandardError; end
+
+  # The lab's paths, environment and isolation check.
+  class Lab
+    attr_reader :dir
+
+    def initialize(dir)
+      @dir = dir
+    end
+
+    def self.create
+      loop do
+        path = "/tmp/r2-#{SecureRandom.alphanumeric(4).downcase}"
+        Dir.mkdir(path)
+        return new(File.realpath(path))
+      rescue Errno::EEXIST
+        next
+      end
+    end
+
+    def self.open(dir)
+      raise Refused, "no lab: pass --lab DIR or set R2_LAB" if dir.nil? || dir.empty?
+      raise Refused, "no lab directory at #{dir}" unless File.directory?(dir)
+      new(File.realpath(dir))
+    end
+
+    def home = File.join(@dir, "home")
+
+    def state_home = File.join(home, ".local", "state")
+
+    def config_home = File.join(home, ".config")
+
+    def tmux_dir = File.join(@dir, "tmux")
+
+    def socket_dir = File.join(home, ".local", "workspace", "run")
+
+    def shims = File.join(@dir, "shims")
+
+    def repo = File.join(@dir, "repo")
+
+    def worktree = File.join(repo, ".worktrees", BRANCH)
+
+    def runs_dir = File.join(@dir, "runs")
+
+    def osascript_log = File.join(@dir, "osascript.log")
+
+    def drill_file = File.join(@dir, "drill.json")
+
+    def ledger = File.join(state_home, "workspace", "ledger.jsonl")
+
+    def tmux_socket = File.join(tmux_dir, "tmux-#{Process.uid}", "default")
+
+    def paths
+      [home, state_home, File.join(state_home, "workspace"), config_home, File.join(config_home, "workspace"),
+        File.join(config_home, "tmuxinator"), socket_dir, tmux_dir, shims, runs_dir]
+    end
+
+    # @raise [Refused] when the lab is not under /tmp or a lab path resolves outside it
+    def check!
+      raise Refused, "refusing to run: the lab #{@dir} is not a /tmp/r2-* directory" unless @dir.match?(LAB_PATTERN)
+      outside = paths.reject { |path| inside?(path) }
+      raise Refused, "refusing to run: #{outside.join(", ")} resolves outside #{@dir}" unless outside.empty?
+    end
+
+    def prepare!
+      check!
+      paths.each { |path| FileUtils.mkdir_p(path) }
+      FileUtils.touch(osascript_log)
+      check!
+    end
+
+    def inside?(path)
+      real = File.expand_path(path)
+      parent = real
+      parent = File.dirname(parent) until File.exist?(parent) || parent == "/"
+      resolved = File.join(File.realpath(parent), real.delete_prefix(parent))
+      resolved == @dir || resolved.start_with?("#{@dir}/")
+    end
+
+    def env
+      {"HOME" => home, "XDG_STATE_HOME" => state_home, "XDG_CONFIG_HOME" => config_home, "TMUX_TMPDIR" => tmux_dir,
+       "TMUX" => nil, "TMUX_PANE" => nil, "PATH" => path, "R2_LAB" => @dir}
+    end
+
+    # $LAB/shims, then the caller's PATH without any ~/bin entry (the caller's HOME and the user's own).
+    def path
+      homes = [ENV["HOME"], Etc.getpwuid.dir].compact.uniq
+      bins = homes.map { |h| File.join(h, "bin") }
+      kept = ENV.fetch("PATH", "").split(":").reject do |entry|
+        homes.any? { |h| bins.include?(entry.sub(/\A~(?=\/|\z)/, h).chomp("/")) }
+      end
+      ([shims] + kept).uniq.join(":")
+    end
+
+    def write_shims
+      write_exec("workspace", "#!/bin/sh\nexec #{Shellwords.escape(BIN)} \"$@\"\n")
+      real = File.join(Etc.getpwuid.dir, "bin", "claude-dev")
+      target = File.join(shims, "claude-dev")
+      FileUtils.rm_f(target)
+      if File.executable?(real)
+        File.symlink(real, target)
+      else
+        write_exec("claude-dev", "#!/bin/sh\nexec claude --dangerously-skip-permissions \"$@\"\n")
+      end
+      %w[osascript window-tool].each do |name|
+        write_exec(name, "#!/bin/sh\nprintf '%s %s\\n' #{name} \"$*\" >> #{Shellwords.escape(osascript_log)}\nexit 1\n")
+      end
+    end
+
+    def osascript_calls = File.exist?(osascript_log) ? File.readlines(osascript_log).size : 0
+
+    def drill = File.exist?(drill_file) ? JSON.parse(File.read(drill_file)) : {}
+
+    def save_drill(hash) = File.write(drill_file, JSON.pretty_generate(hash) + "\n")
+
+    def workspace_name = drill["workspace"] || DEFAULT_WORKSPACE
+
+    def session_name = drill["session"] || DEFAULT_SESSION
+
+    private
+
+    def write_exec(name, text)
+      path = File.join(shims, name)
+      File.write(path, text)
+      File.chmod(0o755, path)
+    end
+  end
+
+  # The verbs. Every command it starts runs under the lab environment.
+  class Drill
+    def initialize(lab, out:, err:, clock: -> { Time.now })
+      @lab = lab
+      @out = out
+      @err = err
+      @clock = clock
+    end
+
+    def setup(dry_run:)
+      @lab.prepare!
+      @lab.write_shims
+      headless = cli("config", "set", "--scope", "global", "launch.headless", "true")
+      raise Refused, "config set launch.headless failed: #{headless[:err]}" unless headless[:exit].zero?
+      common = git_common_dir
+      plan = {"lab" => @lab.dir, "checkout" => @lab.worktree, "git_common_dir" => File.join(@lab.repo, ".git"), "clone_from" => common,
+              "workspace" => DEFAULT_WORKSPACE, "env" => @lab.env.compact, "dry_run" => dry_run}
+      drill = @lab.drill.merge(plan)
+      unless dry_run
+        drill.merge!(build_lab(common))
+        drill["setup_finished_at"] = now
+      end
+      @lab.save_drill(drill)
+      @out.puts JSON.pretty_generate(plan.merge(drill.slice("workspace", "version", "head")))
+      @err.puts "r2-reboot-drill: export R2_LAB=#{@lab.dir}"
+      0
+    end
+
+    def run(id, dry_run:)
+      check_id!(id)
+      @lab.check!
+      plan = demo_plan(id)
+      if dry_run
+        @out.puts JSON.pretty_generate(plan)
+        return 0
+      end
+      record = start_record(id, "baseline", nil)
+      pid = spawn_demo(plan, id)
+      record.merge!(finish(pid, record, wait_cap: nil))
+      save_record(record)
+      @out.puts JSON.pretty_generate(record.slice("id", "exit", "wall_seconds", "runs", "osascript_calls"))
+      record["exit"].to_i.zero? ? 0 : 3
+    end
+
+    def kill_at(step, id)
+      raise Refused, "STEP must be one of #{POINTS.join(", ")}, not #{step}" unless POINTS.include?(step)
+      check_id!(id)
+      @lab.check!
+      record = start_record(id, "kill", step)
+      pid = spawn_demo(demo_plan(id), id)
+      hit = wait_for_point(step, record, pid)
+      if hit
+        record.merge!(kill_and_recover(hit))
+      else
+        record["missed"] = true
+      end
+      record.merge!(finish(pid, record, wait_cap: DRAIN_CAP_SECONDS))
+      save_record(record)
+      @out.puts JSON.pretty_generate(record.slice("id", "point", "missed", "missed_reason", "exit", "wall_seconds", "drain_timed_out", "recover_outcome"))
+      return 4 if record["missed"]
+      record["exit"].to_i.zero? ? 0 : 3
+    end
+
+    def check_target(session:, pid:)
+      @lab.check!
+      verdict = target_verdict(session, pid)
+      if verdict[:ok]
+        @out.puts JSON.generate(verdict.transform_keys(&:to_s))
+        0
+      else
+        @err.puts "r2-reboot-drill: refusing to kill: #{verdict[:reason]}"
+        1
+      end
+    end
+
+    def table
+      @lab.check!
+      records = Dir[File.join(@lab.runs_dir, "*.json")].sort.map { |path| JSON.parse(File.read(path)) }
+      @out.write(R2RebootDrill.markdown(records))
+      0
+    end
+
+    def env
+      @lab.check!
+      @lab.env.each { |key, value| @out.puts(value.nil? ? "unset #{key}" : "export #{key}=#{Shellwords.escape(value)}") }
+      0
+    end
+
+    def teardown(keep:)
+      @lab.check!
+      ws = @lab.workspace_name
+      raise Refused, "refusing to tear down #{@lab.dir}: it has no drill.json" unless File.file?(@lab.drill_file)
+      stopped = {"sessions" => [], "agentd" => nil, "demo" => stop_demo(ws)}
+      daemon = parse(cli("daemon", "status", "--name", ws, "--json")[:out]) || {}
+      if daemon["running"] && daemon["pid"]
+        verdict = pid_verdict(daemon["pid"].to_i, ws)
+        if verdict[:ok]
+          stop_pid(daemon["pid"].to_i)
+          stopped["agentd"] = daemon["pid"]
+        else
+          @err.puts "r2-reboot-drill: left pid #{daemon["pid"]} alone: #{verdict[:reason]}"
+        end
+      end
+      lab_sessions.each do |name|
+        tmux("kill-session", "-t", "=#{name}")
+        stopped["sessions"] << name
+      end
+      @out.puts JSON.generate(stopped.merge("removed" => !keep, "lab" => @lab.dir))
+      FileUtils.remove_entry(@lab.dir) unless keep
+      0
+    end
+
+    # The demo process group a run left going, after checking the pid still runs the lab's demo-calculator2.
+    def stop_demo(ws)
+      demo = @lab.drill["demo"]
+      return nil unless demo
+      command, = Open3.capture2("ps", "-ww", "-o", "command=", "-p", demo["pid"].to_s)
+      unless command.match?(%r{script/demo-calculator2 run .*--id #{Regexp.escape(demo["id"].to_s)}\b.*--name #{Regexp.escape(ws)}(\s|\z)})
+        @err.puts "r2-reboot-drill: left pid #{demo["pid"]} alone: not the lab's demo-calculator2 (#{command.strip})" unless command.strip.empty?
+        return nil
+      end
+      Process.kill("TERM", -demo["pid"].to_i)
+      demo["pid"]
+    rescue Errno::ESRCH, Errno::EPERM
+      nil
+    end
+
+    private
+
+    def now = @clock.call.utc.iso8601
+
+    def check_id!(id)
+      raise Refused, "ID must be lowercase letters and digits starting with a letter, and not b: #{id}" unless id.to_s.match?(ID_PATTERN) && id != "b"
+    end
+
+    def git_common_dir
+      out, status = Open3.capture2("git", "-C", ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")
+      raise Refused, "can't read this checkout's git common dir" unless status.success?
+      out.strip
+    end
+
+    def capture(argv, chdir:, env: {})
+      out, err, status = Open3.capture3(@lab.env.merge(env), *argv, chdir: chdir)
+      {"argv" => argv, "out" => out, "err" => err, :out => out, :err => err, :exit => status.exitstatus}
+    end
+
+    def cli(*args, chdir: @lab.dir) = capture([BIN, *args], chdir: chdir)
+
+    def tmux(*args) = capture(["tmux", "-S", @lab.tmux_socket, *args], chdir: @lab.dir)
+
+    def checked(result)
+      raise Refused, "#{result["argv"].join(" ")} failed: #{result[:err].strip}" unless result[:exit].zero?
+      result
+    end
+
+    def build_lab(common)
+      steps = []
+      gitconfig = File.join(Etc.getpwuid.dir, ".gitconfig")
+      FileUtils.cp(gitconfig, File.join(@lab.home, ".gitconfig")) if File.file?(gitconfig)
+      steps << checked(capture(["git", "clone", "-q", "--branch", "main", common, @lab.repo], chdir: @lab.dir))
+      steps << checked(capture(["git", "-C", @lab.repo, "remote", "remove", "origin"], chdir: @lab.dir))
+      seed_claude
+      steps << checked(cli("init", "--install-hooks"))
+      steps << checked(cli("config", "set", "--scope", "global", "agent.commands.claude", "claude-dev"))
+      steps << checked(cli("config", "set", "--scope", "global", "workflows.sources", File.join(@lab.worktree, "demo", "calculator2", "workflows")))
+      steps << checked(cli("start", BRANCH, "--headless", "--base", "main", "--yes", chdir: @lab.repo))
+      check_checkout!
+      name = checked(cli("lookup", @lab.worktree))[:out].strip
+      head, = Open3.capture2("git", "-C", ROOT, "rev-parse", "HEAD")
+      lab_head, = Open3.capture2("git", "-C", @lab.repo, "rev-parse", "HEAD")
+      {"workspace" => name, "session" => lab_session!, "version" => cli("--version")[:out].strip, "head" => head.strip, "lab_head" => lab_head.strip,
+       "setup" => steps.map { |s| s.slice("argv", "out", "err").merge("exit" => s[:exit]) }}
+    end
+
+    # The one session on the lab socket, which must be the one a lab tmuxinator config names (tmux turns . and : into _).
+    def lab_session!
+      sessions = lab_sessions
+      raise Refused, "expected one session on the lab socket, found #{sessions.inspect}" unless sessions.size == 1
+      named = Dir[File.join(@lab.config_home, "tmuxinator", "*.yml")].filter_map { |path| File.read(path)[/^name:\s*["']?([^"'\s]+)/, 1]&.tr(".:", "_") }
+      raise Refused, "the lab session #{sessions.first} is not named by a lab tmuxinator config (#{named.join(", ")})" unless named.include?(sessions.first)
+      sessions.first
+    end
+
+    def check_checkout!
+      %w[--show-toplevel --git-common-dir].each do |flag|
+        out, status = Open3.capture2("git", "-C", @lab.worktree, "rev-parse", "--path-format=absolute", flag)
+        raise Refused, "refusing: the lab worktree's #{flag} can't be read" unless status.success?
+        raise Refused, "refusing: the lab worktree's #{flag} #{out.strip} is outside #{@lab.dir}" unless @lab.inside?(out.strip)
+      end
+    end
+
+    # Onboarding and trust done for the lab checkout, and bypass mode's first-run prompt skipped; nothing copied.
+    def seed_claude
+      trusted = [@lab.worktree, @lab.repo].flat_map { |p| [p, p.sub(%r{\A/private/tmp/}, "/tmp/")] }.uniq
+      File.write(File.join(@lab.home, ".claude.json"), JSON.pretty_generate("hasCompletedOnboarding" => true,
+        "projects" => trusted.to_h { |p| [p, {"hasTrustDialogAccepted" => true}] }))
+      FileUtils.mkdir_p(File.join(@lab.home, ".claude"))
+      settings = File.join(@lab.home, ".claude", "settings.json")
+      File.write(settings, JSON.pretty_generate("skipDangerousModePermissionPrompt" => true)) unless File.exist?(settings)
+    end
+
+    def demo_plan(id)
+      argv = ["script/demo-calculator2", "run", "--base", "main", "--id", id, "--goals", "01,02", "--workflow", "deliver-goal-fast",
+        "--wait", "--name", @lab.workspace_name]
+      {"argv" => argv, "chdir" => @lab.worktree, "env" => {"WORKSPACE_BIN" => BIN}}
+    end
+
+    def start_record(id, kind, point)
+      raise Refused, "a lab run is still going: #{going_runs.map { |r| r["id"] }.join(", ")}" unless going_runs.empty?
+      raise Refused, "#{record_path(id)} exists: pick another ID" if File.exist?(record_path(id))
+      clean_tree
+      {"id" => id, "kind" => kind, "point" => point, "rep" => id[/\d+[a-z]*\z/], "osascript_before" => @lab.osascript_calls}
+    end
+
+    def record_path(id) = File.join(@lab.runs_dir, "#{id}.json")
+
+    def save_record(record) = File.write(record_path(record["id"]), JSON.pretty_generate(record) + "\n")
+
+    def statuses = Array(parse(cli("workflow", "status", "--all", "--json")[:out])&.fetch("runs", nil))
+
+    def going_runs = statuses.reject { |run| TERMINAL.include?(run["state"]) }
+
+    # A killed run leaves edits; the previous record keeps them and the lab worktree is put back.
+    def clean_tree
+      check_checkout!
+      porcelain = capture(["git", "status", "--porcelain"], chdir: @lab.worktree)[:out]
+      return if porcelain.strip.empty?
+      diff = capture(["git", "diff"], chdir: @lab.worktree)[:out]
+      previous = Dir[File.join(@lab.runs_dir, "*.json")].max_by { |path| File.mtime(path) }
+      if previous
+        record = JSON.parse(File.read(previous))
+        File.write(previous, JSON.pretty_generate(record.merge("dirty_after" => {"porcelain" => porcelain, "diff" => diff})) + "\n")
+      end
+      checked(capture(["git", "checkout", "--", "."], chdir: @lab.worktree))
+      checked(capture(["git", "clean", "-fd"], chdir: @lab.worktree))
+    end
+
+    def spawn_demo(plan, id)
+      @started = @clock.call
+      log = File.join(@lab.runs_dir, "#{id}.log")
+      pid = Process.spawn(@lab.env.merge(plan["env"]), *plan["argv"], chdir: plan["chdir"], out: [log, "a"], err: [log, "a"], in: File::NULL, pgroup: true)
+      @lab.save_drill(@lab.drill.merge("demo" => {"pid" => pid, "id" => id, "started_at" => now}))
+      pid
+    end
+
+    # @return [Hash, nil] the goal-01 run at STEP, or nil when it went past STEP between polls (recorded as missed)
+    def wait_for_point(step, record, pid)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + DRAIN_CAP_SECONDS
+      loop do
+        if Process.waitpid(pid, Process::WNOHANG)
+          @demo_status = $?
+          record["missed_reason"] = "the demo exited before #{step}"
+          return nil
+        end
+        run = first_run
+        case run && R2RebootDrill.point_state(run, step)
+        when :hit then return run
+        when :missed
+          record["missed_reason"] = "the run was at #{run.dig("current", "step")}/#{run.dig("current", "state")} (#{run["state"]})"
+          record["missed_run"] = run["id"]
+          return nil
+        end
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          record["missed_reason"] = "never reached #{step} in #{DRAIN_CAP_SECONDS}s"
+          return nil
+        end
+        sleep POLL_SECONDS
+      end
+    end
+
+    def first_run
+      statuses.select { |run| run["created_at"] && Time.parse(run["created_at"]) >= @started - 1 }.min_by { |run| run["created_at"] }
+    end
+
+    def kill_and_recover(run)
+      ws = @lab.workspace_name
+      session = @lab.session_name
+      result = {"run_id" => run["id"], "at" => run["current"], "recover_dry_run_before" => recover_json("--dry-run")}
+      daemon = parse(cli("daemon", "status", "--name", ws, "--json")[:out]) || {}
+      verdict = target_verdict(session, daemon["pid"].to_i)
+      raise Refused, "refusing to kill: #{verdict[:reason]}" unless verdict[:ok]
+      ledger_offset = File.exist?(@lab.ledger) ? File.size(@lab.ledger) : 0
+      server_before = tmux("display-message", "-p", "\#{pid}")[:out].strip
+      panes_before = tmux("list-panes", "-a", "-F", "\#{pane_id}")[:out].split
+      raise Refused, "agentd #{daemon["pid"]} changed before the kill" unless pid_verdict(daemon["pid"].to_i, ws)[:lstart] == verdict[:lstart]
+      result["kill"] = {"at" => now, "session" => session, "agentd_pid" => daemon["pid"], "agentd_lstart" => verdict[:lstart],
+                        "agentd_command" => verdict[:command], "tmux_server_pid" => server_before, "panes" => panes_before,
+                        "kill_session" => tmux("kill-session", "-t", "=#{session}").then { |k| {"exit" => k[:exit], "err" => k[:err]} }}
+      stop_pid(daemon["pid"].to_i)
+      sleep SETTLE_SECONDS
+      result["recover_dry_run_after"] = recover_json("--dry-run")
+      recover = recover_json
+      result["recover"] = recover
+      result["recover_outcome"] = R2RebootDrill.recover_outcome(recover, run["id"])
+      result["recovered_at"] = now
+      result["after_recover"] = {"tmux_server_pid" => tmux("display-message", "-p", "\#{pid}")[:out].strip,
+                                 "panes" => tmux("list-panes", "-a", "-F", "\#{pane_id}")[:out].split}
+      result["ledger_after_kill"] = ledger_lines(ledger_offset)
+      result
+    end
+
+    def recover_json(*flags)
+      outcome = cli("workflow", "recover", *flags, "--json", chdir: @lab.worktree)
+      {"exit" => outcome[:exit], "document" => parse(outcome[:out]), "stderr" => outcome[:err]}
+    end
+
+    def ledger_lines(offset)
+      return [] unless File.exist?(@lab.ledger)
+      File.open(@lab.ledger) do |f|
+        f.seek(offset)
+        f.read.lines.filter_map { |line| parse(line) }
+      end
+    end
+
+    def finish(pid, record, wait_cap:)
+      timed_out = false
+      status = @demo_status
+      unless status
+        deadline = wait_cap && Process.clock_gettime(Process::CLOCK_MONOTONIC) + wait_cap
+        until (status = Process.waitpid(pid, Process::WNOHANG) && $?)
+          if deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+            timed_out = true
+            Process.kill("TERM", -pid)
+            Process.waitpid(pid)
+            status = $?
+            break
+          end
+          sleep POLL_SECONDS
+        end
+      end
+      ended = @clock.call
+      @lab.save_drill(@lab.drill.except("demo"))
+      runs = statuses.select { |run| run["created_at"] && Time.parse(run["created_at"]) >= @started - 1 }
+      steps = runs.sum { |run| Array(run["steps"]).count { |step| step["attempts"].to_i.positive? } }
+      attempts = runs.sum { |run| Array(run["steps"]).sum { |step| step["attempts"].to_i } }
+      doctor = parse(cli("doctor", "--headless", "--json")[:out])
+      {"started_at" => @started.utc.iso8601, "ended_at" => ended.utc.iso8601, "wall_seconds" => (ended - @started).round,
+       "exit" => status&.exitstatus, "drain_cap_seconds" => wait_cap, "drain_timed_out" => timed_out,
+       "runs" => runs.map { |run| {"id" => run["id"], "state" => run["state"], "steps" => Array(run["steps"]).map { |s| s.slice("id", "state", "attempts") }} },
+       "attempts" => attempts, "repeated_attempts" => attempts - steps,
+       "osascript_calls" => @lab.osascript_calls - record["osascript_before"].to_i,
+       "doctor" => {"summary" => R2RebootDrill.doctor_summary(doctor), "document" => doctor}}
+    end
+
+    def lab_sessions
+      tmux("list-sessions", "-F", "\#{session_name}")[:out].split("\n").reject(&:empty?)
+    end
+
+    def target_verdict(session, pid)
+      lab_session = @lab.session_name
+      return {ok: false, reason: "session #{session.inspect} is not the lab workspace's session (#{lab_session})"} unless session == lab_session
+      verdict = pid_verdict(pid, @lab.workspace_name)
+      return verdict unless verdict[:ok]
+      return {ok: false, reason: "no session #{session} on the lab socket #{@lab.tmux_socket}"} unless tmux("has-session", "-t", "=#{session}")[:exit].zero?
+      verdict.merge(session: session)
+    end
+
+    def pid_verdict(pid, ws)
+      return {ok: false, reason: "pid #{pid} is not a process id"} unless pid.to_i.positive?
+      command, = Open3.capture2("ps", "-ww", "-o", "command=", "-p", pid.to_s)
+      lstart, = Open3.capture2("ps", "-o", "lstart=", "-p", pid.to_s)
+      command = command.strip
+      return {ok: false, reason: "pid #{pid} is not running"} if command.empty?
+      unless command.include?(BIN) && command.match?(/\bagentd --name #{Regexp.escape(ws)}(\s|\z)/)
+        return {ok: false, reason: "pid #{pid} is not the lab workspace's agentd (#{ws}): #{command}"}
+      end
+      {ok: true, pid: pid, command: command, lstart: lstart.strip}
+    end
+
+    def stop_pid(pid)
+      Process.kill("TERM", pid)
+      50.times do
+        Process.kill(0, pid)
+        sleep 0.2
+      end
+      Process.kill("KILL", pid)
+    rescue Errno::ESRCH
+      nil
+    end
+
+    def parse(text)
+      JSON.parse(text.to_s)
+    rescue JSON::ParserError
+      nil
+    end
+  end
+
+  # :hit, :missed or :wait for a status row of the goal-01 run against a kill point.
+  def self.point_state(run, step)
+    return :missed if TERMINAL.include?(run["state"])
+    current = run["current"] || {}
+    at = STEP_ORDER.index(current["step"])
+    want = STEP_ORDER.index(step)
+    return :wait if at.nil? || at < want
+    return :missed if at > want
+    case step
+    when "plan" then (current["state"] == "reviewing" && current.dig("review", "window")) ? :hit : :wait
+    when "verify"
+      return :missed if current["state"] == "checking"
+      (current["state"] == "running") ? :hit : :wait
+    else (current["state"] == "running") ? :hit : :wait
+    end
+  end
+
+  # The killed run's row of `workflow recover --json`: outcome/reason, with limit_reached as its own value.
+  def self.recover_outcome(recover, run_id)
+    rows = Array(recover&.dig("document", "results"))
+    row = rows.find { |r| r.is_a?(Hash) && r["run_id"] == run_id } || rows.first
+    return "-" unless row.is_a?(Hash)
+    return "limit_reached" if row["reason"] == "limit_reached"
+    [row["outcome"], row["reason"]].compact.join("/")
+  end
+
+  def self.doctor_summary(doctor)
+    return "unreadable" unless doctor.is_a?(Hash)
+    bad = Array(doctor["checks"]).select { |check| check["status"] == "fail" || (check["status"] == "warn" && DOCTOR_WARN_BAD.include?(check["id"])) }
+    bad.empty? ? "ok" : bad.map { |check| "#{check["id"]} (#{check["status"]})" }.join(", ")
+  end
+
+  def self.median(values)
+    sorted = values.sort
+    return nil if sorted.empty?
+    mid = sorted.size / 2
+    sorted.size.odd? ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0
+  end
+
+  def self.duration(seconds)
+    return "-" if seconds.nil?
+    sign = seconds.negative? ? "-" : ""
+    total = seconds.abs.round
+    "#{sign}#{total / 60}m#{format("%02d", total % 60)}s"
+  end
+
+  def self.cell(value)
+    case value
+    when true then "yes"
+    when false then "no"
+    when nil then "-"
+    else value.to_s.gsub("|", "\\|").tr("\n", " ")
+    end
+  end
+
+  def self.done?(record) = record["exit"] == 0 && !record["drain_timed_out"]
+
+  def self.markdown(records)
+    baselines = records.select { |r| r["kind"] == "baseline" && r["id"] != "smoke" }
+    median = median(baselines.filter_map { |r| r["wall_seconds"] })
+    kills = records.select { |r| r["kind"] == "kill" && !r["missed"] }.sort_by { |r| [POINTS.index(r["point"]) || 9, r["id"]] }
+    missed = records.select { |r| r["kind"] == "kill" && r["missed"] }
+    lines = ["Median baseline wall: #{duration(median)} (#{baselines.size} baseline(s))", "",
+      "| Point | Rep | Run id | Done unattended | Repeated attempts | Wall | Wall minus median baseline | Doctor | Recover outcome | osascript calls |",
+      "|---|---|---|---|---|---|---|---|---|---|"]
+    kills.each do |r|
+      extra = (median && r["wall_seconds"]) ? r["wall_seconds"] - median : nil
+      extra_cell = extra && "#{"+" unless extra.negative?}#{duration(extra)}"
+      lines << "| #{[r["point"], r["rep"], r["run_id"], done?(r), r["repeated_attempts"], duration(r["wall_seconds"]), extra_cell,
+        r.dig("doctor", "summary"), r["recover_outcome"], r["osascript_calls"]].map { |v| cell(v) }.join(" | ")} |"
+    end
+    lines += ["", "Baselines:", "", "| Run | Run ids | Done unattended | Attempts | Repeated attempts | Wall | osascript calls |", "|---|---|---|---|---|---|---|"]
+    baselines.each do |r|
+      lines << "| #{[r["id"], Array(r["runs"]).map { |run| run["id"] }.join(", "), done?(r), r["attempts"], r["repeated_attempts"],
+        duration(r["wall_seconds"]), r["osascript_calls"]].map { |v| cell(v) }.join(" | ")} |"
+    end
+    unless missed.empty?
+      lines += ["", "Missed attempts (not counted):", ""]
+      missed.each { |r| lines << "- #{r["id"]} (#{r["point"]}): #{r["missed_reason"]}" }
+    end
+    lines.join("\n") + "\n"
+  end
+
+  USAGE = "Usage: script/r2-reboot-drill [--lab DIR] setup [--dry-run] | run ID [--dry-run] | kill-at STEP ID | " \
+    "check-target --session NAME --pid PID | table | env | teardown [--keep]"
+
+  def self.main(argv, out: $stdout, err: $stderr)
+    options = {lab: ENV["R2_LAB"], dry_run: false, keep: false}
+    OptionParser.new do |opts|
+      opts.banner = USAGE
+      opts.on("--lab DIR", "The lab directory under /tmp (default R2_LAB; setup makes /tmp/r2-XXXX without either)") { |v| options[:lab] = v }
+      opts.on("--dry-run", "setup: config and shims only; run: print the demo command") { options[:dry_run] = true }
+      opts.on("--keep", "teardown: keep the lab directory") { options[:keep] = true }
+      opts.on("--session NAME", "check-target: the tmux session") { |v| options[:session] = v }
+      opts.on("--pid PID", Integer, "check-target: the agentd pid") { |v| options[:pid] = v }
+    end.parse!(argv)
+    verb, *args = argv
+    lab = if verb == "setup" && (options[:lab].nil? || options[:lab].empty?)
+      Lab.create
+    elsif verb == "setup"
+      raise Refused, "refusing to run: the lab #{options[:lab]} is not a /tmp/r2-* directory" unless File.expand_path(options[:lab]).match?(LAB_PATTERN)
+      FileUtils.mkdir_p(options[:lab])
+      Lab.open(options[:lab])
+    else
+      Lab.open(options[:lab])
+    end
+    drill = Drill.new(lab, out: out, err: err)
+    case verb
+    when "setup" then drill.setup(dry_run: options[:dry_run])
+    when "run" then drill.run(args.fetch(0) { raise OptionParser::MissingArgument, "run ID" }, dry_run: options[:dry_run])
+    when "kill-at" then drill.kill_at(args.fetch(0) { raise OptionParser::MissingArgument, "STEP" }, args.fetch(1) { raise OptionParser::MissingArgument, "ID" })
+    when "check-target" then drill.check_target(session: options[:session].to_s, pid: options[:pid].to_i)
+    when "table" then drill.table
+    when "env" then drill.env
+    when "teardown" then drill.teardown(keep: options[:keep])
+    else
+      err.puts USAGE
+      2
+    end
+  rescue OptionParser::ParseError => e
+    err.puts "r2-reboot-drill: #{e.message}"
+    2
+  rescue Refused => e
+    err.puts "r2-reboot-drill: #{e.message}"
+    1
+  end
+end
+
+exit R2RebootDrill.main(ARGV) if $PROGRAM_NAME == __FILE__
