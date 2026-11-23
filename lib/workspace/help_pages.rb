@@ -444,6 +444,10 @@ module Workspace
           "A step with import: is checked after it is merged; a valid definition prints an \"Imports:\" block (--json:",
           "\"imports\", absent when there are none), and a key the step sets to null or a list that leaves out library",
           "entries is a warning.",
+          "A PATH in a steps/ directory of a definitions folder (such as ~/.config/workspace/workflows/steps/NAME.yml) is",
+          "checked as a step library, then every workflow in every folder and project that imports it is checked again",
+          "and listed with its result; it exits 1 (invalid_step_library) when the library or any of them fails. --json:",
+          "\"library\" (path, scope, valid, steps, problems) and \"importers\" (id, source, project, path, valid, problems).",
           "",
           "A step's guard: (unchanged or config) checks the checkout when the turn ends, on_fail's context: (fresh or continue)",
           "sets the conversation of the step it goes back to, and a status: check gets WORKSPACE_RUN_ID,",
@@ -455,7 +459,8 @@ module Workspace
           ["workspace workflow validate draft.yml", "check a definition you are writing: prints valid, or exits 1 with an error listing every problem"],
           ["workspace workflow validate - < draft.yml", "check text read from stdin"],
           ["workspace workflow validate draft.yml --id ship", "check it as the workflow \"ship\" when the file is named otherwise"],
-          ["workspace workflow validate draft.yml --json", "the checked definition and its warnings as one document, or an error document with the problems"]
+          ["workspace workflow validate draft.yml --json", "the checked definition and its warnings as one document, or an error document with the problems"],
+          ["workspace workflow validate ~/.config/workspace/workflows/steps/verify.yml", "check a step library and every workflow that imports it"]
         ]
       },
       "add" => {

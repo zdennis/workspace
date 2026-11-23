@@ -293,6 +293,7 @@ module Workspace
       "workflow_source_failed" => "workflow install: gh could not read a GitHub workflows.sources entry (not found, no access, not a directory, an unreadable reply or a timeout). details.source, details.stderr (what gh said), details.timed_out on a timeout.",
       "workflow_source_prompt_file" => "workflow install: a definition in a workflows.sources entry sets prompt_file:, which a source may not (use prompt:). Listed per file in the install report's problems (file, code, message); the source is refused whole.",
       "invalid_workflow" => "A workflow definition file doesn't pass the checks.",
+      "invalid_step_library" => "workflow validate on a step library (a file in a layer's steps/ directory): the library, or a workflow that imports it, doesn't pass the checks. details.library (path, scope, valid, steps, problems) and details.importers (each id, source, project, path, valid, problems).",
       "invalid_script" => "workflow simulate: the script has a problem (not YAML, an unknown key, a step, input, file or proof the workflow lacks, a bad value, over 64 KiB). details.script, details.workflow, details.problems (every one, up to 50), details.count.",
       "invalid_input" => "A workflow input's value doesn't match the `pattern:` its definition declares. `details.workflow`, `details.input`, `details.pattern`; never the value.",
       "workflow_exists" => "workflow add found a user's file of that id already there (a link counts); nothing was written. details.workflow, details.path.",

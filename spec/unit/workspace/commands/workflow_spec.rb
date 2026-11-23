@@ -3982,7 +3982,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:input) { StringIO.new }
     let(:dir) { Dir.mktmpdir }
     let(:lint) { instance_double(Workspace::WorkflowLint, call: {"warnings" => [], "not_checked" => []}) }
-    before { allow(catalog).to receive(:scope_of).and_return(nil) }
+    before { allow(catalog).to receive_messages(scope_of: nil, library_scope_of: nil) }
     subject(:command) do
       described_class.new(lint: lint, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
@@ -5498,6 +5498,112 @@ RSpec.describe Workspace::Commands::Workflow do
         command.show(id: "flow")
         expect(output.string).not_to include("Imports:")
       end
+    end
+  end
+
+  describe "#validate of a step library" do
+    let(:input) { StringIO.new }
+    let(:dir) { Dir.mktmpdir }
+    let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
+    let(:builtin_dir) { File.join(dir, "lib", "workflows") }
+    let(:projects_dir) { File.join(dir, "home", ".config", "workspace", "projects") }
+    let(:config) do
+      instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: projects_dir).tap do |config|
+        allow(config).to receive(:project_workflows_dir) { |name| name && File.join(projects_dir, name, "workflows") }
+      end
+    end
+    let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
+    let(:lint) { instance_double(Workspace::WorkflowLint, call: {"warnings" => [], "not_checked" => []}) }
+    let(:library) { File.join(global_dir, "steps", "research.yml") }
+    let(:good) { File.join(global_dir, "flow.yml") }
+    let(:broken) { File.join(projects_dir, "app", "workflows", "broken.yml") }
+    subject(:command) do
+      described_class.new(lint: lint, catalog: real_catalog, files: nil, engine: engine, status: status, store: store, panes: panes, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
+    end
+
+    before do
+      FileUtils.mkdir_p([File.dirname(library), File.dirname(broken), builtin_dir])
+      File.write(library, "steps:\n  research:\n    prompt: Research it.\n    gate: approve\n")
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    def importers
+      File.write(good, "title: Flow\nsteps:\n  look:\n    import: research\n")
+      File.write(broken, "title: Broken\nsteps:\n  look:\n    import: research\n    on_fail: {goto: nowhere, max: 1}\n")
+    end
+
+    it "checks the library, then each importer, and exits non-zero when one importer fails, printing both" do
+      importers
+
+      expect { command.validate(path: library) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_step_library")
+        expect(e.message).to eq("Step library #{library}: 1 of 2 workflows that import it are not valid (broken (project app)).")
+      }
+      expect(output.string).to start_with("#{library}: valid step library (1 steps: research), in the global definitions\nImported by:\n")
+      expect(output.string).to include("  broken (project app, #{broken}): not valid\n    - step look: on_fail goto must name an earlier step")
+      expect(output.string).to include("  flow (global, #{good}): valid\n")
+    end
+
+    it "carries the library and one result per importer in the error's details for --json, printing no document" do
+      importers
+
+      expect { command.validate(path: library, json: true) }.to raise_error(Workspace::Error) { |e|
+        expect(e.details["library"]).to eq("path" => library, "scope" => "global", "valid" => true, "steps" => ["research"], "problems" => [])
+        expect(e.details["importers"]).to contain_exactly(
+          {"id" => "flow", "source" => "global", "project" => nil, "path" => good, "valid" => true, "problems" => []},
+          {"id" => "broken", "source" => "project", "project" => "app", "path" => broken, "valid" => false, "problems" => [include("on_fail goto must name an earlier step")]}
+        )
+      }
+      expect(output.string).to eq("")
+    end
+
+    it "answers one document when the library and every importer pass" do
+      File.write(good, "title: Flow\nsteps:\n  look:\n    import: research\n")
+
+      command.validate(path: library, json: true)
+
+      expect(json).to eq("schema_version" => 1, "ok" => true,
+        "library" => {"path" => library, "scope" => "global", "valid" => true, "steps" => ["research"], "problems" => []},
+        "importers" => [{"id" => "flow", "source" => "global", "project" => nil, "path" => good, "valid" => true, "problems" => []}])
+    end
+
+    it "refuses a broken library alone, naming its problems" do
+      File.write(library, "title: Not a library\nsteps:\n  research:\n    import: other\n")
+
+      expect { command.validate(path: library) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_step_library")
+        expect(e.message).to eq("Step library #{library}: the library is not valid.")
+        expect(e.details["library"]).to include("valid" => false, "problems" => [include("unknown key(s) title"), include("step research:")])
+      }
+      expect(output.string).to start_with("#{library}: not a valid step library, in the global definitions\n  - a step library has unknown key(s) title")
+      expect(output.string).to end_with("No workflow imports it.\n")
+    end
+
+    it "passes a good library that nothing imports" do
+      command.validate(path: library)
+
+      expect(output.string).to eq("#{library}: valid step library (1 steps: research), in the global definitions\nNo workflow imports it.\n")
+    end
+
+    it "reads a library-shaped file outside steps/ as a workflow, and its error names the steps/ rule" do
+      path = File.join(dir, "research.yml")
+      File.write(path, "steps:\n  research:\n    prompt: Research {{inputs.task}}.\n    gate: approve\n")
+
+      expect { command.validate(path: path) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_workflow")
+        expect(e.details["problems"]).to include(include("{{inputs.task}}"), include("only inside a layer's steps/ directory"))
+        expect(e.message).to include("  - this file has only a step library's keys")
+      }
+    end
+
+    it "does not name the steps/ rule for a workflow that fails" do
+      path = File.join(dir, "flow.yml")
+      File.write(path, "title: Flow\nsteps:\n  research:\n    prompt: Research {{inputs.task}}.\n")
+
+      expect { command.validate(path: path) }.to raise_error(Workspace::Error) { |e|
+        expect(e.details["problems"].join).not_to include("steps/ directory")
+      }
     end
   end
 end
