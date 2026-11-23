@@ -32,10 +32,14 @@ module Workspace
     #
     # @param root [String] the checkout to read the settings files in
     # @param io [IO] where the notes go (the run's error output)
+    # @param only [Array<Workspace::AgentProvider>, nil] check exactly these
+    #   providers and skip the PATH filter (the installer already chose them,
+    #   through the configured agent command); nil checks every hook-capable
+    #   provider whose executable is on PATH. An empty list checks none.
     # @return [void]
-    def check(root, io:)
-      AgentProvider.all.select(&:supports_hooks?).each do |provider|
-        next unless @which.call(provider.executable)
+    def check(root, io:, only: nil)
+      (only || AgentProvider.all.select(&:supports_hooks?)).each do |provider|
+        next if only.nil? && !@which.call(provider.executable)
         next if @hooks_config && !@hooks_config.install_user_hooks?(provider)
 
         note = note_for(provider, root)

@@ -160,4 +160,31 @@ RSpec.describe Workspace::LaunchHookCheck do
     expect { checker.check(tmpdir, io: io) }.not_to raise_error
     expect(notes.join).to include("Claude Code hooks not installed")
   end
+
+  context "with only:" do
+    let(:on_path) { %w[claude codex] }
+
+    it "checks exactly the given providers: only claude prints Claude's note and no Codex note" do
+      checker.check(tmpdir, io: io, only: [claude])
+
+      expect(notes.join).to include("Claude Code hooks missing or stale")
+      expect(notes.join).not_to include("Codex")
+    end
+
+    it "prints nothing for an empty list" do
+      checker.check(tmpdir, io: io, only: [])
+
+      expect(notes).to be_empty
+    end
+
+    context "when the executable is not on PATH" do
+      let(:on_path) { [] }
+
+      it "still notes the given provider" do
+        checker.check(tmpdir, io: io, only: [claude])
+
+        expect(notes.join).to include("Claude Code hooks missing or stale")
+      end
+    end
+  end
 end
