@@ -91,12 +91,19 @@ module C3
 
   def refuse(dir)
     path = File.expand_path(dir)
-    [ROOT, VAULT].each { |root| abort "refusing to work inside #{root}: #{path}" if path == root || path.start_with?("#{root}/") }
+    parent = path
+    parent = File.dirname(parent) until File.exist?(parent)
+    real = File.join(File.realpath(parent), path.delete_prefix(parent))
+    [ROOT, VAULT].each do |root|
+      abort "refusing to work inside #{root}: #{path}" if [path, real].any? { |each| each == root || each.start_with?("#{root}/") }
+    end
     abort "#{path} exists and is not empty" if File.exist?(path) && !Dir.empty?(path)
     path
   end
 
   def export(dir)
+    dirty, = Open3.capture2("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no")
+    abort "the checkout has uncommitted changes and the copy is HEAD: commit them first" unless dirty.empty?
     FileUtils.mkdir_p(dir)
     archive, status = Open3.capture2("git", "-C", ROOT, "archive", "HEAD", binmode: true)
     abort "git archive HEAD failed" unless status.success?
@@ -131,6 +138,8 @@ module C3
       warnings.concat(definition.warnings.map { |each| "#{id}: #{each["code"]} #{each["step"]}" })
     rescue Workspace::Error => e
       errors[id] = Array(e.details && e.details["problems"]).first || e.message
+    rescue => e
+      errors[id] = "#{e.class}: #{e.message}"
     end
     [definitions, errors, warnings]
   end
@@ -160,6 +169,8 @@ module C3
         results[name] = {"ok" => ok, "got" => got, "transcript" => transcript(result, base)}
       rescue Workspace::Error => e
         results[name] = {"ok" => false, "got" => "refused: #{e.code}"}
+      rescue => e
+        results[name] = {"ok" => false, "got" => "#{e.class}: #{e.message}"}
       end
     end
   end
@@ -211,7 +222,8 @@ module C3
     baseline = check(copy, spec_files, nil)
     abort "baseline is not clean: #{baseline[:killers].join("; ")}" unless baseline[:killers].empty?
     missing = (SCRIPTS.keys - baseline[:sims].keys) + spec_files.reject { |file| File.file?(File.join(copy, file)) }
-    warn "baseline: #{baseline[:sims].size} scripts at their expected outcome, #{baseline[:examples]} spec examples green#{"; not in the copy: #{missing.join(", ")}" if missing.any?}"
+    abort "not in the copy: #{missing.join(", ")}" if missing.any?
+    warn "baseline: #{baseline[:sims].size} scripts at their expected outcome, #{baseline[:examples]} spec examples green"
 
     rows = mutants.map do |mutant|
       path = yaml_path(copy, mutant.file)
@@ -231,8 +243,8 @@ module C3
     if json
       puts JSON.pretty_generate(rows)
     else
-      puts "| # | File | Mutant | Result | Killed by | New warnings | Transcript diff | Prediction |"
-      puts "|---|------|--------|--------|-----------|--------------|-----------------|------------|"
+      puts "| # | File | Mutant | Result | Killed by | New warnings | Transcript diff | Prediction before the C3 spec |"
+      puts "|---|------|--------|--------|-----------|--------------|-----------------|-------------------------------|"
       rows.each do |row|
         cells = [row["id"], row["file"], row["mutant"], row["result"], row["killed_by"].join("; "), row["new_warnings"].join("; "),
           row["transcript_diff"] ? "yes" : "no", row["prediction"]]

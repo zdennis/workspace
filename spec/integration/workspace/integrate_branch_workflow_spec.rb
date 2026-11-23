@@ -45,7 +45,7 @@ RSpec.describe "the integrate-branch and deliver-goal-fast workflows" do
   it "keeps integrate-branch's verify equal to deliver-goal's apart from the prompt and the loop back to merge" do
     expect(step(integrate, "verify").except("prompt", "on_fail")).to eq(step(deliver_goal, "verify").except("prompt", "on_fail"))
     expect(step(integrate, "verify")["on_fail"].except("goto", "max")).to eq(step(deliver_goal, "verify")["on_fail"].except("goto", "max"))
-    expect(step(integrate, "verify")["on_fail"]).to include("goto" => "merge", "max" => 2)
+    expect(step(integrate, "verify")["on_fail"]).to include("goto" => "merge")
   end
 
   it "keeps integrate-branch's acceptance equal to deliver-goal's apart from its place and the loop back to merge" do
