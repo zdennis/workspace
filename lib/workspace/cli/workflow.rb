@@ -24,6 +24,9 @@ module Workspace
       # it lists every definition, whatever runs are going.
       DEFINITION_DEFAULTS = %w[graph stats compare].freeze
 
+      # Seconds between redraws of `graph --watch` when `--interval` is not given.
+      DEFAULT_WATCH_INTERVAL = 2.0
+
       # @param workflow_command [Workspace::Commands::Workflow, nil] the `workflow` and `step` command; nil refuses both verbs
       # @param workflow_reflect_command [Workspace::Commands::WorkflowReflect, nil] the `workflow learn reflect` command; nil refuses that verb
       # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] the `workflow start` command; nil refuses that verb
@@ -146,6 +149,8 @@ module Workspace
           opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
           opts.on("--types A,B", "events: only events of these types (repeatable, or comma-separated)") { |v| (options[:types] ||= []).concat(v.split(",").map(&:strip).reject(&:empty?)) }
           opts.on("--timeout DURATION", "events --follow: stop waiting after this long (30s, 5m, 1h) and exit 75") { |v| options[:timeout] = @common.parse_duration_option("--timeout", v, positive: true) }
+          opts.on("--watch", "graph --run: redraw the graph every --interval seconds until the run finishes or Ctrl-C") { options[:watch] = true }
+          opts.on("--interval SECONDS", Float, "graph --run --watch: seconds between redraws (default #{DEFAULT_WATCH_INTERVAL.to_i})") { |v| options[:interval] = v }
           opts.on("--follow", "events: keep reading and print each event as it is appended, until the run has finished and its history is drained") { options[:follow] = true }
           opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
           opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
@@ -236,6 +241,15 @@ module Workspace
         end
         raise UsageError, "--format is for `workflow graph ID`." if options[:format] && subcommand != "graph"
         raise UsageError, "--run is for `workflow graph ID`." if options[:graph_run] && subcommand != "graph"
+        raise UsageError, "--watch is for `workflow graph ID --run RUN`." if options[:watch] && subcommand != "graph"
+        raise UsageError, "--interval is for `workflow graph ID --run RUN --watch`." if options[:interval] && subcommand != "graph"
+        if subcommand == "graph"
+          raise UsageError, "--interval needs --watch. Add --watch, or drop --interval." if options[:interval] && !options[:watch]
+          raise UsageError, "--watch needs --run RUN: it redraws where a run stands." if options[:watch] && !options[:graph_run]
+          raise UsageError, "--watch redraws a screen and cannot be combined with --json. Drop one of them." if options[:watch] && (options[:json] || options[:format] == "json")
+          raise UsageError, "--watch draws ascii: drop --format #{options[:format]}." if options[:watch] && options[:format] && options[:format] != "ascii"
+          raise UsageError, "--interval needs a number of seconds above 0, not #{options[:interval]}." if options[:interval] && options[:interval] <= 0
+        end
         raise UsageError, "--script is for `workflow simulate ID`." if options[:script] && subcommand != "simulate"
         raise UsageError, "workflow simulate needs --script FILE (what the fake agent does; see `workspace workflow simulate --help`)." if subcommand == "simulate" && options[:script].nil?
         raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
@@ -307,7 +321,10 @@ module Workspace
         case subcommand
         when "list" then @workflow_command.list(json: options[:json], project: workflow_project(options))
         when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source], project: workflow_project(options))
-        when "graph" then @workflow_command.graph(id: subject, format: options[:format], json: options[:json], project: workflow_project(options), run: options[:graph_run])
+        when "graph"
+          watching = options[:watch] ? {watch: true, interval: options[:interval] || DEFAULT_WATCH_INTERVAL} : {}
+          result = @workflow_command.graph(id: subject, format: options[:format], json: options[:json], project: workflow_project(options), run: options[:graph_run], **watching)
+          invocation.exit_handler.exit(result[:exit_code]) if result.is_a?(Hash) && !result[:exit_code].to_i.zero?
         when "uninstall" then workflow_action(invocation, "workflow uninstall", options) { @workflow_command.uninstall(yes: options[:yes], dry_run: options[:dry_run], json: options[:json]) }
         when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json], project: workflow_project(options))
         when "render"

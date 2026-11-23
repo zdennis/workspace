@@ -271,6 +271,40 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(workflow_command.calls).to eq([[:graph, {id: "rpiv", format: "mermaid", json: false, project: "app", run: "wr_261117123627abcd"}]])
     end
 
+    it "passes watch and the default interval to graph --run --watch" do
+      run("graph", "rpiv", "--run", "wr_1", "--watch")
+
+      expect(workflow_command.calls).to eq([[:graph, {id: "rpiv", format: nil, json: false, project: "app", run: "wr_1", watch: true, interval: 2.0}]])
+    end
+
+    it "passes --interval and exits with the returned code" do
+      workflow_command.status_result = {exit_code: 3}
+
+      expect(run("graph", "rpiv", "--run", "wr_1", "--watch", "--interval", "0.5", "--format", "ascii")).to eq(3)
+      expect(workflow_command.calls).to eq([[:graph, {id: "rpiv", format: "ascii", json: false, project: "app", run: "wr_1", watch: true, interval: 0.5}]])
+    end
+
+    {
+      %w[graph rpiv --watch] => "--watch needs --run RUN: it redraws where a run stands.",
+      %w[graph rpiv --run wr_1 --watch --format json] => "--watch redraws a screen and cannot be combined with --json. Drop one of them.",
+      %w[graph rpiv --run wr_1 --watch --format dot] => "--watch draws ascii: drop --format dot.",
+      %w[graph rpiv --run wr_1 --interval 3] => "--interval needs --watch. Add --watch, or drop --interval.",
+      %w[graph rpiv --run wr_1 --watch --interval 0] => "--interval needs a number of seconds above 0, not 0.0.",
+      %w[graph rpiv --run wr_1 --watch --interval -1] => "--interval needs a number of seconds above 0, not -1.0.",
+      %w[show rpiv --watch] => "--watch is for `workflow graph ID --run RUN`.",
+      %w[show rpiv --interval 2] => "--interval is for `workflow graph ID --run RUN --watch`."
+    }.each do |argv, message|
+      it "refuses #{argv.join(" ")}" do
+        expect { run(*argv) }.to raise_error(Workspace::UsageError, message)
+        expect(workflow_command.calls).to be_empty
+      end
+    end
+
+    it "refuses --watch with --json as a json error document" do
+      expect(run("graph", "rpiv", "--run", "wr_1", "--watch", "--json")).to eq(1)
+      expect(workflow_command.calls).to be_empty
+    end
+
     it "refuses --run on another verb" do
       expect { run("show", "rpiv", "--run", "wr_261117123627abcd") }.to raise_error(Workspace::UsageError, "--run is for `workflow graph ID`.")
       expect(workflow_command.calls).to be_empty

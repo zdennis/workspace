@@ -160,10 +160,13 @@ module Workspace
       # @param json [Boolean]
       # @param project [String, nil] the project whose definitions come first (see {Workspace::WorkflowCatalog})
       # @param run [String, nil] a run id of workflow +id+
-      # @return [void]
-      # @raise [Workspace::UsageError] for an unknown format, --json with a format other than json, or a run of another workflow
+      # @param watch [Boolean] with +run+: redraw the ascii graph every +interval+ seconds until the run finishes or Ctrl-C ({WatchLoop})
+      # @param interval [Numeric] seconds between redraws
+      # @return [void, Hash] `{exit_code: 0}` when +watch+
+      # @raise [Workspace::UsageError] for an unknown format, --json with a format other than json, or a run of another workflow; --watch without a run, or with json or a format other than ascii
       # @raise [Workspace::Error] code `unknown_workflow` or `unknown_run`
-      def graph(id:, format: nil, json: false, project: nil, run: nil)
+      def graph(id:, format: nil, json: false, project: nil, run: nil, watch: false, interval: 2)
+        return watch_graph(id, run: run, format: format, json: json, interval: interval) if watch
         raise UsageError, "Unknown graph format #{format.inspect}: use #{GRAPH_FORMATS.join(", ")} (default ascii)." if format && !GRAPH_FORMATS.include?(format)
         raise UsageError, "--json prints the graph as json: drop --format #{format}, or use --format json." if json && format && format != "json"
         format ||= json ? "json" : "ascii"
@@ -1285,6 +1288,18 @@ module Workspace
       def ambiguous_run_rows(going)
         going.sort_by { |run| run.to_h["created_at"].to_s }.reverse
           .map { |run| {"id" => run.id, "workflow" => run.workflow, "state" => run.state, "created_at" => run.to_h["created_at"]} }
+      end
+
+      # Redraws the run until a frame shows it finished; an `unknown_run` on a later read (the run was pruned) ends the watch as that error.
+      def watch_graph(id, run:, format:, json:, interval:)
+        raise UsageError, "--watch needs --run RUN: it redraws where a run stands." unless run
+        raise UsageError, "--watch redraws a screen and cannot be combined with --json. Drop one of them." if json || format == "json"
+        raise UsageError, "--watch draws ascii: drop --format #{format}." if format && format != "ascii"
+        WatchLoop.new(output: @output, sleeper: @sleeper).run(interval: interval) do |io|
+          stored = @store.run(run)
+          io.puts @graph_renderers.fetch("ascii").render(run_graph(id, stored))
+          WorkflowRunStore::TERMINAL_STATES.include?(stored.state)
+        end
       end
 
       def run_graph(id, stored)
