@@ -4,6 +4,14 @@ Feature requests and ideas for the workspace CLI.
 
 ## Open
 
+### `WorkflowGuard#commits_since` should count the same-named origin branch pushed without upstream
+
+When a run pushes its branch with `git push origin B:refs/heads/B` (no `-u`), `origin/B` exists but is not the branch's upstream. `WorkflowGuard#commits_since` excludes every remote ref except the upstream, so the same-named `origin/B` hides the new commits and the run's commit check counts 0. Hit twice during the workflow experiments: U1 (ask 6aa680) and S4 (ask 765bb3). Count commits not on any other remote ref, but not those only on the branch's own same-named origin ref.
+
+### `HookInstaller#preserve_existing_statusline_command` rewrites global `config.yml` on every start even when unchanged, with no backup
+
+Path: `start.rb` `install_agent_hooks` -> `hook_installer.rb` `preserve_existing_statusline_command` -> `project_settings.rb` `YAML.dump`. On every `start` the global config is written again; the content was identical and only the mtime moved (seen 04:28, build-loop plan). It should skip the write when nothing changes, and back the file up (`FileBackup`) when it does change.
+
 ### `workspace layout save/restore` across sessions
 
 Persist window positions so relaunching projects restores them to their
