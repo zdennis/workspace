@@ -66,7 +66,7 @@ module Workspace
     # @param text [String] the whole message
     # @return [Integer] where the reader's window starts: the start of the line the {TAIL_CHARS} cut lands in, or
     #   {MAX_LINE_BACK} characters before the cut when that line starts further back. That start can fall mid-line;
-    #   matching from it with `LINE.match(text, pos)` still needs a real line start for `^`.
+    #   matching `TAG_START` from it still needs a real line start for `^`.
     def self.window_start(text)
       cut = text.length - TAIL_CHARS
       return 0 if cut <= 0
