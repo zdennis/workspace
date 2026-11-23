@@ -1133,7 +1133,7 @@ module Workspace
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),
       run_files: WorkflowRunFiles.new,
       lint: WorkflowLint.new(library: library, commands_config: commands_config, lineage: lineage, project_config: project_config,
-        workflow_config: WorkflowConfig.new(config_resolver: config_resolver)),
+        workflow_config: WorkflowConfig.new(config_resolver: config_resolver), main_agent: main_agent),
       attempts: WorkflowAttempts.new,
       trace: WorkflowTrace.new,
       downtime: workflow_downtime,
