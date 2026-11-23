@@ -743,9 +743,12 @@ module Workspace
         inbox_store: InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output),
         policy_config: permission_policy_config, workspace: workspace, project: nil, monitor: monitor, clock: clock, logger: logger
       )
-      hook_fanout = HookFanout.new(workspace: workspace, monitor: monitor, hook_log: hook_event_log, handoff_watcher: handoff_watcher,
-        nudger: workflow_nudger, owner_report: spine_owner_report, desks: [queue_desk, recovery_desk, escalation_desk], work_queue_desk: work_queue_desk,
-        clock: clock, logger: logger)
+      hook_fanout = nil
+      workflow_nudge = WorkflowNudge.new(workspace: workspace, nudger: workflow_nudger, hook_log: hook_event_log,
+        turn_settled: -> { hook_fanout.turn_ended }, clock: clock)
+      owner_finished = spine_owner_report && HookFanout::OwnerFinished.new(report: spine_owner_report)
+      hook_fanout = HookFanout.new(monitor: monitor, hook_log: hook_event_log, logger: logger,
+        subscribers: [handoff_watcher, workflow_nudge, owner_finished, queue_desk, recovery_desk, escalation_desk, work_queue_desk])
       AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner, restart_desk: restart_desk,
         plan_progress_watcher: plan_progress_watcher, spine_owner_report: spine_owner_report, spine_watcher: spine_watcher,
         status_desk: status_desk, queue_desk: queue_desk, recovery_desk: recovery_desk, handoff_watcher: handoff_watcher,

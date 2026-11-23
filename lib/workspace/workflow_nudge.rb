@@ -34,7 +34,7 @@ module Workspace
       when "user_prompt" then @turn_starts[pane_id] = @clock.call
       # A new conversation: a prompt this daemon then fails to see leaves no start, so its turn's end counts.
       when "session_start", "session_end" then @turn_starts.delete(pane_id)
-      when "stop" then turn_ended(pane_id, message)
+      when "stop" then wake_run(pane_id, message)
       end
     end
 
@@ -47,7 +47,7 @@ module Workspace
 
     private
 
-    def turn_ended(pane_id, message)
+    def wake_run(pane_id, message)
       woken = @nudger&.turn_ended(@workspace, pane_id, turn_started: @turn_starts[pane_id], background: message["background_tasks"],
         transcript_path: message["transcript_path"], hook_log: @hook_log, on_exit: @turn_settled)
       @turn_settled.call if woken.nil?

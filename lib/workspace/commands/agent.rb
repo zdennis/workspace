@@ -129,7 +129,7 @@ module Workspace
         @hook_fanout = parts.hook_fanout
         @hook_event_log = parts.hook_event_log
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
-        @session_monitor.on_scan = -> { @hook_fanout.scan_desks } if @session_monitor.respond_to?(:on_scan=)
+        @session_monitor.on_scan = -> { @hook_fanout.scan } if @session_monitor.respond_to?(:on_scan=)
         @handoff_watcher = parts.handoff_watcher
 
         @output.puts "workspace agent '#{name}' ready"

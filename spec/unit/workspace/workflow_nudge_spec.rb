@@ -1,11 +1,5 @@
 require "spec_helper"
 
-class TickingNudger
-  def initialize(ticks) = @ticks = ticks
-
-  def tick(workspace, hook_log:) = @ticks << [workspace, hook_log]
-end
-
 RSpec.describe Workspace::WorkflowNudge do
   let(:nudger) { RecordingNudger.new }
   let(:hook_log) { Object.new }
@@ -80,12 +74,9 @@ RSpec.describe Workspace::WorkflowNudge do
 
   describe "#tick" do
     it "passes the workspace and the hook log to the nudger" do
-      ticks = []
-      ticking = TickingNudger.new(ticks)
+      nudge.tick
 
-      nudge(nudger: ticking).tick
-
-      expect(ticks).to eq([["myapp", hook_log]])
+      expect(nudger.calls).to eq([[:tick, "myapp", {hook_log: hook_log}]])
     end
 
     it "does nothing with no nudger" do

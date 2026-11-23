@@ -333,7 +333,7 @@ class RecordingHandoffWatcher
   end
 end
 
-# Fake of Workspace::WorkflowNudger#turn_ended. +woken+ is the run it answers (nil: none); with one, the
+# Fake of Workspace::WorkflowNudger#turn_ended and #tick. +woken+ is the run it answers (nil: none); with one, the
 # +on_exit+ it was given is kept in +exits+ for the example to call, as the advance's exit would.
 class RecordingNudger
   CONTROL_METHODS = %i[calls exits].freeze
@@ -353,6 +353,12 @@ class RecordingNudger
     @order << [@label, :turn_ended]
     @exits << on_exit if @woken && on_exit
     @woken
+  end
+
+  def tick(workspace, hook_log: nil)
+    @calls << [:tick, workspace, {hook_log: hook_log}]
+    @order << [@label, :tick]
+    nil
   end
 end
 
