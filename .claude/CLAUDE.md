@@ -450,6 +450,7 @@ New per-file detail goes there, never here.
 - `script/hook-latency` — Prints n, median and p90 of a workspace's tool_started-to-tool_finished delta from its hook event log, or with `--process N` the median wall time of `session-event` run in a throwaway HOME.
 - `script/permission-replay` — Replays logged Bash permission dialogs through `PermissionPolicy` offline, under today's config and an optional `--rules` candidate, to measure what a rule set would auto-allow.
 - `script/r4-damaged-run` — Applies damaged-run-file and stale-lock faults to a run holding a lock in a throwaway HOME and prints how each `bin/workspace` command met them, as a Markdown table or `--json`.
+- `script/r2-reboot-drill` — Runs the R2 reboot drill in a throwaway HOME under `/tmp`: a no-remote clone, a headless lab workspace, calculator2 runs killed at research, plan review or verify and then recovered, and a per-kill table.
 
 - State tracked in `~/.workspace-state.json`
 - Configs installed to `~/.config/tmuxinator/`
