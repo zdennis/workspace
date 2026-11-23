@@ -191,6 +191,8 @@ The reading verbs print a success document with a `warnings` list and their payl
 | `history list` | `entries`, each a finished item with `outcome`, `reason`, `finished_at` and `workspace`, and `next_actions` |
 | `history show` | `workspace`, `entry` and `next_actions` (the `work-queue add` that queues it again) |
 
+`list --watch` and `active --watch` are refused with `--json` (a usage error), because a redrawn screen is not a document.
+
 An item row, as `list`, `status` and `active` give it, is `{id, position, state, kind, what, headless, on_fail, added_at, started_at, reason, run_id, dedupe_key}`; `state` is `queued`, `starting`, `active` or `held`. `show` gives the whole item, with `spec`, `added_by` and `result` (`run_id`, `log_path`, `error`). See [`work-queue`](README.work-queue.md).
 
 ## Tmuxinator templates
