@@ -63,7 +63,7 @@ An `allow` reply has `"behavior":"allow"` and no message. The reply never carrie
 
 The decision is forwarded with the event, as `decision` and `rule`. The daemon logs an allowed or denied request as a `permission_requested` followed at once by a `permission_resolved` with `by: "policy"` (`by: "hang_guard"` for a hang guard deny; see [`events`](README.events.md#permission-waits)), and opens no wait for it: the pane does not show `waiting`. For a request left to the person, the daemon [puts it in the inbox](README.inbox.md#permission-requests). The daemon also keeps a marker for a request the policy decided, so a `permission_prompt` notification that arrived after the decision wouldn't open a wait; whether Claude Code sends one has not been confirmed, and the marker is only a defensive guard.
 
-Codex supports the same replies, `allow` and `deny` (the hang guard's deny included), and needs its hooks installed and trusted (see [`sessions`](README.sessions.md#hook-mode)); until then Codex shows its own approval prompt and the policy is never consulted.
+Codex supports the same replies, `allow` and `deny` (the hang guard's deny included), and needs its hooks installed and trusted (see [`sessions`](README.sessions.md#hook-mode)); until then Codex shows its own approval prompt and the policy is never consulted. Codex's hook schema takes the deny `message`, but it is not yet confirmed that Codex shows that message to the model, so a guarded Codex agent may see only that the call was denied. A Codex run held at a dialog is stopped by `workflows.permission_wait_limit` (see [Sweeping stopped runs](README.workflow.md#sweeping-stopped-runs)).
 
 ### Codex
 

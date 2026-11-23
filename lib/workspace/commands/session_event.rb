@@ -157,7 +157,9 @@ module Workspace
       HANG_GUARD_HINTS = {
         [:bound, :compound] => "Denied by workspace's hang guard: this workflow step runs unattended, and this command would wait at a " \
           "permission dialog nobody answers. Instead, #{SIMPLE_BASH}; or write the steps to a script outside the checkout (the run's " \
-          "artifacts or a temp dir) and run it with one `bash <path>` call. #{HANG_GUARD_RUN_OFF}",
+          "artifacts or a temp dir) and run it with one `bash <path>` call. If a simple command is held back " \
+          "too, it needs an approval nobody can give here: record the question with " \
+          "`workspace ask \"<question>\" --default \"<choice>\"` and carry on with the default. #{HANG_GUARD_RUN_OFF}",
         [:bound, :other] => "Denied by workspace's hang guard: this workflow step runs unattended, so this call can't be approved. " \
           "Record the question with `workspace ask \"<question>\" --default \"<choice>\"` and carry on with the default, or end your " \
           "turn with the line `WORKFLOW_STATUS: needs_input — <question>`. #{HANG_GUARD_RUN_OFF}",
