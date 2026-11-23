@@ -5,7 +5,9 @@
 # /tmp/r2-XXXX) it sets HOME, XDG_STATE_HOME, XDG_CONFIG_HOME and TMUX_TMPDIR, unsets TMUX and TMUX_PANE, and puts
 # $LAB/shims first on a PATH with no ~/bin: a `workspace` shim that runs this checkout's bin/workspace, `claude-dev`,
 # and `osascript` and `window-tool` tripwires that log their argv to $LAB/osascript.log and exit 1. It refuses to run
-# when a state, config, socket or tmux path resolves outside the lab.
+# when a state, config, socket or tmux path resolves outside the lab. It drops the caller's API keys and Claude Code session
+# variables, and links the person's ~/Library/Keychains into the lab HOME so the lab's Claude Code signs in: the lab
+# agent can read and write the person's login keychain, as their own sessions do.
 #
 #   setup [--dry-run]       lab config and shims; for real also a clone of this repo's main (no remote), `workspace init`,
 #                           config and the headless lab workspace r2lab
@@ -400,13 +402,7 @@ module R2RebootDrill
 
     # macOS finds the login keychain through HOME, so the lab HOME links the person's Keychains directory: Claude Code
     # then signs in with its own `Claude Code-credentials` item. Teardown removes the link, never its target.
-    def link_keychains
-      real = File.join(Etc.getpwuid.dir, "Library", "Keychains")
-      link = File.join(@lab.home, "Library", "Keychains")
-      return if !File.directory?(real) || File.symlink?(link)
-      FileUtils.mkdir_p(File.dirname(link))
-      File.symlink(real, link)
-    end
+    def link_keychains = R2RebootDrill.link_keychains(File.join(Etc.getpwuid.dir, "Library", "Keychains"), @lab.home)
 
     def demo_plan(id)
       argv = ["script/demo-calculator2", "run", "--base", "main", "--id", id, "--goals", "01,02", "--workflow", "deliver-goal-fast",
@@ -592,6 +588,13 @@ module R2RebootDrill
     rescue JSON::ParserError
       nil
     end
+  end
+
+  def self.link_keychains(real, home)
+    link = File.join(home, "Library", "Keychains")
+    return if !File.directory?(real) || File.symlink?(link)
+    FileUtils.mkdir_p(File.dirname(link))
+    File.symlink(real, link)
   end
 
   # The lab's ~/.claude.json: onboarding and trust done for the lab checkout, and the session feedback survey marked

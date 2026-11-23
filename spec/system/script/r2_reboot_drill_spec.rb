@@ -147,6 +147,23 @@ RSpec.describe "script/r2-reboot-drill" do
     end
   end
 
+  it "links a Keychains directory into the lab HOME, and teardown removes the link but never its target" do
+    load script
+    keychains = File.join(@parent, "Keychains")
+    FileUtils.mkdir_p(keychains)
+    File.write(File.join(keychains, "login.keychain-db"), "keep\n")
+    home = File.join(@lab, "home")
+
+    R2RebootDrill.link_keychains(keychains, home)
+    expect(File.readlink(File.join(home, "Library", "Keychains"))).to eq(keychains)
+    File.write(File.join(@lab, "drill.json"), JSON.generate("workspace" => "repo.worktree-r2lab"))
+    _out, err, status = drill("teardown")
+
+    expect(status.exitstatus).to eq(0), err
+    expect(File.exist?(@lab)).to be(false)
+    expect(File.read(File.join(keychains, "login.keychain-db"))).to eq("keep\n")
+  end
+
   it "teardown refuses to remove a lab with no drill.json" do
     FileUtils.touch(File.join(@lab, "keep-me"))
 
