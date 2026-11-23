@@ -21,6 +21,10 @@ RSpec.describe "script/r2-reboot-drill" do
     end
   end
 
+  def load_drill
+    load script unless defined?(R2RebootDrill)
+  end
+
   def parent_env
     state = File.join(@parent, ".local", "state")
     path = [File.join(@parent, "bin"), "~/bin", File.join(Etc.getpwuid.dir, "bin"), ENV.fetch("PATH")].join(":")
@@ -129,6 +133,7 @@ RSpec.describe "script/r2-reboot-drill" do
 
   it "teardown stops the lab's demo, waits for it to exit and then removes the lab" do
     ws = "repo.worktree-r2lab"
+    reaped = false
     pid = Process.spawn("sh", "-c", "trap 'exit 0' TERM; while :; do sleep 0.1; done", "script/demo-calculator2 run --id smoke --name #{ws}", pgroup: true)
     File.write(File.join(@lab, "drill.json"), JSON.generate("workspace" => ws, "demo" => {"pid" => pid, "id" => "smoke"}))
 
@@ -137,18 +142,21 @@ RSpec.describe "script/r2-reboot-drill" do
     expect(status.exitstatus).to eq(0), err
     expect(JSON.parse(out)).to include("demo" => pid, "removed" => true)
     expect(Process.waitpid(pid, Process::WNOHANG)).to eq(pid)
+    reaped = true
     expect(File.exist?(@lab)).to be(false)
   ensure
-    begin
-      Process.kill("KILL", pid)
-      Process.wait(pid)
-    rescue Errno::ESRCH, Errno::ECHILD
-      nil
+    unless reaped
+      begin
+        Process.kill("KILL", pid)
+        Process.wait(pid)
+      rescue Errno::ESRCH, Errno::ECHILD
+        nil
+      end
     end
   end
 
   it "links a Keychains directory into the lab HOME, and teardown removes the link but never its target" do
-    load script
+    load_drill
     keychains = File.join(@parent, "Keychains")
     FileUtils.mkdir_p(keychains)
     File.write(File.join(keychains, "login.keychain-db"), "keep\n")
@@ -175,7 +183,7 @@ RSpec.describe "script/r2-reboot-drill" do
   end
 
   it "seeds Claude Code with the feedback survey marked shown and turned off, so no dialog covers the input prompt" do
-    load script
+    load_drill
     now = Time.at(1_800_000_000)
     doc = R2RebootDrill.claude_json(["/tmp/r2-x/repo"], now)
 
@@ -185,7 +193,7 @@ RSpec.describe "script/r2-reboot-drill" do
   end
 
   it "hits a point only once the agent has its prompt, counts a step held for a person as missed, and still hits a running step whose run reads waiting on an open ask" do
-    load script
+    load_drill
     run = ->(state, flags, run_state = "running") { {"state" => run_state, "current" => {"step" => "research", "state" => state, "flags" => flags}} }
     expect(R2RebootDrill.point_state(run.call("running", ["delivering"]), "research")).to eq(:wait)
     expect(R2RebootDrill.point_state(run.call("running", []), "research")).to eq(:hit)
@@ -193,8 +201,40 @@ RSpec.describe "script/r2-reboot-drill" do
     expect(R2RebootDrill.point_state(run.call("running", [], "waiting"), "research")).to eq(:hit)
   end
 
+  it "hits plan only in review with a window and counts a verify kill in checking as missed" do
+    load_drill
+    at = ->(step, state, extra = {}) { {"state" => "running", "current" => {"step" => step, "state" => state, "flags" => []}.merge(extra)} }
+    expect(R2RebootDrill.point_state(at.call("plan", "running"), "plan")).to eq(:wait)
+    expect(R2RebootDrill.point_state(at.call("plan", "reviewing"), "plan")).to eq(:wait)
+    expect(R2RebootDrill.point_state(at.call("plan", "reviewing", "review" => {"window" => "@3"}), "plan")).to eq(:hit)
+    expect(R2RebootDrill.point_state(at.call("implement", "running"), "plan")).to eq(:missed)
+    expect(R2RebootDrill.point_state(at.call("verify", "running"), "verify")).to eq(:hit)
+    expect(R2RebootDrill.point_state(at.call("verify", "checking"), "verify")).to eq(:missed)
+    expect(R2RebootDrill.point_state(at.call("research", "running"), "verify")).to eq(:wait)
+  end
+
+  it "reads the killed run's recover row, shows limit_reached on its own and falls back to the first row" do
+    load_drill
+    doc = ->(*rows) { {"document" => {"results" => rows}} }
+    mine = {"run_id" => "wr_a", "outcome" => "restarted", "reason" => "pane_gone"}
+    other = {"run_id" => "wr_b", "outcome" => "skipped", "reason" => "pane_alive"}
+    expect(R2RebootDrill.recover_outcome(doc.call(other, mine), "wr_a")).to eq("restarted/pane_gone")
+    expect(R2RebootDrill.recover_outcome(doc.call(other), "wr_a")).to eq("skipped/pane_alive")
+    expect(R2RebootDrill.recover_outcome(doc.call(mine.merge("outcome" => "skipped", "reason" => "limit_reached")), "wr_a")).to eq("limit_reached")
+    expect(R2RebootDrill.recover_outcome(nil, "wr_a")).to eq("-")
+  end
+
+  it "refuses to link Keychains over a real directory in the lab HOME" do
+    load_drill
+    keychains = File.join(@parent, "Keychains")
+    home = File.join(@lab, "home")
+    FileUtils.mkdir_p([keychains, File.join(home, "Library", "Keychains")])
+
+    expect { R2RebootDrill.link_keychains(keychains, home) }.to raise_error(R2RebootDrill::Refused, /exists and is not a link/)
+  end
+
   it "counts a doctor warn as bad only for workflow runs, review window orphans and agentd orphans" do
-    load script
+    load_drill
     checks = [{"id" => "templates", "status" => "warn"}, {"id" => "skills-claude", "status" => "warn"}, {"id" => "tmux", "status" => "ok"}]
     expect(R2RebootDrill.doctor_summary({"checks" => checks})).to eq("ok")
     checks += [{"id" => "agentd-orphans", "status" => "warn"}, {"id" => "workflow-review-window-orphaned", "status" => "warn"}, {"id" => "git", "status" => "fail"}]

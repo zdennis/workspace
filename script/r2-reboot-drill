@@ -301,7 +301,7 @@ module R2RebootDrill
     # The demo process group a run left going, after checking the pid still runs the lab's demo-calculator2.
     def stop_demo(ws)
       demo = @lab.drill["demo"]
-      return nil unless demo
+      return nil unless demo && demo["pid"].to_i.positive?
       command, = Open3.capture2("ps", "-ww", "-o", "command=", "-p", demo["pid"].to_s)
       unless command.match?(%r{script/demo-calculator2 run .*--id #{Regexp.escape(demo["id"].to_s)}\b.*--name #{Regexp.escape(ws)}(\s|\z)})
         @err.puts "r2-reboot-drill: left pid #{demo["pid"]} alone: not the lab's demo-calculator2 (#{command.strip})" unless command.strip.empty?
@@ -393,7 +393,7 @@ module R2RebootDrill
 
     def seed_claude
       trusted = [@lab.worktree, @lab.repo].flat_map { |p| [p, p.sub(%r{\A/private/tmp/}, "/tmp/")] }.uniq
-      File.write(File.join(@lab.home, ".claude.json"), JSON.pretty_generate(R2RebootDrill.claude_json(trusted, Time.now)))
+      File.write(File.join(@lab.home, ".claude.json"), JSON.pretty_generate(R2RebootDrill.claude_json(trusted, @clock.call)))
       FileUtils.mkdir_p(File.join(@lab.home, ".claude"))
       settings = File.join(@lab.home, ".claude", "settings.json")
       File.write(settings, JSON.pretty_generate(R2RebootDrill.claude_settings)) unless File.exist?(settings)
@@ -411,7 +411,8 @@ module R2RebootDrill
     end
 
     def start_record(id, kind, point)
-      raise Refused, "a lab run is still going: #{going_runs.map { |r| r["id"] }.join(", ")}" unless going_runs.empty?
+      going = going_runs
+      raise Refused, "a lab run is still going: #{going.map { |r| r["id"] }.join(", ")}" unless going.empty?
       raise Refused, "#{record_path(id)} exists: pick another ID" if File.exist?(record_path(id))
       clean_tree
       {"id" => id, "kind" => kind, "point" => point, "rep" => id[/\d+[a-z]*\z/], "osascript_before" => @lab.osascript_calls}
@@ -593,6 +594,7 @@ module R2RebootDrill
   def self.link_keychains(real, home)
     link = File.join(home, "Library", "Keychains")
     return if !File.directory?(real) || File.symlink?(link)
+    raise Refused, "#{link} exists and is not a link: remove it or start a new lab" if File.exist?(link)
     FileUtils.mkdir_p(File.dirname(link))
     File.symlink(real, link)
   end
