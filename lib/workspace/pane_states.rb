@@ -27,14 +27,17 @@ module Workspace
     end
 
     # What `sessions` reports. A finished turn is "done" whatever the screen
-    # or a late idle notification says; {.state_of} keeps going by activity
-    # and waits.
+    # or a late idle notification says, unless a wait is still open: a
+    # sub-agent's dialog outlives the main agent's Stop, and a person has to
+    # answer it, so "waiting" comes first. Otherwise {.state_of} goes by
+    # activity.
     #
     # @param pane [Hash]
     # @param idle_for [Numeric]
     # @param idle_after [Numeric]
-    # @return [String] "done", or {.state_of}
+    # @return [String] "waiting" with a wait open, else "done" or {.state_of}
     def reported_state(pane, idle_for, idle_after)
+      return "waiting" unless pane[:waits].empty?
       pane[:done] ? "done" : state_of(pane, idle_for, idle_after)
     end
 

@@ -14,11 +14,27 @@ RSpec.describe Workspace::PaneStates do
   end
 
   describe ".reported_state" do
-    it "is done for a finished turn, whatever the waits say" do
-      pane[:waits]["a1"] = wait(5)
-      expect(described_class.reported_state(pane, 0, 30)).to eq("waiting")
+    it "is done for a finished turn, whatever the screen says" do
       pane[:done] = {since: now - 3}
       expect(described_class.reported_state(pane, 0, 30)).to eq("done")
+    end
+
+    it "is waiting with a wait open after the turn ended, and since the oldest wait" do
+      pane[:done] = {since: now - 3, by: "stop"}
+      pane[:waits].merge!("a1" => wait(5), "a2" => wait(9).merge(by: "notification"))
+      expect(described_class.reported_state(pane, 0, 30)).to eq("waiting")
+      expect(described_class.since_for(pane, "waiting", now, 30)).to eq(now - 9)
+      expect(described_class.changed_by_for(pane, "waiting")).to eq("notification")
+      pane[:waits].clear
+      expect(described_class.reported_state(pane, 0, 30)).to eq("done")
+    end
+
+    it "logs waiting, then done again once the wait closes" do
+      pane[:done] = {since: now - 3}
+      pane[:waits]["a1"] = wait(5)
+      expect(described_class.state_change(pane, now, 30)).to include("state" => "waiting")
+      pane[:waits].clear
+      expect(described_class.state_change(pane, now, 30)).to include("state" => "done")
     end
   end
 
