@@ -511,11 +511,17 @@ module Workspace
     end
 
     # The size past which an append compacts the log, nil for never. A callable
-    # is called once per instance, so config is not read on every append.
+    # is called once per instance, so config is not read on every append; one that
+    # raises turns the automatic compaction off for the instance.
     def auto_compact_threshold
       return @auto_compact_threshold if defined?(@auto_compact_threshold)
       source = @compact_threshold_source
-      @auto_compact_threshold = source.respond_to?(:call) ? source.call : source
+      @auto_compact_threshold = begin
+        source.respond_to?(:call) ? source.call : source
+      rescue => e
+        @logger.debug { "event_log: could not read the compact threshold, compaction is off (#{e.class}: #{e.message})" }
+        nil
+      end
     end
 
     # Moves each rotated file up one number, dropping the oldest, then links

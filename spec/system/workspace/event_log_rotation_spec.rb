@@ -204,6 +204,19 @@ RSpec.describe Workspace::EventLog, "rotation" do
       expect(File.exist?("#{event_log_file}.1")).to be(false)
     end
 
+    it "calls a raising threshold callable once, turns compaction off and still writes the events" do
+      calls = 0
+      log = log_with(-> {
+        calls += 1
+        raise "config unreadable"
+      })
+      fill(log, count: 60)
+
+      expect(calls).to eq(1)
+      expect(File.exist?("#{event_log_file}.1")).to be(false)
+      expect(lines_of(event_log_file).size).to eq(60)
+    end
+
     it "calls a threshold callable once over many appends" do
       calls = 0
       log = log_with(-> {
@@ -216,19 +229,34 @@ RSpec.describe Workspace::EventLog, "rotation" do
       expect(File.exist?("#{event_log_file}.1")).to be(true)
     end
 
-    it "compacts once when two processes race past the threshold" do
+    it "compacts once when two processes pass the size check together, because the size is checked again under the lock" do
       lib = File.join(PROJECT_ROOT, "lib")
       File.write(event_log_file, JSON.generate({"timestamp" => "2026-01-01T00:00:00.000Z", "type" => "dispatched", "project" => "seed", "data" => {"pad" => "s" * 1_600}}) + "\n")
       script = <<~RUBY
         require "workspace"
         config = Workspace::Config.new(workspace_dir: ENV["HOME"])
-        log = Workspace::EventLog.new(config: config, compact_threshold: 1500, keep_rotated: 10)
+        # Each process waits, right after its size check says "over", until the other has passed it too.
+        class BarrieredLog < Workspace::EventLog
+          def size
+            value = super
+            unless @barriered
+              @barriered = true
+              File.write(ENV["READY"], "")
+              deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30
+              sleep 0.01 until File.exist?(ENV["OTHER"]) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+            end
+            value
+          end
+        end
+        log = BarrieredLog.new(config: config, compact_threshold: 1500, keep_rotated: 10, rotate_lock_wait: 20)
         log.append(type: "dispatched", project: "w" + ENV["WORKER"], data: {"pad" => "y" * 300})
       RUBY
       env = {"HOME" => tmpdir, "XDG_CONFIG_HOME" => File.join(tmpdir, "config"),
              "XDG_STATE_HOME" => File.join(tmpdir, "state"), "SKIP_SIMPLECOV" => "1"}
-      pids = (1..2).map do |worker|
-        Process.spawn(env.merge("WORKER" => worker.to_s), RbConfig.ruby, "-I", lib, "-e", script, err: File::NULL, out: File::NULL)
+      ready = {1 => File.join(tmpdir, "ready1"), 2 => File.join(tmpdir, "ready2")}
+      pids = [1, 2].map do |worker|
+        Process.spawn(env.merge("WORKER" => worker.to_s, "READY" => ready[worker], "OTHER" => ready[3 - worker]),
+          RbConfig.ruby, "-I", lib, "-e", script, err: File::NULL, out: File::NULL)
       end
       statuses = pids.map { |pid| Timeout.timeout(60) { Process.wait2(pid).last } }
 
