@@ -77,6 +77,13 @@ RSpec.describe "the integrate-branch and deliver-goal-fast workflows" do
     expect(play("fast-happy", "deliver-goal-fast")["outcome"]).to eq("completed")
   end
 
+  it "stops deliver-goal-fast at verify after its three loops back to implement are spent" do
+    result = play("fast-verify-fails-four", "deliver-goal-fast")
+    expect(result["outcome"]).to eq("stopped")
+    expect(result["stopped"]).to include("step" => "verify")
+    expect(step(result, "verify")["attempts"].map { |each| each["outcome"] }).to eq(%w[failed failed failed failed])
+  end
+
   it "completes integrate-branch when the merge, verify and acceptance pass once" do
     result = play("integrate-happy", "integrate-branch")
     expect(result["outcome"]).to eq("completed")

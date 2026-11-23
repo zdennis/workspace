@@ -1,0 +1,14 @@
+# deliver-goal-fast: verify's test check fails four times. Its on_fail allows three loops back to implement, so the
+# fourth failure stops the run for a person at verify.
+inputs:
+  task: "Deliver the goal in goals/01.md"
+  goal: goals/01.md
+  acceptance: script/acceptance_runner
+steps:
+  plan:
+    - reviews: {skeptical: approve}
+  verify:
+    - {check: fail, log: "1 runs, 1 failures"}
+    - {check: fail, log: "1 runs, 1 failures"}
+    - {check: fail, log: "1 runs, 1 failures"}
+    - {check: fail, log: "1 runs, 1 failures"}
