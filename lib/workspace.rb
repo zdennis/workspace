@@ -1466,6 +1466,7 @@ module Workspace
       parent_command: parent_command,
       notes_command: notes_command,
       notes_setup: notes_setup,
+      claude_trust: claude_trust,
       ticket_command: ticket_command,
       skills_command: skills_command,
       pull_request_command: pull_request_command,
