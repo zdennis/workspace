@@ -15,9 +15,9 @@ invalid option: --bogus
 --- stdout
 Usage: workspace work-queue add workflow ID [--ref REF] [--prompt TEXT] [--input K=V]... [OPTIONS]
        workspace work-queue add go ARG [--text] [--workflow ID] [--input K=V]... [OPTIONS]
-       workspace work-queue list [--name WORKSPACE | --project [NAME]] [--json]
+       workspace work-queue list [--name WORKSPACE | --project [NAME]] [--watch [--interval SECONDS]] [--json]
        workspace work-queue show ITEM [--name WORKSPACE] [--json]
-       workspace work-queue active [--name WORKSPACE] [--json]
+       workspace work-queue active [--name WORKSPACE] [--watch [--interval SECONDS]] [--json]
        workspace work-queue rm ITEM... [--name WORKSPACE] [--json]
        workspace work-queue move ITEM (--before ID | --after ID | --top | --bottom) [--if-revision N] [--name WORKSPACE] [--json]
        workspace work-queue cancel [ITEM] [--and-continue] [--name WORKSPACE] [--json]
@@ -75,6 +75,8 @@ Run `workspace work-queue VERB --help` for a verb's options.
         --state STATE                history list: only this outcome (succeeded, failed, cancelled, skipped, interrupted, launch_failed)
         --all                        history clear: remove every finished item
         --yes                        history clear: skip the question
+        --watch                      list and active: redraw every --interval seconds until Ctrl-C
+        --interval SECONDS           list and active with --watch: seconds between redraws (default 2)
         --json                       Print one JSON document
     -h, --help                       Show this help
 

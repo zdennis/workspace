@@ -2076,6 +2076,8 @@ module Workspace
     WQ_ID = "ITEM is an item id or a unique start of one (see `workspace work-queue list`)."
     WQ_POSITION = "Give at most one of --top, --after-current, --before and --after."
     WQ_PROJECT_OPT = ["--project [NAME]", "Every workspace of a project (NAME, or the project of the current workspace), read only"]
+    WQ_WATCH_OPT = ["--watch", "Redraw every --interval seconds until Ctrl-C (not with --json)"]
+    WQ_INTERVAL_OPT = ["--interval SECONDS", "With --watch: seconds between redraws, above 0 (default 2)"]
     WQ_DATE = "DATE is 2026-01-31 or 2026-01-31T09:00:00Z."
 
     WORK_QUEUE = {
@@ -2115,18 +2117,20 @@ module Workspace
         ]
       },
       "list" => {
-        usage: ["work-queue list [--name WORKSPACE | --project [NAME]] [--json]"],
+        usage: ["work-queue list [--name WORKSPACE | --project [NAME]] [--watch [--interval SECONDS]] [--json]"],
         summary: "Show the queue as a table",
         about: [
           "One row per item: position, id, state, kind, what it runs, headless and age. A footer says whether the",
           "queue is on, off or paused (and why) and whether the workspace's agent daemon is up; an off queue says",
           "how to turn it on, and an enabled one whose daemon is down gets a warning (`daemon_not_running`). --project",
-          "reads every workspace of a project and writes nothing."
+          "reads every workspace of a project and writes nothing. --watch redraws the table until Ctrl-C (exit 0); a",
+          "warning shows below the table, not on the error stream; it cannot be combined with --json."
         ],
-        options: [NAME_OPT, WQ_PROJECT_OPT, JSON_OPT],
+        options: [NAME_OPT, WQ_PROJECT_OPT, WQ_WATCH_OPT, WQ_INTERVAL_OPT, JSON_OPT],
         examples: [
           ["workspace work-queue list", "the queue of the workspace you are in"],
           ["workspace work-queue list --project", "every queue of the project, to see which one is stuck"],
+          ["workspace work-queue list --watch --interval 5", "keep the table up to date every 5 seconds until Ctrl-C"],
           ["workspace work-queue list --name api.worktree-x --json", "one JSON document, with the revision that --if-revision takes"]
         ]
       },
@@ -2142,13 +2146,14 @@ module Workspace
         ]
       },
       "active" => {
-        usage: ["work-queue active [--name WORKSPACE] [--json]"],
+        usage: ["work-queue active [--name WORKSPACE] [--watch [--interval SECONDS]] [--json]"],
         summary: "Show the item that is running and what it waits on",
-        about: ["Says `Nothing is active` when no item is starting, active or held. A held item waits on a person; its next actions say how to approve or skip."],
-        options: [NAME_OPT, JSON_OPT],
+        about: ["Says `Nothing is active` when no item is starting, active or held. A held item waits on a person; its next actions say how to approve or skip.", "--watch redraws it until Ctrl-C (exit 0); it cannot be combined with --json."],
+        options: [NAME_OPT, WQ_WATCH_OPT, WQ_INTERVAL_OPT, JSON_OPT],
         examples: [
           ["workspace work-queue active", "which item the queue is on, and what it waits for"],
           ["workspace work-queue active --name api.worktree-x", "the same for another workspace"],
+          ["workspace work-queue active --watch", "follow the running item until Ctrl-C"],
           ["workspace work-queue active --json", "one JSON document, for a script"]
         ]
       },

@@ -593,4 +593,64 @@ RSpec.describe Workspace::Commands::WorkQueue do
       expect(names).to eq(%w[api-w other])
     end
   end
+
+  describe "watching" do
+    let(:sleeps) { [] }
+    let(:sleeper) {
+      ->(seconds) {
+        sleeps << seconds
+        raise Interrupt if sleeps.size == 2
+      }
+    }
+    let(:watched) do
+      described_class.new(store_factory: ->(name) { stores[name] }, history_factory: ->(name) { histories[name] },
+        advance: advance, decisions: decisions, run_store: run_store, checkout: checkout, go: go, status_scope: status_scope,
+        agent_ensurer: agent_ensurer, agent_running: agent_running, clock: clock, sleeper: sleeper, working_dir: "/repo/api-w",
+        output: output, error_output: error_output, input: input)
+    end
+
+    it "draws the list as one frame, sleeps the interval and returns exit 0 on Ctrl-C" do
+      queue_item
+
+      expect(watched.watch_list(interval: 0.5)).to eq(exit_code: 0)
+      expect(output.string).to include("api-w: off, daemon down")
+      expect(output.string.scan("api-w: off").size).to eq(1)
+      expect(sleeps).to eq([0.5, 0.5])
+    end
+
+    it "keeps watching when a frame's renderer returns something truthy" do
+      store.set_enabled(true)
+      daemons_up["api-w"] = true
+
+      watched.watch_list
+      expect(sleeps.size).to eq(2)
+    end
+
+    it "puts the daemon_not_running warning in the frame and not on the error stream" do
+      store.set_enabled(true)
+
+      watched.watch_list
+
+      expect(output.string).to include("Warning: The agent daemon of 'api-w' is not answering")
+      expect(error_output.string).to eq("")
+    end
+
+    it "draws the active item and returns exit 0" do
+      make_current("held", reason: "gate")
+
+      expect(watched.watch_active(interval: 1)).to eq(exit_code: 0)
+      expect(output.string).to include("aaaa1111 held workflow")
+      expect(sleeps).to eq([1, 1])
+    end
+
+    it "leaves plain list and active output and warnings as they were" do
+      store.set_enabled(true)
+      command.list
+      command.active
+
+      expect(output.string).not_to include("Warning:")
+      expect(error_output.string).to include("Warning: The agent daemon of 'api-w' is not answering")
+      expect(output.string).to include("Nothing is active in 'api-w'.")
+    end
+  end
 end
