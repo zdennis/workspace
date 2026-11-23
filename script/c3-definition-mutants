@@ -1,0 +1,267 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Experiment C3: which checks notice a one-line change to the calculator2 demo definitions? Works on a copy only:
+# exports HEAD into DIR (outside the checkout and the vault), then for each mutant edits the copy's YAML and runs
+#
+#   validate  WorkflowDefinition.parse of the three definitions over the copy (a parse error kills; a new warning is noted)
+#   simulate  each demo simulator script in-process against the copy's definitions, with its expected outcome
+#   specs     `bundle exec rspec` in the copy, so PROJECT_ROOT is the mutated tree
+#   diff      whether any script's transcript differs from the unmutated baseline (reported, never a kill)
+#
+# and puts the file back. The `workspace` CLI is not used: it resolves ids through the person's catalog, not the copy.
+#
+# Usage: c3-definition-mutants --dir DIR [--only ID,...] [--specs PATH,...] [--json]
+
+require "fileutils"
+require "json"
+require "open3"
+require "optparse"
+require "tmpdir"
+require_relative "../lib/workspace"
+
+module C3
+  ROOT = File.realpath(File.expand_path("..", __dir__))
+  VAULT = File.expand_path("~/Library/Mobile Documents").then { |path| File.exist?(path) ? File.realpath(path) : path }
+  WORKFLOWS = File.join("demo", "calculator2", "workflows")
+  SIMULATE = File.join("demo", "calculator2", "simulate")
+  DEFINITIONS = %w[deliver-goal deliver-goal-fast integrate-branch].freeze
+  SPECS = %w[
+    spec/integration/workspace/deliver_goal_workflow_spec.rb
+    spec/integration/workspace/integrate_branch_workflow_spec.rb
+    spec/system/workspace/workflow_requirements_check_spec.rb
+    spec/unit/demo_calculator2_config_spec.rb
+    spec/unit/demo_calculator2_lanes_spec.rb
+    spec/unit/demo_calculator2_series_spec.rb
+    spec/system/demo_calculator2_script_spec.rb
+  ].freeze
+  # name => [definition id, expected outcome, step it stops at]. A script missing from the copy (one added after the
+  # exported commit) is skipped and the baseline line says so. fast-plan-require-fails is left out: it plays only
+  # against a variant deliver_goal_workflow_spec builds, so it is reached through the specs.
+  SCRIPTS = {
+    "happy" => ["deliver-goal", "completed"],
+    "acceptance-fails-once" => ["deliver-goal", "completed"],
+    "acceptance-fails-twice" => ["deliver-goal", "stopped", "acceptance"],
+    "fast-happy" => ["deliver-goal-fast", "completed"],
+    "fast-plan-check-fails" => ["deliver-goal-fast", "completed"],
+    "fast-verify-fails-four" => ["deliver-goal-fast", "stopped", "verify"],
+    "integrate-happy" => ["integrate-branch", "completed"]
+  }.freeze
+
+  Mutant = Struct.new(:id, :file, :description, :edits, :prediction, keyword_init: true)
+
+  # Each edit is [old, new, count]: old must occur exactly count times in the pristine file.
+  MUTANTS = [
+    Mutant.new(id: "D1", file: "deliver-goal", description: "drop verify `uses: [test-db]`",
+      edits: [["    produces: [verify.md]\n    uses: [test-db]\n", "    produces: [verify.md]\n", 1]], prediction: "killed, spec :53"),
+    Mutant.new(id: "D2", file: "deliver-goal", description: "verify on_fail goto implement -> plan",
+      edits: [["    on_fail:\n      goto: implement\n      max: 3\n", "    on_fail:\n      goto: plan\n      max: 3\n", 1]], prediction: "killed, spec :53"),
+    Mutant.new(id: "D3", file: "deliver-goal", description: "drop verify `require: lint`",
+      edits: [["    require:\n      - command: lint\n        optional: true\n", "", 1]], prediction: "killed, spec :53"),
+    Mutant.new(id: "D4", file: "deliver-goal", description: "acceptance `guard: config` -> `unchanged`",
+      edits: [["    prompt: \"Change nothing; end your turn.\"\n    guard: config\n", "    prompt: \"Change nothing; end your turn.\"\n    guard: unchanged\n", 1]], prediction: "killed, simulator and spec :140"),
+    Mutant.new(id: "D5", file: "deliver-goal", description: "drop verify on_fail `max: 3`",
+      edits: [["      goto: implement\n      max: 3\n", "      goto: implement\n", 1]], prediction: "killed, spec :53"),
+    Mutant.new(id: "D6", file: "deliver-goal", description: "drop deny `*refs/demo-calc2*`",
+      edits: [["  - \"*refs/demo-calc2*\"\n", "", 1]], prediction: "killed, spec :45"),
+    Mutant.new(id: "D7", file: "deliver-goal", description: "acceptance on_fail context fresh -> continue",
+      edits: [["log_tail: 40, context: fresh}", "log_tail: 40, context: continue}", 1]], prediction: "killed, spec :134 and :176"),
+    Mutant.new(id: "D8", file: "deliver-goal", description: "drop plan `produces: [plan.md]`",
+      edits: [["    produces: [plan.md]\n", "", 1]], prediction: "survives"),
+    Mutant.new(id: "I1", file: "integrate-branch", description: "drop verify `uses: [test-db]`",
+      edits: [["    uses: [test-db]\n", "", 1]], prediction: "survives"),
+    Mutant.new(id: "I2", file: "integrate-branch", description: "drop verify `require: lint`",
+      edits: [["    require:\n      - command: lint\n        optional: true\n", "", 1]], prediction: "survives"),
+    Mutant.new(id: "I3", file: "integrate-branch", description: "drop deny `*calculator2/acceptance`",
+      edits: [["  - \"*calculator2/acceptance\"\n", "", 1]], prediction: "survives"),
+    Mutant.new(id: "I4", file: "integrate-branch", description: "drop acceptance exec `git diff --quiet HEAD`",
+      edits: [["      - exec: \"/usr/bin/env git diff --quiet HEAD\"\n", "", 1]], prediction: "survives"),
+    Mutant.new(id: "I5", file: "integrate-branch", description: "rename input `branch` -> `source_branch` everywhere",
+      edits: [["  branch:\n    description: The branch to merge", "  source_branch:\n    description: The branch to merge", 1],
+        ["{{inputs.branch}}", "{{inputs.source_branch}}", 3]], prediction: "killed, simulator (integrate-happy)"),
+    Mutant.new(id: "I6", file: "integrate-branch", description: "swap merge-base arguments",
+      edits: [["--is-ancestor {{inputs.branch}} HEAD", "--is-ancestor HEAD {{inputs.branch}}", 1]], prediction: "survives"),
+    Mutant.new(id: "F1", file: "deliver-goal-fast", description: "add verify `uses: [test-db]`",
+      edits: [["    produces: [verify.md]\n    status:", "    produces: [verify.md]\n    uses: [test-db]\n    status:", 1]], prediction: "survives"),
+    Mutant.new(id: "F2", file: "deliver-goal-fast", description: "drop verify `on_fail`",
+      edits: [["    timeout: 90m\n    on_fail:\n      goto: implement\n      max: 3\n      context: continue\n", "    timeout: 90m\n", 1]], prediction: "survives")
+  ].freeze
+
+  module_function
+
+  def refuse(dir)
+    path = File.expand_path(dir)
+    parent = path
+    parent = File.dirname(parent) until File.exist?(parent)
+    real = File.join(File.realpath(parent), path.delete_prefix(parent))
+    [ROOT, VAULT].each do |root|
+      abort "refusing to work inside #{root}: #{path}" if [path, real].any? { |each| each == root || each.start_with?("#{root}/") }
+    end
+    abort "#{path} exists and is not empty" if File.exist?(path) && !Dir.empty?(path)
+    path
+  end
+
+  def export(dir)
+    dirty, status = Open3.capture2("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no")
+    abort "git status failed" unless status.success?
+    abort "the checkout has uncommitted changes and the copy is HEAD: commit them first" unless dirty.empty?
+    FileUtils.mkdir_p(dir)
+    archive, status = Open3.capture2("git", "-C", ROOT, "archive", "HEAD", binmode: true)
+    abort "git archive HEAD failed" unless status.success?
+    _, err, status = Open3.capture3("tar", "-x", "-C", dir, stdin_data: archive, binmode: true)
+    abort "tar failed: #{err}" unless status.success?
+  end
+
+  def yaml_path(copy, id) = File.join(copy, WORKFLOWS, "#{id}.yml")
+
+  def lookup(copy)
+    lambda do |id, below: nil|
+      next nil unless below.nil?
+      demo = yaml_path(copy, id)
+      next {"text" => File.read(demo), "path" => demo, "source" => "global"} if File.file?(demo)
+      file = File.join(copy, "lib", "workflows", "#{id}.yml")
+      {"text" => File.read(file), "path" => file, "source" => "builtin"} if File.file?(file)
+    end
+  end
+
+  def parse(copy, id)
+    path = yaml_path(copy, id)
+    Workspace::WorkflowDefinition.parse(File.read(path), id: id, source: "global", path: path, parent_lookup: lookup(copy))
+  end
+
+  def validate(copy)
+    definitions = {}
+    errors = {}
+    warnings = []
+    DEFINITIONS.each do |id|
+      definition = parse(copy, id)
+      definitions[id] = definition
+      warnings.concat(definition.warnings.map { |each| "#{id}: #{each["code"]} #{each["step"]}" })
+    rescue Workspace::Error => e
+      errors[id] = Array(e.details && e.details["problems"]).first || e.message
+    rescue => e
+      errors[id] = "#{e.class}: #{e.message}"
+    end
+    [definitions, errors, warnings]
+  end
+
+  def simulator(base)
+    factory = ->(**parts) { Workspace.build_workflow_engine(**parts) }
+    Workspace::WorkflowSimulator.new(engine_factory: factory, tmpdir: ->(prefix, &block) { block.call(Dir.mktmpdir(prefix, base)) })
+  end
+
+  def transcript(result, base)
+    JSON.pretty_generate(result).gsub(base, "<TMP>").gsub(/\b[0-9a-f]{40,64}\b/, "<SHA>")
+  end
+
+  # name => {"ok", "got", "transcript"}
+  def simulate(copy, definitions)
+    SCRIPTS.each_with_object({}) do |(name, (id, outcome, stop)), results|
+      file = File.join(copy, SIMULATE, "#{name}.yml")
+      next unless File.file?(file)
+      definition = definitions[id]
+      next results[name] = {"ok" => false, "got" => "definition invalid"} unless definition
+      Dir.mktmpdir("c3-sim-") do |base|
+        base = File.realpath(base)
+        script = Workspace::WorkflowSimScript.parse(File.read(file), definition: definition.to_h, source: "#{name}.yml")
+        result = simulator(base).call(definition: definition, script: script, inputs: script.inputs)
+        got = [result["outcome"], result.dig("stopped", "step")].compact.join(" at ")
+        ok = result["outcome"] == outcome && (stop.nil? || result.dig("stopped", "step") == stop)
+        results[name] = {"ok" => ok, "got" => got, "transcript" => transcript(result, base)}
+      rescue Workspace::Error => e
+        results[name] = {"ok" => false, "got" => "refused: #{e.code}"}
+      rescue => e
+        results[name] = {"ok" => false, "got" => "#{e.class}: #{e.message}"}
+      end
+    end
+  end
+
+  # [failed example locations, error text or nil, examples run]
+  def specs(copy, files)
+    files = files.select { |file| File.file?(File.join(copy, file)) }
+    abort "no spec file exists in the copy" if files.empty?
+    out = File.join(copy, "tmp", "c3-rspec.json")
+    FileUtils.mkdir_p(File.dirname(out))
+    FileUtils.rm_f(out)
+    env = {"BUNDLE_GEMFILE" => File.join(copy, "Gemfile")}
+    log, = Open3.capture2e(env, "bundle", "exec", "rspec", "--format", "json", "--out", out, "--format", "progress", *files, chdir: copy)
+    return [[], "rspec wrote no report:\n#{log.lines.last(20).join}", 0] unless File.file?(out)
+    report = JSON.parse(File.read(out))
+    failed = report["examples"].select { |each| each["status"] == "failed" }.map { |each| "#{each["file_path"].delete_prefix("./")}:#{each["line_number"]}" }
+    error = (report.dig("summary", "errors_outside_of_examples_count").to_i > 0) ? "errors outside examples" : nil
+    [failed, error, report["examples"].size]
+  end
+
+  def apply(text, mutant)
+    mutant.edits.reduce(text) do |current, (old, new, count)|
+      found = current.scan(old).size
+      abort "#{mutant.id}: #{old.inspect} occurs #{found} times, expected #{count}" unless found == count
+      current.gsub(old, new)
+    end
+  end
+
+  def check(copy, spec_files, baseline)
+    definitions, errors, warnings = validate(copy)
+    sims = simulate(copy, definitions)
+    failed, spec_error, examples = specs(copy, spec_files)
+    killers = errors.map { |id, problem| "validate (#{id}: #{problem})" }
+    killers += sims.reject { |_, each| each["ok"] }.map { |name, each| "simulate #{name} (#{each["got"]})" }
+    killers += failed.map { |each| "spec #{each}" }
+    killers << "specs (#{spec_error})" if spec_error
+    diff = baseline && sims.any? { |name, each| each["transcript"] && each["transcript"] != baseline[:sims][name]["transcript"] }
+    {killers: killers, examples: examples, warnings: baseline ? warnings - baseline[:warnings] : warnings, sims: sims, diff: diff}
+  end
+
+  def run(dir:, only:, extra_specs:, json:)
+    copy = refuse(dir)
+    export(copy)
+    spec_files = SPECS + extra_specs
+    mutants = only ? MUTANTS.select { |each| only.include?(each.id) } : MUTANTS
+    abort "no mutant matches --only #{only.join(",")}" if mutants.empty?
+    mutants.each { |mutant| apply(File.read(yaml_path(copy, mutant.file)), mutant) }
+
+    baseline = check(copy, spec_files, nil)
+    abort "baseline is not clean: #{baseline[:killers].join("; ")}" unless baseline[:killers].empty?
+    missing = (SCRIPTS.keys - baseline[:sims].keys) + spec_files.reject { |file| File.file?(File.join(copy, file)) }
+    abort "not in the copy: #{missing.join(", ")}" if missing.any?
+    warn "baseline: #{baseline[:sims].size} scripts at their expected outcome, #{baseline[:examples]} spec examples green"
+
+    rows = mutants.map do |mutant|
+      path = yaml_path(copy, mutant.file)
+      pristine = File.read(path)
+      begin
+        File.write(path, apply(pristine, mutant))
+        result = check(copy, spec_files, baseline)
+      ensure
+        File.write(path, pristine)
+      end
+      row = {"id" => mutant.id, "file" => mutant.file, "mutant" => mutant.description, "result" => result[:killers].empty? ? "survived" : "killed",
+             "killed_by" => result[:killers], "new_warnings" => result[:warnings], "transcript_diff" => result[:diff], "prediction" => mutant.prediction}
+      warn "#{row["id"]}: #{row["result"]}"
+      row
+    end
+
+    if json
+      puts JSON.pretty_generate(rows)
+    else
+      puts "| # | File | Mutant | Result | Killed by | New warnings | Transcript diff | Prediction before the C3 spec |"
+      puts "|---|------|--------|--------|-----------|--------------|-----------------|-------------------------------|"
+      rows.each do |row|
+        cells = [row["id"], row["file"], row["mutant"], row["result"], row["killed_by"].join("; "), row["new_warnings"].join("; "),
+          row["transcript_diff"] ? "yes" : "no", row["prediction"]]
+        puts "| #{cells.map { |cell| cell.to_s.empty? ? "-" : cell.to_s.tr("|", "/") }.join(" | ")} |"
+      end
+    end
+  end
+end
+
+options = {dir: nil, only: nil, extra_specs: [], json: false}
+OptionParser.new do |parser|
+  parser.banner = "usage: c3-definition-mutants --dir DIR [--only ID,...] [--specs PATH,...] [--json]"
+  parser.on("--dir DIR", "an empty or new directory outside the checkout and the vault") { |value| options[:dir] = value }
+  parser.on("--only IDS", Array, "run only these mutants (D1,I5,...)") { |value| options[:only] = value }
+  parser.on("--specs PATHS", Array, "more spec files to run in the copy") { |value| options[:extra_specs] = value }
+  parser.on("--json", "print the rows as JSON") { options[:json] = true }
+end.parse!(ARGV)
+abort "--dir is required" unless options[:dir]
+C3.run(**options)
