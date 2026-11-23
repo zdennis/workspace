@@ -105,7 +105,7 @@ module Workspace
     # @param launcher [CLI::Launcher] what every launching verb shares
     # @param relauncher [CLI::Relauncher] stops and relaunches workspaces for `relaunch`
     # @param families [Hash{Symbol=>#call}] the family parser of each {ROUTES} key, called with the verb, its arguments and the {Invocation}
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, relauncher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, claude_trust: nil, ticket_command: nil, skills_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, relauncher:, families:, hooks_command: nil, agent_hook_setup: nil, name_migration: nil, notes_command: nil, notes_setup: nil, claude_trust: nil, ticket_command: nil, skills_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -118,6 +118,7 @@ module Workspace
       @workspace_name = workspace_name
       @session_event_command = session_event_command
       @hooks_command = hooks_command
+      @agent_hook_setup = agent_hook_setup
       @launch_command = launch_command
       @kill_command = kill_command
       @rename_command = rename_command
@@ -3843,7 +3844,11 @@ module Workspace
       worktree = created && File.basename(File.dirname(root)) == ".worktrees"
       notes = worktree ? setup_notes_for_added_worktree(name, json: json) : nil
       trusted = trust_added_checkout(name, root, json: json)
+      hook_texts = (created && @agent_hook_setup) ? @agent_hook_setup.install(root, name, quiet: json).texts : []
+      hook_texts.each { |text| @output.puts text } unless json
       return unless json
+
+      warnings.concat(hook_texts)
 
       warnings.concat(notes["warnings"]) if notes
       action_row(name, created ? "created" : "exists", root: root,

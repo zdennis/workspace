@@ -1436,6 +1436,7 @@ module Workspace
       names: names,
       launcher: launcher,
       relauncher: relauncher,
+      agent_hook_setup: agent_hook_setup,
       families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family, template: template_family, work_queue: work_queue_family},
       working_dir: working_dir,
       config: config,
