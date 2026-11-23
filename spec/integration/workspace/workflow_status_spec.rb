@@ -294,6 +294,21 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(result["current"]).to include("reason" => nil, "flags" => ["background_work"])
     end
 
+    it "reads waiting_you with kind permission and no background_work flag when the pane waits on a permission request" do
+      create(state: "waiting", reason: hold)
+      snapshot["panes"].first.merge!("state" => "waiting", "waiting_since" => "2026-10-04T13:00:00Z", "waiting_message" => "Claude needs your permission to use Bash",
+        "waiting_reason" => "waiting_permission",
+        "waits" => [{"agent_id" => "a", "tool" => "Bash", "input" => "rm -rf x", "permission" => true, "since" => "2026-10-04T13:00:00Z"}])
+      now[0] = Time.utc(2026, 10, 4, 13, 30, 0)
+
+      result = status.run("wr_1")["runs"].first
+
+      expect(result["state"]).to eq("waiting")
+      expect(result["current"]["reason"]).to include("code" => "waiting_you")
+      expect(result["current"]["reason"]["details"]).to include("kind" => "permission", "tool" => "Bash", "summary" => "rm -rf x")
+      expect(result["current"]["flags"]).not_to include("background_work")
+    end
+
     it "still says pane_gone when the pane is closed" do
       create(state: "waiting", reason: hold, bound: false)
 

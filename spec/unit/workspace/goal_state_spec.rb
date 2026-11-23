@@ -139,6 +139,12 @@ RSpec.describe Workspace::GoalState do
     expect(goal(run: run(flags: ["background_work", "timed_out"]), turn_state: "idle").state).to eq("stuck")
   end
 
+  it "ranks a waiting_you reason ahead of a background_work flag" do
+    waiting = run(reason: {"code" => "waiting_you", "details" => {"kind" => "permission"}}, flags: ["background_work"])
+
+    expect(goal(run: waiting, turn_state: "waiting")).to have_attributes(state: "waiting", waiting_on: "person")
+  end
+
   it "reads an idle pane as stuck only once the run flags it idle" do
     expect(goal(run: run(flags: []), turn_state: "idle").state).not_to eq("stuck")
     expect(goal(run: run(flags: ["idle"]), turn_state: "idle")).to have_attributes(state: "stuck", waiting_on: "person")
