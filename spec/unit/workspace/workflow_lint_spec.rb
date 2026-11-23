@@ -263,6 +263,13 @@ RSpec.describe Workspace::WorkflowLint do
       expect(agent_warnings(budgeted).first["message"]).to include("token use is not measured", "`budget:` never stops it")
     end
 
+    it "skips the check when no main agent reader is given" do
+      bare = described_class.new(library: library, commands_config: commands_config, lineage: lineage, workflow_config: workflow_config, project_config: project_config)
+      found = bare.call(definition(budgeted), cwd: "/repo")
+      expect(found["warnings"].map { |w| w["code"] }).not_to include("agent_not_claude")
+      expect(found["not_checked"].map { |n| n["code"] }).not_to include("agent_not_checked")
+    end
+
     it "lists it as not checked outside a git checkout" do
       allow(lineage).to receive(:resolve).and_return(Workspace::WorkspaceLineage::Lineage.new(name: "x", path: "/tmp", git_common_dir: nil, is_worktree: false))
       found = lint.call(definition(plain), cwd: "/tmp")
