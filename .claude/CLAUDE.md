@@ -25,6 +25,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_fan_out_spec.rb` — Checks a `fan_out` group's siblings for checkout contention: guards and `produces` overlap.
 - `lib/workspace/workflow_definition.rb` — One workflow definition (YAML): checks every key, collects problems and fills defaults, `on_fail: stop` included.
 - `lib/workspace/workflow_extends.rb` — Resolves a definition's `extends:` against its parent definitions.
+- `lib/workspace/workflow_imports.rb` — Resolves a definition's step `import:` entries against step library files and lays the host step's keys over each.
 - `lib/workspace/workflow_lint.rb` — `workflow validate`'s checks that need the person's setup, as warnings.
 - `lib/workspace/workflow_defaults.rb` — Reads which workflow id config names for a ref kind.
 - `lib/workspace/workflow_router.rb` — Picks a workflow for `workflow start --ref` from the ref kind and config.
