@@ -219,6 +219,13 @@ RSpec.describe "workspace session-event old path vs fast path" do
     {"hook_event_name" => hook, "session_id" => "s1", "cwd" => work, "tool_name" => name, "tool_use_id" => "tu1", "tool_input" => input}.merge(extra)
   end
 
+  # The envelope shape was captured from codex-cli 0.166.0 on 2026-11-23.
+  def codex_tool(name, input)
+    {"session_id" => "01a207bb-01cb-73a3-bb64-e19362a333ae", "turn_id" => "01a207bb-d21a-78c0-80dd-ceb38cc18f6b", "transcript_path" => "/t/rollout.jsonl",
+     "cwd" => work, "hook_event_name" => "PreToolUse", "model" => "gpt-6.1-sol", "permission_mode" => "default", "tool_name" => name,
+     "tool_input" => input, "tool_use_id" => "exec-96463e9a-506a-4125-b431-e6109c2d4a28"}
+  end
+
   def self.event(hook, extra = {}) = {"hook_event_name" => hook, "session_id" => "s1", "transcript_path" => "/t/s1.jsonl"}.merge(extra)
 
   claude = [
@@ -246,6 +253,8 @@ RSpec.describe "workspace session-event old path vs fast path" do
       {name: "Codex PreToolUse", args: %w[--agent=codex], payload: ->(t) { t.tool("PreToolUse", "Bash", "command" => "ls") }},
       {name: "Codex PostToolUse", args: %w[--agent=codex --workspace=proj], payload: ->(t) { t.tool("PostToolUse", "Bash", {"command" => "ls"}, "tool_response" => "ok") }},
       {name: "workflow deny: hit on Bash in a bound pane", delivers: false, exit: 2, seed: lambda(&:bound_run), payload: ->(t) { t.tool("PreToolUse", "Bash", "command" => "git push origin HEAD") }},
+      {name: "Codex workflow deny: hit on a real Codex shell payload in a bound pane", args: %w[--agent codex], delivers: false, exit: 2, stderr: "denied by workflow",
+       seed: lambda(&:bound_run), payload: ->(t) { t.codex_tool("Bash", "command" => "git push origin HEAD") }},
       {name: "workflow deny: miss on Bash in a bound pane", exit: 0, seed: lambda(&:bound_run), payload: ->(t) { t.tool("PreToolUse", "Bash", "command" => "git status") }},
       {name: "edit lock held by another live holder", delivers: false, exit: 2, seed: ->(t) { t.hold_edit_lock }, payload: ->(t) { t.tool("PreToolUse", "Edit", "file_path" => File.join(t.work, "a.rb")) }},
       {name: "edit lock held by another live holder, MultiEdit", delivers: false, exit: 2, seed: ->(t) { t.hold_edit_lock },
@@ -262,6 +271,11 @@ RSpec.describe "workspace session-event old path vs fast path" do
        payload: ->(t) { t.tool("PreToolUse", "Write", "file_path" => File.join(t.work, "x.rb")) }},
       {name: "reflection write guard allows reflection.md", exit: 0, seed: ->(t) { t.bind("kind" => "reflection", "id" => "wr_1") },
        payload: ->(t) { t.tool("PreToolUse", "Write", "file_path" => t.reflection_path) }},
+      {name: "Codex reflection write guard deny on a real apply_patch payload", args: %w[--agent codex], delivers: false, exit: 2, stderr: "reflection pane",
+       seed: ->(t) { t.bind("kind" => "reflection", "id" => "wr_1") },
+       payload: ->(t) { t.codex_tool("apply_patch", "command" => "*** Begin Patch\n*** Add File: foo.txt\n+hello\n*** End Patch") }},
+      {name: "Codex reflection write guard allows apply_patch to reflection.md", args: %w[--agent codex], exit: 0, seed: ->(t) { t.bind("kind" => "reflection", "id" => "wr_1") },
+       payload: ->(t) { t.codex_tool("apply_patch", "command" => "*** Begin Patch\n*** Add File: #{t.reflection_path}\n+hello\n*** End Patch") }},
       {name: "Claude PermissionRequest decided by a deny rule", decision: "deny", seed: lambda(&:deny_rm_rule),
        payload: event("PermissionRequest", "tool_name" => "Bash", "tool_input" => {"command" => "rm -rf x"})},
       {name: "Codex PermissionRequest decided by a deny rule", decision: "deny", args: %w[--agent codex], seed: lambda(&:deny_rm_rule),
@@ -284,6 +298,7 @@ RSpec.describe "workspace session-event old path vs fast path" do
       expect(old[:daemon].nil?).to eq(!row.fetch(:delivers, true))
       expect(new[:route]).to eq(row[:name].match?(/SessionStart|SessionEnd|PermissionRequest/) ? "full" : "fast")
       expect(JSON.parse(old[:stdout]).dig("hookSpecificOutput", "decision", "behavior")).to eq(row[:decision]) if row[:decision]
+      expect(old[:stderr]).to include(row[:stderr]) if row[:stderr]
     end
   end
 

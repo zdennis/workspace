@@ -12,12 +12,14 @@ module Workspace
     # @param lineage [Workspace::WorkspaceLineage] names the project of a directory
     # @param workflow_config [Workspace::WorkflowConfig] reads `workflows.defaults.include`
     # @param project_config [Workspace::ProjectConfig] says whether a project is a workspace
-    def initialize(library:, commands_config:, lineage:, workflow_config:, project_config:)
+    # @param main_agent [Workspace::MainAgent, nil] says which coding agent the project's main pane runs; nil skips that check
+    def initialize(library:, commands_config:, lineage:, workflow_config:, project_config:, main_agent: nil)
       @library = library
       @commands_config = commands_config
       @lineage = lineage
       @workflow_config = workflow_config
       @project_config = project_config
+      @main_agent = main_agent
     end
 
     # @param definition [Workspace::WorkflowDefinition]
@@ -32,6 +34,7 @@ module Workspace
       packs(definition, cwd, project, lineage, warnings, not_checked)
       commands(definition, project, warnings, not_checked)
       execs(definition, project, warnings, not_checked)
+      agent(definition, project, warnings, not_checked)
       {"warnings" => warnings, "not_checked" => not_checked}
     end
 
@@ -99,6 +102,26 @@ module Workspace
       end
     rescue Workspace::ConfigParseError => e
       not_checked << {"code" => "commands_not_checked", "step" => nil, "message" => "the commands could not be read: #{e.message.lines.first.strip}"}
+    end
+
+    # A run whose main agent is not Claude Code loses what only Claude Code gives: the status line read
+    # from the transcript, token measuring for `budget:`, and resuming. A project whose agent is unknown
+    # (`none`) is not warned about. Review panes always run Claude Code, so reviews are not part of this.
+    def agent(definition, project, warnings, not_checked)
+      return if @main_agent.nil?
+      unless project
+        not_checked << {"code" => "agent_not_checked", "step" => nil,
+                        "message" => "the project's main agent was not checked because the current directory is not in a git checkout. Run validate from the project to check it."}
+        return
+      end
+      kind = @main_agent.kind(project.name)
+      return if %w[claude none].include?(kind)
+      budget = WorkflowDefinition.budget(definition.to_h)
+      effects = ["workspace does not read the step's `WORKFLOW_STATUS:` line from the transcript (the agent must run `workspace step done --status`)"]
+      effects << "the run's token use is not measured, so `budget:` never stops it" if budget
+      effects << "restore, recover and infra retry do not resume it"
+      warnings << {"code" => "agent_not_claude", "step" => nil,
+                   "message" => "the main agent of #{project.name} is #{kind}, and for it #{effects.join("; ")}."}
     end
 
     # The `require: exec:` entries: the program (argument 1) by the rule `preflight` refuses by, a

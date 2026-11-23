@@ -7,7 +7,8 @@ RSpec.describe Workspace::WorkflowLint do
   let(:workflow_config) { instance_double(Workspace::WorkflowConfig, default_packs: %w[commits]) }
   let(:project_config) { instance_double(Workspace::ProjectConfig, existing_name: "proj") }
   let(:git_common_dir) { "/repo/.git" }
-  subject(:lint) { described_class.new(library: library, commands_config: commands_config, lineage: lineage, workflow_config: workflow_config, project_config: project_config) }
+  let(:main_agent) { instance_double(Workspace::MainAgent, kind: "claude") }
+  subject(:lint) { described_class.new(library: library, commands_config: commands_config, lineage: lineage, workflow_config: workflow_config, project_config: project_config, main_agent: main_agent) }
 
   before do
     allow(lineage).to receive(:resolve).and_return(Workspace::WorkspaceLineage::Lineage.new(name: "proj", path: "/repo", git_common_dir: git_common_dir, is_worktree: false))
@@ -106,7 +107,7 @@ RSpec.describe Workspace::WorkflowLint do
     it "searches only the built-in and global library and lists what it could not check" do
       found = lint.call(definition(yaml), cwd: "/tmp/x")
       expect(found["warnings"]).to eq([])
-      expect(found["not_checked"].map { |n| [n["code"], n["step"]] }).to eq([["pack_not_checked", nil], ["pack_not_checked", "a"], ["pack_not_checked", "b"], ["commands_not_checked", nil]])
+      expect(found["not_checked"].map { |n| [n["code"], n["step"]] }).to eq([["pack_not_checked", nil], ["pack_not_checked", "a"], ["pack_not_checked", "b"], ["commands_not_checked", nil], ["agent_not_checked", nil]])
       expect(library).to have_received(:pack).with("wide", cwd: nil)
       expect(commands_config).not_to have_received(:for_project)
     end
@@ -114,17 +115,17 @@ RSpec.describe Workspace::WorkflowLint do
     it "still warns of a pack name that is invalid everywhere" do
       found = lint.call(definition("include: [\"{{task}}\"]\nsteps:\n  a:\n    prompt: P\n    gate: approve\n"), cwd: "/tmp/x")
       expect(found["warnings"]).to match([include("code" => "unknown_pack", "message" => /not a valid pack name/)])
-      expect(found["not_checked"]).to eq([])
+      expect(found["not_checked"].map { |n| n["code"] }).to eq(["agent_not_checked"])
     end
 
     it "lists no commands_not_checked for a definition that uses no command" do
       found = lint.call(definition("steps:\n  a:\n    prompt: P\n    gate: approve\n"), cwd: "/tmp/x")
-      expect(found["not_checked"]).to eq([])
+      expect(found["not_checked"].map { |n| n["code"] }).to eq(["agent_not_checked"])
     end
 
     it "names a command once however many steps use it" do
       found = lint.call(definition("steps:\n  a:\n    prompt: P\n    status: {command: test}\n  b:\n    prompt: Q\n    status: {command: test}\n"), cwd: "/tmp/x")
-      expect(found["not_checked"]).to match([include("code" => "commands_not_checked", "message" => /project's test command, which/)])
+      expect(found["not_checked"]).to match([include("code" => "commands_not_checked", "message" => /project's test command, which/), include("code" => "agent_not_checked")])
     end
   end
 
@@ -202,7 +203,7 @@ RSpec.describe Workspace::WorkflowLint do
 
       it "lists a relative program and test_files as not checked, and still judges bare programs and lists" do
         found = lint.call(exec_def("script/check -- {{changed.tests}}", "no-such-program-xyz", "ls {{changed.files}}"), cwd: "/tmp/x")
-        expect(found["not_checked"].map { |n| n["code"] }).to eq(%w[exec_program_not_checked test_files_not_checked])
+        expect(found["not_checked"].map { |n| n["code"] }).to eq(%w[exec_program_not_checked test_files_not_checked agent_not_checked])
         expect(found["warnings"].map { |w| w["code"] }).to eq(%w[exec_program_missing exec_list_without_dashes])
         expect(commands_config).not_to have_received(:test_files)
       end
@@ -229,6 +230,52 @@ RSpec.describe Workspace::WorkflowLint do
       found = lint.call(imported, cwd: "/repo")["warnings"]
 
       expect(found).to match([include("code" => "unknown_pack", "step" => "look", "message" => /step look includes pack nope.*`start` would refuse it/)])
+    end
+  end
+
+  describe "the project's main agent" do
+    let(:plain) { "steps:\n  a:\n    prompt: P\n    gate: approve\n" }
+    let(:budgeted) { "budget: {tokens: 1000}\n#{plain}" }
+
+    def agent_warnings(text) = lint.call(definition(text), cwd: "/repo")["warnings"].select { |w| w["code"] == "agent_not_claude" }
+
+    it "does not warn for Claude Code" do
+      expect(agent_warnings(budgeted)).to eq([])
+      expect(main_agent).to have_received(:kind).with("proj")
+    end
+
+    it "does not warn when the agent is unknown" do
+      allow(main_agent).to receive(:kind).and_return("none")
+      expect(agent_warnings(budgeted)).to eq([])
+    end
+
+    it "warns once for another agent, leaving out the budget when the definition sets none" do
+      allow(main_agent).to receive(:kind).and_return("codex")
+      found = agent_warnings(plain)
+      expect(found.size).to eq(1)
+      expect(found.first["step"]).to be_nil
+      expect(found.first["message"]).to include("main agent of proj is codex", "WORKFLOW_STATUS:", "workspace step done --status", "restore, recover and infra retry")
+      expect(found.first["message"]).not_to include("budget")
+    end
+
+    it "mentions the budget when the definition sets one" do
+      allow(main_agent).to receive(:kind).and_return("codex")
+      expect(agent_warnings(budgeted).first["message"]).to include("token use is not measured", "`budget:` never stops it")
+    end
+
+    it "skips the check when no main agent reader is given" do
+      bare = described_class.new(library: library, commands_config: commands_config, lineage: lineage, workflow_config: workflow_config, project_config: project_config)
+      found = bare.call(definition(budgeted), cwd: "/repo")
+      expect(found["warnings"].map { |w| w["code"] }).not_to include("agent_not_claude")
+      expect(found["not_checked"].map { |n| n["code"] }).not_to include("agent_not_checked")
+    end
+
+    it "lists it as not checked outside a git checkout" do
+      allow(lineage).to receive(:resolve).and_return(Workspace::WorkspaceLineage::Lineage.new(name: "x", path: "/tmp", git_common_dir: nil, is_worktree: false))
+      found = lint.call(definition(plain), cwd: "/tmp")
+      expect(found["not_checked"]).to include(a_hash_including("code" => "agent_not_checked", "step" => nil, "message" => /not in a git checkout/))
+      expect(found["warnings"].map { |w| w["code"] }).not_to include("agent_not_claude")
+      expect(main_agent).not_to have_received(:kind)
     end
   end
 end
