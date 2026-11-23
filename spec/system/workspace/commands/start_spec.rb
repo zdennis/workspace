@@ -254,6 +254,12 @@ RSpec.describe Workspace::Commands::Start do
     context "agent hook installation" do
       let(:backup) { Workspace::FileBackup.new(output: output) }
       let(:hook_installer) { Workspace::HookInstaller.new(backup: backup, output: output, input: input) }
+      let(:hooks_config) { nil }
+      let(:agent_commands) { nil }
+      let(:agent_hook_setup) do
+        Workspace::AgentHookSetup.new(hook_installer: hook_installer, hooks_config: hooks_config, agent_commands: agent_commands,
+          project_settings: project_settings, which: which)
+      end
       let(:worktree_path) { File.join(tmpdir, ".worktrees", "proj-123") }
       let(:settings_path) { File.join(worktree_path, ".claude", "settings.local.json") }
       let(:tracked_settings_path) { File.join(worktree_path, ".claude", "settings.json") }
@@ -261,7 +267,7 @@ RSpec.describe Workspace::Commands::Start do
       subject(:command) do
         described_class.new(lineage: LineageSupport.lineage,
           git: git, project_config: project_config, project_settings: project_settings,
-          launch_command: launch_command, hook_installer: hook_installer, which: which,
+          launch_command: launch_command, agent_hook_setup: agent_hook_setup, which: which,
           output: output, input: input)
       end
 
@@ -305,7 +311,7 @@ RSpec.describe Workspace::Commands::Start do
           excluder = instance_double(Workspace::BookkeepingExclude, created: true)
           described_class.new(lineage: LineageSupport.lineage,
             git: git, project_config: project_config, project_settings: project_settings,
-            launch_command: launch_command, hook_installer: hook_installer, which: which,
+            launch_command: launch_command, agent_hook_setup: agent_hook_setup, which: which,
             excluder: excluder, output: output, input: input).call("PROJ-123")
 
           expect(excluder).to have_received(:created).with(File.join(worktree_path, ".workspace-project"))
@@ -373,7 +379,7 @@ RSpec.describe Workspace::Commands::Start do
         subject(:command) do
           described_class.new(lineage: LineageSupport.lineage,
             git: git, project_config: project_config, project_settings: project_settings,
-            launch_command: launch_command, hook_installer: hook_installer, which: which, agent_commands: agent_commands,
+            launch_command: launch_command, agent_hook_setup: agent_hook_setup, which: which, agent_commands: agent_commands,
             output: output, input: input)
         end
 
@@ -420,7 +426,7 @@ RSpec.describe Workspace::Commands::Start do
           subject(:command) do
             described_class.new(lineage: LineageSupport.lineage,
               git: git, project_config: project_config, project_settings: project_settings,
-              launch_command: launch_command, hook_installer: hook_installer, hooks_config: hooks_config,
+              launch_command: launch_command, agent_hook_setup: agent_hook_setup,
               which: which, output: output, input: input)
           end
 

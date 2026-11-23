@@ -19,9 +19,8 @@ module Workspace
       # @param lineage [Workspace::WorkspaceLineage] writes the `.workspace-project` marker,
       #   and resolves the parent repo when start is run from inside a linked
       #   worktree, so the new worktree targets the parent project
-      # @param hook_installer [Workspace::HookInstaller, nil] installs agent hooks
-      #   (edit lock enforcement, session monitoring) into the new worktree; nil skips it
-      # @param hooks_config [Workspace::HooksConfig, nil] reads `codex.hooks.install`; nil installs every agent's hooks
+      # @param agent_hook_setup [Workspace::AgentHookSetup, nil] installs agent hooks and status lines (edit lock
+      #   enforcement, session monitoring) into the new worktree; nil skips it
       # @param which [#call] returns true when an executable is on PATH
       # @param task_store [Workspace::TaskStore, nil] records the workspace's task and
       #   exports its id as `WORKSPACE_TASK` in the panes; nil starts without a task
@@ -46,7 +45,7 @@ module Workspace
       # @param plan_command [Workspace::Commands::Plan, nil] writes the new plan for `--plan` (`plan init`); nil refuses `--plan`
       # @param excluder [Workspace::BookkeepingExclude, nil] lists the `.workspace-project` marker in `info/exclude`; nil lists nothing
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage:,
-        hook_installer: nil, hooks_config: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
+        agent_hook_setup: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
         notes_setup: nil, start_file_copies: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, agent_commands: nil, ticket_source: nil, spine_init: nil, spine_config: nil, plan_command: nil, excluder: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
@@ -54,8 +53,7 @@ module Workspace
         @launch_command = launch_command
         @lineage = lineage
         @start_ref = start_ref || StartRef.new(git: git, lineage: lineage)
-        @hook_installer = hook_installer
-        @hooks_config = hooks_config
+        @agent_hook_setup = agent_hook_setup
         @which = which || Workspace::Which
         @task_store = task_store
         @event_log = event_log
@@ -494,11 +492,6 @@ module Workspace
         @agent_kind || @agent_commands&.kind(workspace)
       end
 
-      # @return [String] the program of +provider+'s configured command for +config_name+; its own executable without one
-      def agent_executable(provider, config_name)
-        @agent_commands ? @agent_commands.executable_for(config_name, provider.key) : provider.executable
-      end
-
       # @return [String, nil] the program of the effective kind's configured command; the provider's executable without one
       def configured_program(config_name)
         command = @agent_commands&.command_for(config_name, @effective_kind)
@@ -822,50 +815,13 @@ module Workspace
         @project_settings.save(worktree_config_name, worktree_data)
       end
 
-      # Installs each detected, hook-capable agent's hooks (session monitoring
-      # and edit lock enforcement) into a new or adopted worktree, the same way
-      # `workspace init` does for the parent project, and routes
-      # statusLine-capable agents' status lines through `workspace statusline`
-      # (the way `workspace doctor --fix` does for a parent project), so
-      # `workspace handoff check` can read the agent's context usage from the
-      # worktree right away. Silent, no prompt: a worktree an agent will
-      # immediately be launched into should already be enforcing the edit lock.
+      # Installs the agent hooks and status lines into the new or adopted worktree, silently, so a worktree an agent
+      # is about to launch into already enforces the edit lock; the notes go where the run's other notes go.
       def install_agent_hooks(worktree_path, config_name, quiet:)
-        return unless @hook_installer
+        return unless @agent_hook_setup
 
-        AgentProvider.all.select { |p| p.supports_hooks? && @which.call(agent_executable(p, config_name)) }.each do |provider|
-          if @hooks_config && !@hooks_config.install_user_hooks?(provider)
-            message = "#{provider.label} hooks not installed: codex.hooks.install is false (workspace config set codex.hooks.install true to change)"
-            quiet ? @warnings << "Note: #{message}" : @output.puts("Note: #{message}")
-            next
-          end
-          install_provider_hooks(provider, worktree_path, quiet: quiet)
-        end
-
-        AgentProvider.all.select { |p| p.supports_statusline? && @which.call(agent_executable(p, config_name)) }.each do |provider|
-          notices = begin
-            @hook_installer.install_statusline(provider, worktree_path,
-              command: HookInstaller::STATUSLINE_COMMAND, project_settings: @project_settings, quiet: quiet, local: true)
-          rescue Workspace::Error => e
-            quiet ? @warnings << "Note: #{provider.label} statusLine not routed: #{e.message}" : @output.puts("Note: #{provider.label} statusLine not routed: #{e.message}")
-            next
-          end
-          next unless quiet && notices.any?
-          notices.each { |notice| @warnings << "Note: #{notice}." }
-        end
-      end
-
-      # A user-level hook file (Codex's) is not the worktree's: one that can't
-      # be read is a warning, not a failed start.
-      def install_provider_hooks(provider, worktree_path, quiet:)
-        changed = @hook_installer.install(provider, worktree_path, HookInstaller::HOOK_COMMAND, quiet: quiet, local: true)
-        @warnings << "Note: #{provider.hook_trust_hint}." if changed && quiet && provider.hook_trust_hint
-        if !changed && !provider.user_scoped? && @hook_installer.stale_tracked_hooks?(provider, worktree_path, HookInstaller::HOOK_COMMAND)
-          message = @hook_installer.stale_message(provider, worktree_path, HookInstaller::HOOK_COMMAND)
-          quiet ? @warnings << "Note: #{message}." : @output.puts("Note: #{message}.")
-        end
-      rescue Workspace::Error => e
-        quiet ? @warnings << "Note: #{provider.label} hooks not installed: #{e.message}" : @output.puts("Note: #{provider.label} hooks not installed: #{e.message}")
+        texts = @agent_hook_setup.install(worktree_path, config_name, quiet: quiet).texts
+        quiet ? @warnings.concat(texts) : texts.each { |text| @output.puts(text) }
       end
 
       def write_project_marker(worktree_path, config_name)
