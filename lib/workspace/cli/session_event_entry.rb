@@ -120,7 +120,7 @@ module Workspace
         require_files(EVENT_LOG_FILES)
         project_settings = ProjectSettings.new(config: config)
         events_config = EventsConfig.new(config_resolver: ConfigResolver.new(project_settings: project_settings), error_output: stderr)
-        EventLog.new(config: config, project_settings: project_settings, error_output: stderr, logger: logger,
+        EventLog.new(config: config, error_output: stderr, logger: logger,
           compact_threshold: -> { events_config.compact_threshold })
       end
 

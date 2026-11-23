@@ -390,7 +390,7 @@ With a key instead of a workspace, the same document with `keys` filtered to tha
 workspace config dev.ready_timeout --name api.worktree-fix --json
 ```
 
-Prints one document with every key in the table above, the value each reader would use, and the file it comes from. It reads the layers the workspace reads, which is not always the file `workspace config` prints: `dev`, `locks`, `alerts`, `handoff`, `commands` and `notes` come from the **parent project's** file even in a worktree (the same file `config set` writes), except `notes.dir`, which a worktree reads from its own file and the main checkout from the project's, `hooks` and `pipeline` from the workspace's own file, and `statusline`, `context`, `launch` and `event_log_compact_threshold` from the global file.
+Prints one document with every key in the table above, the value each reader would use, and the file it comes from. It reads the layers the workspace reads, which is not always the file `workspace config` prints: `dev`, `locks`, `alerts`, `handoff`, `commands` and `notes` come from the **parent project's** file even in a worktree (the same file `config set` writes), except `notes.dir`, which a worktree reads from its own file and the main checkout from the project's, `hooks` and `pipeline` from the workspace's own file, and `statusline`, `context` and `launch` from the global file.
 
 ```json
 {"schema_version":1,"ok":true,"workspace":"api.worktree-fix","parent":"api",
@@ -474,7 +474,6 @@ New codes may be added; treat an unknown one by its `severity`.
 | `context.patterns` | Edited in the file by hand: a mapping of agent kind (`claude`, `codex`, ...) to a regex with exactly one capture group that reads the percent of the context window used from that agent's pane. A kind listed here is read from its pane whatever `context.source` says; Codex has a built-in reading of its "Context N% used" line. `context.pattern` stays the fallback in `scrape` mode for a kind with neither. See [`handoff`](README.handoff.md#codex) |
 | `hooks` | Global hooks applied to all projects |
 | `layouts` | Default tmux pane layouts |
-| `event_log_compact_threshold` | Size warning threshold (e.g., "10kb", "1mb"). Default: 1mb |
 <!-- END GENERATED: global-settings -->
 
 ### Project settings

@@ -2613,34 +2613,6 @@
       "problems": []
     },
     {
-      "key": "event_log_compact_threshold",
-      "scope": "global",
-      "type": "text",
-      "value": null,
-      "masked": false,
-      "default": null,
-      "effective": null,
-      "source": "default",
-      "source_file": null,
-      "line": null,
-      "column": null,
-      "resolve": "global",
-      "target_layer": null,
-      "affects": [
-        "main",
-        "main.worktree-a"
-      ],
-      "applies": "next_call",
-      "settable": false,
-      "sensitive": false,
-      "overridable_in": [
-        "global"
-      ],
-      "layers": [],
-      "doc": "Size warning threshold (e.g., \"10kb\", \"1mb\"). Default: 1mb",
-      "problems": []
-    },
-    {
       "key": "dev.configured",
       "scope": "project",
       "type": "boolean",

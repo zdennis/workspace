@@ -27,8 +27,6 @@ module Workspace
   # {#compact}, and starts over on the new file. The threshold is set by
   # `event_log.compact_threshold`; nil turns the automatic compaction off.
   class EventLog
-    DEFAULT_COMPACT_THRESHOLD = 1_048_576 # 1MB
-
     # The log size (bytes) past which an append compacts it, when none is given.
     DEFAULT_AUTO_COMPACT_THRESHOLD = 100 * 1024
 
@@ -103,7 +101,6 @@ module Workspace
     STALE_PANE_SECONDS = 24 * 60 * 60
 
     # @param config [Workspace::Config] configuration for file paths
-    # @param project_settings [Workspace::ProjectSettings, nil] for reading global config
     # @param error_output [IO] error output stream for warnings (stderr)
     # @param logger [Workspace::Logger] debug logger
     # @param clock [#now] time source, injected for deterministic tests
@@ -114,7 +111,7 @@ module Workspace
     # @param rotate_lock_wait [Numeric] seconds a rotation waits for the log's lock
     # @param renamer [#call] renames a file, given the old and new path
     # @param linker [#call] hard-links a file, given the existing and new path
-    def initialize(config:, project_settings: nil, error_output: $stderr, logger: Workspace::Logger.new, clock: Time,
+    def initialize(config:, error_output: $stderr, logger: Workspace::Logger.new, clock: Time,
       compact_threshold: DEFAULT_AUTO_COMPACT_THRESHOLD, keep_rotated: KEEP_ROTATED, lock_wait: LOCK_WAIT, rotate_lock_wait: ROTATE_LOCK_WAIT,
       renamer: File.method(:rename), linker: File.method(:link))
       @renamer = renamer
@@ -124,7 +121,6 @@ module Workspace
       @lock_wait = lock_wait
       @rotate_lock_wait = rotate_lock_wait
       @config = config
-      @project_settings = project_settings
       @error_output = error_output
       @logger = logger
       @clock = clock
@@ -344,30 +340,6 @@ module Workspace
     # @return [Boolean] whether the event log file exists
     def exists?
       File.exist?(@config.event_log_file)
-    end
-
-    # Warns the user if the event log exceeds the size threshold.
-    #
-    # @return [void]
-    def warn_if_large
-      threshold = compact_threshold
-      return unless size > threshold
-      kb = (size / 1024.0).round(1)
-      @error_output.puts "Note: Event log is #{kb}KB. Run 'workspace event-log compact' to compact it."
-    end
-
-    # Returns the configured compaction threshold in bytes.
-    # Reads from global config `event_log_compact_threshold` (e.g., "10kb", "1mb").
-    # Falls back to DEFAULT_COMPACT_THRESHOLD.
-    #
-    # @return [Integer] threshold in bytes
-    def compact_threshold
-      return DEFAULT_COMPACT_THRESHOLD unless @project_settings
-      raw = @project_settings.load_global["event_log_compact_threshold"]
-      return DEFAULT_COMPACT_THRESHOLD unless raw
-      parse_size(raw.to_s)
-    rescue
-      DEFAULT_COMPACT_THRESHOLD
     end
 
     private
@@ -639,27 +611,6 @@ module Workspace
       end
     rescue SystemCallError, IOError
       false
-    end
-
-    # Parses a human-readable size string into bytes.
-    # Supports: "10kb", "1mb", "500b", "1024" (plain number = bytes).
-    #
-    # @param str [String] size string
-    # @return [Integer] size in bytes
-    def parse_size(str)
-      str = str.strip.downcase
-      case str
-      when /\A(\d+(?:\.\d+)?)\s*kb\z/
-        ($1.to_f * 1024).to_i
-      when /\A(\d+(?:\.\d+)?)\s*mb\z/
-        ($1.to_f * 1024 * 1024).to_i
-      when /\A(\d+(?:\.\d+)?)\s*gb\z/
-        ($1.to_f * 1024 * 1024 * 1024).to_i
-      when /\A(\d+(?:\.\d+)?)\s*b?\z/
-        $1.to_i
-      else
-        DEFAULT_COMPACT_THRESHOLD
-      end
     end
   end
 end

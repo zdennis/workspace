@@ -26,6 +26,16 @@ RSpec.describe Workspace::State do
       expect(state).to be_empty
     end
 
+    it "prints nothing when it loads an event log larger than 1MB" do
+      line = JSON.generate("type" => "launched", "project" => "p", "data" => {"unique_id" => "u", "pad" => "x" * 200}, "timestamp" => "2026-01-01T00:00:00Z") + "\n"
+      File.write(event_log_file, line * 6000)
+      errors = StringIO.new
+      event_log = Workspace::EventLog.new(config: config, error_output: errors, compact_threshold: nil)
+      described_class.new(config: config, event_log: event_log).load
+      expect(File.size(event_log_file)).to be > 1_048_576
+      expect(errors.string).to eq("")
+    end
+
     it "migrates from state file when no event log exists" do
       File.write(state_file, '{"project1": {"unique_id": "abc"}}')
       state = new_state.load

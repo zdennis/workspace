@@ -834,7 +834,7 @@ module Workspace
     workflow_downtime = WorkflowDowntime.new(heartbeat_path: config.workflow_heartbeat_path, downtime_path: config.workflow_downtime_path,
       downtime_after: -> { workflow_config.downtime_after })
     events_config = EventsConfig.new(config_resolver: config_resolver, error_output: error_output)
-    event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger,
+    event_log = EventLog.new(config: config, error_output: error_output, logger: logger,
       compact_threshold: -> { events_config.compact_threshold })
     state = State.new(config: config, event_log: event_log, logger: logger)
     osascript ||= OsascriptRunner.new

@@ -724,8 +724,6 @@ module Workspace
         doc: "How old a tmuxinator config backup batch may get before pruning removes it (a duration; unset: batches are only limited by `tmuxinator.backups.keep`); pruning never drops the newest batch holding a workspace or a template set `template import` replaced"),
       Key.new(name: "hooks", scope: :global, type: :mapping, sensitive: true, resolve: :none, settable: false, doc: "Global hooks applied to all projects"),
       Key.new(name: "layouts", scope: :global, type: :mapping, resolve: :merge, settable: false, doc: "Default tmux pane layouts"),
-      Key.new(name: "event_log_compact_threshold", scope: :global, type: :text, settable: false,
-        doc: "Size warning threshold (e.g., \"10kb\", \"1mb\"). Default: 1mb"),
       Key.new(name: "dev.configured", scope: :project, type: :boolean, default: false, resolve: :none, settable: false,
         doc: "Read-only, shown by `config show --json` only: `effective` is `true` when the project's `dev.up` is set, which is what makes `start` and `launch` send the `dev` pack. Not a key to write"),
       Key.new(name: "hooks", scope: :project, type: :mapping, sensitive: true, resolve: :own, applies: :next_event, settable: false,
