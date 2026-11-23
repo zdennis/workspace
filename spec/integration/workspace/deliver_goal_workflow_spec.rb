@@ -23,7 +23,18 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
 
   after { FileUtils.rm_rf(base) }
 
-  def play(name)
+  def fast_definition_over(text)
+    fast_path = File.join(PROJECT_ROOT, "demo", "calculator2", "workflows", "deliver-goal-fast.yml")
+    demo_lookup = lambda do |id, below: nil|
+      next {"text" => text, "path" => path, "source" => "global"} if id == "deliver-goal" && below.nil?
+      lookup.call(id, below: below)
+    end
+    Workspace::WorkflowDefinition.parse(File.read(fast_path), id: "deliver-goal-fast", source: "global", path: fast_path, parent_lookup: demo_lookup)
+  end
+
+  let(:fast_definition) { fast_definition_over(File.read(path)) }
+
+  def play(name, definition: self.definition)
     file = File.join(PROJECT_ROOT, "demo", "calculator2", "simulate", "#{name}.yml")
     script = Workspace::WorkflowSimScript.parse(File.read(file), definition: definition.to_h, source: "#{name}.yml")
     simulator.call(definition: definition, script: script, inputs: script.inputs)
@@ -74,13 +85,7 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
   end
 
   it "has deliver-goal-fast's research write requirements.md beside research.md" do
-    fast_path = File.join(PROJECT_ROOT, "demo", "calculator2", "workflows", "deliver-goal-fast.yml")
-    demo_lookup = lambda do |id, below: nil|
-      next {"text" => File.read(path), "path" => path, "source" => "global"} if id == "deliver-goal" && below.nil?
-      lookup.call(id, below: below)
-    end
-    fast = Workspace::WorkflowDefinition.parse(File.read(fast_path), id: "deliver-goal-fast", source: "global", path: fast_path, parent_lookup: demo_lookup).to_h
-    research = fast["steps"].find { |each| each["id"] == "research" }
+    research = fast_definition.to_h["steps"].find { |each| each["id"] == "research" }
     expect(research["produces"]).to eq(%w[research.md requirements.md])
     expect(research["prompt"]).to include("{{artifacts}}/requirements.md")
     expect(research["prompt"]).not_to match(/accept|calc/i)
@@ -138,6 +143,34 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(result["outcome"]).to eq("completed")
     expect(outcomes(result, "plan")).to eq(%w[passed])
     expect(outcomes(result, "acceptance")).to eq(%w[passed])
+  end
+
+  it "loops back to research once when plan's check fails, then completes" do
+    result = play("fast-plan-check-fails", definition: fast_definition)
+    expect(result["outcome"]).to eq("completed")
+    expect(outcomes(result, "plan")).to eq(%w[failed passed])
+    expect(outcomes(result, "research")).to eq(%w[passed passed])
+    expect(result["transitions"]).to include(a_hash_including("type" => "step_failed", "step" => "plan", "attempt" => 1, "cause" => "check"))
+    expect(result["transitions"]).to include(a_hash_including("type" => "step_looped", "from" => "plan", "to" => "research"))
+  end
+
+  it "retries plan itself once, skipping research, when a require exec proof on plan fails" do
+    text = File.read(path).sub("    max_attempts: 8\n", "    max_attempts: 8\n    require:\n      - exec: \"/usr/bin/true\"\n")
+    expect(text).to include("exec: \"/usr/bin/true\"")
+    result = play("fast-plan-require-fails", definition: fast_definition_over(text))
+    expect(result["outcome"]).to eq("completed")
+    expect(outcomes(result, "plan")).to eq(%w[failed passed])
+    expect(outcomes(result, "research")).to eq(%w[passed])
+    expect(result["transitions"]).to include(a_hash_including("type" => "step_failed", "step" => "plan", "attempt" => 1, "cause" => "require"))
+    expect(result["transitions"]).to include(a_hash_including("type" => "step_looped", "from" => "plan", "to" => "plan"))
+    expect(result["transitions"]).not_to include(a_hash_including("type" => "step_looped", "to" => "research"))
+  end
+
+  it "refuses an on_fail goto from plan back to plan itself" do
+    text = File.read(path).sub("    max_attempts: 8\n", "    max_attempts: 8\n    on_fail: {goto: plan, max: 2, log_tail: 10, context: continue}\n")
+    expect(text).to include("on_fail: {goto: plan")
+    expect { Workspace::WorkflowDefinition.parse(text, id: "deliver-goal", source: "global", path: path, parent_lookup: lookup) }
+      .to raise_error(Workspace::Error) { |error| expect(error.details["problems"]).to include(%(step plan: on_fail goto must name an earlier step (research), got "plan")) }
   end
 
   it "goes back to implement once when acceptance fails, then completes" do
