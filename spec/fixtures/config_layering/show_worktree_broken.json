@@ -2284,7 +2284,7 @@
         "global"
       ],
       "layers": [],
-      "doc": "How long a workflow step may wait at an agent permission dialog (time the machine was off does not count) before `workflow sweep` fails the step with code `permission_wait_timeout` and stops the run, whatever `on_fail` says (default `1h`). Nothing is typed and the dialog is left open for a person to answer or close. `0` or `off` turns the limit off, so the step waits at a dialog for as long as it stays",
+      "doc": "How long a workflow step may wait at an agent permission dialog (time the machine was off does not count) before `workflow sweep` fails the step with code `permission_wait_timeout` and stops the run, whatever `on_fail` says (default `1h`). Nothing is typed and the dialog is left open for a person to answer or close. A review round whose review pane waits at such a dialog that long is decided on the verdicts already written, running no reviewer again, and stops `review_incomplete` with its window kept when they fall short. `0` or `off` turns the limit off, so the step or round waits at a dialog for as long as it stays",
       "problems": [],
       "unit": "seconds"
     },

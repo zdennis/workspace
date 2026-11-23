@@ -46,7 +46,7 @@ module Workspace
   #   daemon had alerted on it ({PaneAlerts.restore_waits}), so the age usually carries on; otherwise the wait opens again and the
   #   age starts over. A wait with no readable `since` has no age (the row says so) and only the step's timeout can
   #   stop it. Once the age reaches `workflows.permission_wait_limit`, or the step is past its `timeout` with
-  #   `on_timeout: fail`, and the pane has shown no output for {QUIET_WINDOW} (10 minutes, or the limit, the timeout
+  #   `on_timeout: fail`, and the pane has shown no output for {WorkflowSweepRows::QUIET_WINDOW} (10 minutes, or the limit, the timeout
   #   or the age when shorter: a real dialog prints nothing, a wait left by a sub-agent that is gone sits beside an
   #   agent at work; a redraw or a daemon restart starts that count again), the row is read again (`pane_changed`
   #   when that wait closed or another opened, or output came) and the step is failed with `permission_wait_timeout`
@@ -563,10 +563,8 @@ module Workspace
         return note(run, pass, "agent_gone", "pane #{pane} shows a shell: the agent has exited, so nothing will end this step. Resume the run to start it again.", {"pane" => pane}, infra: true)
       end
       if shown["state"] == "waiting"
-        unanswered = unanswered_waits(shown)
-        if unanswered.any? || shown["waiting_reason"] == "waiting_permission"
-          return permission_wait(run, attempt, pass, pane, shown, unanswered, elapsed, timeout, timed_out && on_timeout == "fail")
-        end
+        dialog = WorkflowSweepRows.dialog(shown, @clock.call, pass[:stops])
+        return permission_wait(run, attempt, pass, pane, shown, dialog, elapsed, timeout, timed_out && on_timeout == "fail") if dialog
         return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "pane #{pane} waits for an answer")
       end
       return turn_failed(run, attempt, pass, pane, shown, elapsed, timeout, timed_out && on_timeout == "fail") if shown["turn_failed"]
@@ -706,44 +704,14 @@ module Workspace
         {"pane" => pane, "since" => since, "recovery_phase" => entry&.dig("phase"), "recovery_attempts" => entry&.dig("attempts")})
     end
 
-    # The wait key of an agent's waiting screen in a pane row's `waits` ({PaneScreenRules::SCREEN_WAIT_KEY}).
-    SCREEN_WAIT = "screen"
-
-    # The longest a pane must have shown no output before the sweep takes it to sit at its wait: a real dialog
-    # prints nothing, while a wait left by a sub-agent that is gone sits beside an agent that keeps working. A fixed
-    # window, so a redraw (a resize, a status line) or a daemon restart, which starts the idle count again, only
-    # delays the stop.
-    QUIET_WINDOW = 600
-
-    # The waits in a pane row nobody in a workflow answers: permission dialogs and waiting screens, with a readable
-    # `since` or not. A question to the person is not one.
-    def unanswered_waits(shown)
-      Array(shown["waits"]).grep(Hash).select { |wait| wait["permission"] || wait["agent_id"] == SCREEN_WAIT }
-    end
-
-    # The oldest `since` of +waits+ as written in the row, or nil when none can be read.
-    def oldest_since(waits)
-      waits.filter_map { |wait| (at = iso_time(wait["since"])) && [at, wait["since"]] }.min_by(&:first)&.last
-    end
-
-    # The step's pane waits at a permission dialog or a waiting screen (+waits+, from {#unanswered_waits}). The age
-    # runs from the oldest one's `since`, less the downtime the pass cut. Once it reaches
-    # `workflows.permission_wait_limit`, or the step is past its `timeout` with `on_timeout: fail`, and the pane has
-    # been quiet for {QUIET_WINDOW} (or the limit, the timeout or the age, when shorter), the row is read again and the step is failed with `permission_wait_timeout` and the
-    # run stopped, whatever its `on_fail` says ({WorkflowEngine#permission_wait_out}). Nothing is pressed: the dialog
-    # stays up for a person.
-    def permission_wait(run, attempt, pass, pane, shown, waits, elapsed, timeout, fail_on_timeout)
-      since_text = oldest_since(waits)
-      screen = waits.any? { |wait| wait["agent_id"] == SCREEN_WAIT }
-      shown_screen = waits.find { |wait| wait["agent_id"] == SCREEN_WAIT && wait["message"].is_a?(String) }
-      what = if shown_screen then "a waiting screen (#{shown_screen["message"]})"
-      elsif screen then "a waiting screen"
-      else "a permission dialog"
-      end
-      age = since_text && [WorkflowDeadline.active_seconds(iso_time(since_text), @clock.call, pass[:stops]), 0].max
+    # The step's pane waits at a permission dialog or a waiting screen (+dialog+, from {WorkflowSweepRows.dialog}). Once
+    # its age reaches `workflows.permission_wait_limit`, or the step is past its `timeout` with `on_timeout: fail`, and
+    # the pane has been quiet for {WorkflowSweepRows.quiet_window}, the row is read again and the step is failed with
+    # `permission_wait_timeout` and the run stopped, whatever its `on_fail` says ({WorkflowEngine#permission_wait_out}).
+    # Nothing is pressed: the dialog stays up for a person.
+    def permission_wait(run, attempt, pass, pane, shown, dialog, elapsed, timeout, fail_on_timeout)
+      age, what, waited = dialog.values_at(:age, :what, :waited)
       limit = pass[:permission_wait_limit]
-      humane = age && Duration.humanize(age.round)
-      waited = humane ? "has waited #{humane}" : "waits (for how long is unknown: the wait has no readable start)"
       due = fail_on_timeout || (limit && age && age >= limit)
       unless due
         stop = if age.nil? then "; only the step's own timeout can stop it"
@@ -752,39 +720,25 @@ module Workspace
         end
         return WorkflowSweepRows.row(run, "nothing", reason: "waiting_permission", message: "pane #{pane} #{waited} at #{what}#{stop}")
       end
-      window = [limit, (timeout if fail_on_timeout), age, QUIET_WINDOW].compact.min
-      unless quiet?(shown, window)
+      window = WorkflowSweepRows.quiet_window(limit, (timeout if fail_on_timeout), age)
+      message = "pane #{pane} #{age ? "waited #{Duration.humanize(age.round)}" : "waited"} at #{what} (#{fail_on_timeout ? "past the step's #{Duration.humanize(timeout)} timeout" : "limit #{Duration.humanize(limit)}"}); " \
+        "the step failed and the run stopped with it still open. " \
+        "Deny or close it (or stop the agent) before `workspace workflow resume #{run.id}`: allowed, the old attempt carries on without the run's locks and its work is ignored"
+      unless WorkflowSweepRows.quiet?(shown, window)
         return WorkflowSweepRows.row(run, "nothing", reason: "waiting_permission", cause: "permission_wait",
           message: "pane #{pane} #{waited} at #{what}, but it showed output #{shown["idle_seconds"].inspect} seconds ago (it must be quiet for #{Duration.humanize(window.round)}), so the wait may be left by a sub-agent that is gone; nothing is changed")
       end
-      why = fail_on_timeout ? "past the step's #{Duration.humanize(timeout)} timeout" : "limit #{Duration.humanize(limit)}"
-      message = "pane #{pane} #{humane ? "waited #{humane}" : "waited"} at #{what} (#{why}); the step failed and the run stopped with it still open. " \
-        "Deny or close it (or stop the agent) before `workspace workflow resume #{run.id}`: allowed, the old attempt carries on without the run's locks and its work is ignored"
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: "permission_wait", action: "fail") if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: "permission_wait") if refusal
-      # Read again just before the change: an answered dialog, or a new one, is not the wait that ran out.
-      fresh = @panes.pane_row(run.workspace, pane)
-      unless fresh && fresh["state"] == "waiting" && oldest_since(unanswered_waits(fresh)) == since_text && quiet?(fresh, window)
+      unless WorkflowSweepRows.same_dialog?(@panes.pane_row(run.workspace, pane), dialog, window)
         return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", cause: "permission_wait",
           message: "pane #{pane} no longer shows the same wait, quiet; the next pass looks again")
       end
-      data = {"pane" => pane, "since" => since_text, "waited" => age&.round, "limit" => limit, "screen" => (true if screen)}
+      data = {"pane" => pane, "since" => dialog[:since], "waited" => age&.round, "limit" => limit, "screen" => (true if dialog[:screen])}
       data = data.merge("elapsed" => elapsed.round, "timeout" => timeout) if fail_on_timeout
       outcome = @engine.permission_wait_out(run.id, actor: "sweep", step: run.current, attempt: attempt.n, data: data.compact)
       WorkflowSweepRows.engine_row(run, outcome, "timed_out", cause: "permission_wait", message: message, action: "fail")
-    end
-
-    # Whether the pane has shown no output for +window+ seconds.
-    def quiet?(shown, window)
-      idle = shown["idle_seconds"]
-      idle.is_a?(Numeric) && idle >= window
-    end
-
-    def iso_time(value)
-      Time.iso8601(value) if value.is_a?(String)
-    rescue ArgumentError
-      nil
     end
 
     # Starts the workspace's daemon. The run is not acted on again in this pass.

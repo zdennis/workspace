@@ -1218,6 +1218,7 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.round_interrupted({"sweep" => {"run_interrupt" => mark.call("sent")}}, now)).to eq("run_timed_out")
       expect(described_class.round_interrupted({"sweep" => {"stalled" => {"review_timed_out" => "x"}}}, now)).to be_nil
       expect(described_class.round_interrupted({}, now)).to be_nil
+      expect(described_class.round_interrupted({"sweep" => {"stalled" => {"permission_wait" => "x"}}}, now)).to eq("permission_wait")
     end
 
     it "no longer counts a pending press older than the claim's hold, left by a sweep that died before it pressed" do

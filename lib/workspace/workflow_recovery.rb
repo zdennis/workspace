@@ -432,17 +432,21 @@ module Workspace
     # - `server_restarted`: the tmux server the pane was on is gone (a new one may reuse the pane id); the round is
     #   delivered again as {#tick} would ({WorkflowProgress#redeliver_round}, in a new window), or stops
     #   `review_incomplete` once its `redeliveries` are spent
+    # - `permission_wait`: the review pane has sat at a permission dialog or a waiting screen past
+    #   `workflows.permission_wait_limit`; the round's `sweep` marks get `stalled.permission_wait`, so no reviewer runs
+    #   again ({WorkflowTransitions.round_interrupted}: the next line would land in the dialog), and it is decided on the
+    #   verdicts written, as `interrupt_unanswered` is, stopping `review_incomplete` with its window kept when they fall short
     #
     # @param run_id [String]
     # @param step [String]
     # @param attempt [Integer, nil] the reviewed attempt
     # @param round [Integer]
     # @param pane [String] the review pane the sweep read
-    # @param cause [String] `idle_turn_over`, `interrupted`, `pane_gone`, `agent_gone`, `interrupt_unanswered` or `server_restarted`
+    # @param cause [String] `idle_turn_over`, `interrupted`, `pane_gone`, `agent_gone`, `interrupt_unanswered`, `permission_wait` or `server_restarted`
     # @param data [Hash{String=>Object}] more for the `step_stalled` event
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :evaluated, :stopped (`server_restarted` with `redeliver` spent, or an `interrupt_unanswered`
-    #   round that stands stopped for a person once its verdicts were read, the revision read again first when there is
+    #   or `permission_wait` round that stands stopped for a person once its verdicts were read, the revision read again first when there is
     #   a revision reader), :redelivered, :moved_on or :busy
     def review_stalled(run_id, actor:, step:, attempt:, round:, pane:, cause:, data: {})
       outcome = :moved_on
@@ -453,9 +457,10 @@ module Workspace
         @change.event(stored, "step_stalled", {"step" => step, "attempt" => attempt, "round" => round, "pane" => pane, "cause" => cause}.merge(data))
         outcome = if cause == "server_restarted"
           server_restarted(stored, ctx, pane)
-        elsif cause == "interrupt_unanswered"
-          # Pressed for every time limit due and still at work: a review that finished by now still counts, and a
-          # round its verdicts leave short stops for a person.
+        elsif %w[interrupt_unanswered permission_wait].include?(cause)
+          # Pressed for every time limit due and still at work, or sat at a dialog nobody answers: a review that
+          # finished by now still counts, and a round its verdicts leave short stops for a person.
+          mark_round_dialog(stored) if cause == "permission_wait"
           # The answer is read from the run once the follow-ups ran: with a revision reader the round is only marked
           # here, and decided after the lock is given up.
           adopt(stored, @evaluation.review_ended(stored, ctx: ctx))
@@ -1078,6 +1083,13 @@ module Workspace
       attempts = run["steps"].values.flat_map { |state| Array(state["attempts"]) }.grep(Hash)
       latest = attempts.select { |each| each["ended_at"].is_a?(String) && each.dig("agent", "kind").is_a?(String) }.max_by { |each| each["ended_at"] }
       latest.nil? || latest.dig("agent", "kind") == "claude"
+    end
+
+    # A review round decided at a dialog: its `sweep` marks get `stalled.permission_wait`, which
+    # {WorkflowTransitions.round_interrupted} reads, so no reviewer is run again into the pane that shows the dialog.
+    def mark_round_dialog(run)
+      round = step_state(run)["review"]
+      ((round["sweep"] ||= {})["stalled"] ||= {})["permission_wait"] ||= now_iso if round.is_a?(Hash)
     end
 
     def open_stall(run, cause, since)

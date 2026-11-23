@@ -44,10 +44,11 @@ RSpec.describe Workspace::WorkflowSweep do
     end
   end
   # The sweep with its review rows over the same parts (+orphans+, +holder_alive+ as build_cli gives them).
-  def sweep_with(orphans: nil, holder_alive: nil, default_stall: -> {})
+  def sweep_with(orphans: nil, holder_alive: nil, default_stall: -> {}, permission_wait_limit: -> {})
     reviews = Workspace::WorkflowReviewSweep.new(engine: engine, panes: panes, interrupter: interrupter, orphans: orphans,
       holder_alive: holder_alive, clock: -> { now.first })
-    described_class.new(store: store, engine: engine, panes: panes, interrupter: interrupter, reviews: reviews, default_stall: default_stall, clock: -> { now.first })
+    described_class.new(store: store, engine: engine, panes: panes, interrupter: interrupter, reviews: reviews, default_stall: default_stall,
+      permission_wait_limit: permission_wait_limit, clock: -> { now.first })
   end
 
   subject(:sweep) { sweep_with }
@@ -1869,13 +1870,34 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(events.find { |each| each["type"] == "step_stalled" }).to include("cause" => "idle_turn_over", "round" => 1, "idle_for" => 1500)
     end
 
-    it "says waiting_permission for a review pane that waits on a permission dialog" do
+    it "says waiting_permission for a review pane that waits on a permission dialog, before the limit" do
       review
       advance(1500)
       review_pane_shows("waiting", idle_seconds: 1500)
       panes.rows["%9"]["waiting_reason"] = "waiting_permission"
+      panes.rows["%9"]["waits"] = [{"agent_id" => "a1", "permission" => true, "since" => (now.first - 1400).utc.iso8601}]
 
-      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "waiting_permission")
+      row = only_row(sweep_with(permission_wait_limit: -> { 3600 }).call)
+
+      expect(row).to include("outcome" => "nothing", "reason" => "waiting_permission")
+      expect(row["message"]).to include("has waited 23m at a permission dialog")
+    end
+
+    it "decides a round whose review pane sat at a dialog past the limit on its verdicts, marking it so no reviewer runs again" do
+      review
+      advance(4000)
+      review_pane_shows("waiting", idle_seconds: 3800)
+      panes.rows["%9"]["waiting_reason"] = "waiting_permission"
+      panes.rows["%9"]["waits"] = [{"agent_id" => "a1", "permission" => true, "since" => (now.first - 3700).utc.iso8601}]
+
+      row = only_row(sweep_with(permission_wait_limit: -> { 3600 }).call)
+
+      # No verdict reader is wired here, so the round reads incomplete and stops for a person.
+      expect(row).to include("outcome" => "stopped", "cause" => "permission_wait", "action" => "evaluate")
+      expect(stored_run(store, "wr_1")["reason"]).to include("code" => "review_incomplete")
+      expect(stored_run(store, "wr_1")["reason"]["details"]["problem"]).to include("sat at a dialog nobody answered")
+      expect(stored_round.dig("sweep", "stalled")).to include("permission_wait")
+      expect(events.find { |each| each["type"] == "step_stalled" }).to include("cause" => "permission_wait", "round" => 1, "waited" => 3700, "limit" => 3600)
     end
 
     it "leaves a review pane that waits for an answer alone" do

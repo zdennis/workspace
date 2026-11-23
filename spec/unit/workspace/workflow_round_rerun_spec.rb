@@ -130,6 +130,13 @@ RSpec.describe Workspace::WorkflowRoundRerun do
       stale = round.merge("sweep" => {"run_interrupt" => {"state" => "pending", "at" => "2026-11-10T11:00:00Z"}})
       expect(rerun.rerun_names(run, stale, {outcome: :incomplete, reviews: rows})).to eq(%w[b])
     end
+
+    it "names none for a round the sweep decided at a dialog nobody answered: the next line would land in it" do
+      run = after_rejection(round: {"redeliveries" => 0})
+      at_dialog = run["steps"]["plan"]["review"].merge("sweep" => {"stalled" => {"permission_wait" => "2026-11-10T11:59:30Z"}})
+
+      expect(rerun.rerun_names(run, at_dialog, {outcome: :incomplete, reviews: rows})).to be_nil
+    end
   end
 
   describe "#rerun" do

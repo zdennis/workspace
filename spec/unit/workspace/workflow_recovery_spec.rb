@@ -452,6 +452,18 @@ RSpec.describe Workspace::WorkflowRecovery do
           expect(event_types.first).to eq(["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "interrupt_unanswered", "waited" => 1300}])
         end
 
+        it "decides a round whose review pane sat at a dialog on its verdicts, marking the round so no reviewer runs again (permission_wait)" do
+          stored(reviewing("delivery" => nil, "pane" => "%9", "window" => "@4", "server_pid" => "100"))
+
+          outcome = recovery.review_stalled("wr_1", actor: "sweep", step: "build", attempt: 1, round: 1, pane: "%9", cause: "permission_wait", data: {"waited" => 3700})
+
+          expect(outcome).to eq(:evaluated)
+          expect(evaluation.calls.first).to eq([:review_ended, "build"])
+          expect(store.runs["wr_1"]["steps"]["build"]["review"].dig("sweep", "stalled")).to include("permission_wait")
+          expect(Workspace::WorkflowTransitions.round_interrupted(store.runs["wr_1"]["steps"]["build"]["review"], clock_at.first)).to eq("permission_wait")
+          expect(event_types.first).to eq(["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "permission_wait", "waited" => 3700}])
+        end
+
         it "judges a typed round the sweep pressed whose pane still works once the longer of stall and review timeout has passed since the press" do
           busy = RecordingWorkflowPanes.new(rows: {"%9" => claude_row("working")})
           definition = reviewing["definition"].merge("stall" => 600)

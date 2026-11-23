@@ -692,13 +692,16 @@ module Workspace
     # The cause the sweep interrupted a review round's pane for (`review_timed_out` first): its keys went out, or are
     # going out (a pending claim younger than {INTERRUPT_CLAIM_SECONDS}, so a turn the press ends before it is
     # confirmed reads the same; an older one was left by a sweep that died before it pressed); nil when it pressed
-    # none. A round interrupted is decided on the verdicts already written: none is run again.
+    # none, or `permission_wait` for a round the sweep decided at a dialog nobody answered (its `stalled` mark), whose
+    # pane would take the next line into that dialog. A round interrupted is decided on the verdicts already written:
+    # none is run again.
     #
     # @param round [Hash{String=>Object}, nil] a step's `review`
     # @param now [Time]
     # @return [String, nil]
     def self.round_interrupted(round, now)
       marks = round_sweep_marks(round)
+      return "permission_wait" if marks.dig("stalled", "permission_wait")
       ROUND_INTERRUPT_KEYS.find { |_, key| interrupt_mark_live?(marks[key], now) }&.first
     end
 

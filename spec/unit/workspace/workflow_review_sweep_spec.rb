@@ -430,6 +430,122 @@ RSpec.describe Workspace::WorkflowReviewSweep do
     end
   end
 
+  describe "a review pane at a dialog nobody answers" do
+    let(:limit_pass) { pass.merge(permission_wait_limit: 3600, stops: []) }
+
+    def iso(seconds_ago) = (now - seconds_ago).utc.iso8601
+
+    # The review pane's row with +waits+ (`[agent_id, permission, seconds_ago]` each), quiet for +idle+ seconds.
+    def review_waits(*waits, idle: nil)
+      oldest = waits.map(&:last).max
+      panes.rows["%9"] = {"pane_id" => "%9", "kind" => "claude", "state" => "waiting", "idle_seconds" => idle || oldest,
+                          "waiting_reason" => (waits.any? { |each| each[1] }) ? "waiting_permission" : "waiting_prompt",
+                          "waits" => waits.map { |id, permission, ago| {"agent_id" => id, "permission" => permission, "since" => iso(ago)} }}
+    end
+
+    def call_dialog(run, with: limit_pass) = sweep.call(run, run.step("build"), with)
+
+    it "says how long it has waited before the limit and changes nothing" do
+      review_waits([nil, true, 1200])
+
+      row = call_dialog(reviewing(started: 1300))
+
+      expect(row).to include("outcome" => "nothing", "reason" => "waiting_permission")
+      expect(row["message"]).to eq("review pane %9 has waited 20m at a permission dialog; review round 1 of step build is decided on its verdicts once it has waited 1h 0m (workflows.permission_wait_limit)")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+
+    it "decides the round on its verdicts past the limit, once the pane is quiet, with the wait in the stall's data" do
+      review_waits(["a1", true, 3700])
+
+      row = call_dialog(reviewing(started: 3800))
+
+      expect(row).to include("outcome" => "evaluated", "cause" => "permission_wait", "action" => "evaluate")
+      expect(row["message"]).to include("waited 1h 1m at a permission dialog (limit 1h 0m)", "no reviewer runs again")
+      expect(engine).to have_received(:review_stalled).with("wr_1", actor: "sweep", step: "build", attempt: 1, round: 1, pane: "%9",
+        cause: "permission_wait", data: {"since" => iso(3700), "waited" => 3700, "limit" => 3600})
+      expect(pressed).to be_empty
+    end
+
+    it "measures from the oldest unanswered wait, not an older question, and cuts downtime" do
+      review_waits([nil, false, 3700], ["a1", true, 300])
+      expect(call_dialog(reviewing(started: 3800))).to include("outcome" => "nothing", "reason" => "waiting_permission")
+
+      review_waits(["a1", true, 3700])
+      down = limit_pass.merge(stops: [{"since" => iso(3000), "until" => iso(1000)}])
+      expect(call_dialog(reviewing(started: 3800), with: down)["message"]).to start_with("review pane %9 has waited 28m at")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+
+    it "reads a round whose line may have been typed in its pane when that pane sits at a dialog, instead of handing it to the tick" do
+      allow(engine).to receive(:tick).and_return(nil)
+      review_waits(["a1", true, 3700])
+      typed = {"delivery" => "failed", "delivered_at" => nil, "kick_at" => (now - 3790).utc.iso8601(3),
+               "failure" => {"code" => "connection_failed", "message" => "daemon gone", "typed" => true, "at" => (now - 3780).utc.iso8601}}
+
+      row = call_dialog(reviewing(started: 3800, round: typed))
+
+      expect(row).to include("outcome" => "evaluated", "cause" => "permission_wait")
+      expect(engine).not_to have_received(:tick)
+    end
+
+    it "names the first waiting screen that carries a message" do
+      review_waits(["screen", false, 3700])
+      panes.rows["%9"]["waits"] << {"agent_id" => "screen", "permission" => false, "since" => iso(3600), "message" => "sign in"}
+
+      expect(call_dialog(reviewing(started: 3800))["message"]).to include("at a waiting screen (sign in) (limit 1h 0m)")
+    end
+
+    it "applies the limit to an agent's waiting screen" do
+      review_waits(["screen", false, 3700])
+
+      row = call_dialog(reviewing(started: 3800))
+
+      expect(row).to include("outcome" => "evaluated", "cause" => "permission_wait")
+      expect(engine).to have_received(:review_stalled).with("wr_1", hash_including(data: include("screen" => true)))
+    end
+
+    it "changes nothing while the pane has shown output within the quiet window" do
+      review_waits(["a1", true, 3700], idle: 30)
+
+      row = call_dialog(reviewing(started: 3800))
+
+      expect(row).to include("outcome" => "nothing", "reason" => "waiting_permission", "cause" => "permission_wait")
+      expect(row["message"]).to include("showed output 30 seconds ago (it must be quiet for 10m)")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+
+    it "changes nothing when the wait closed or another opened before the change" do
+      review_waits(["a1", true, 3700])
+      reads = 0
+      panes.on_row = -> do
+        reads += 1
+        review_waits(["a1", true, 10]) if reads == 2
+      end
+
+      expect(call_dialog(reviewing(started: 3800))).to include("outcome" => "nothing", "reason" => "pane_changed", "cause" => "permission_wait")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+
+    it "only reports on a dry run, and leaves a refused run alone" do
+      review_waits(["a1", true, 3700])
+
+      expect(call_dialog(reviewing(started: 3800), with: limit_pass.merge(dry_run: true))).to include("outcome" => "dry_run", "cause" => "permission_wait", "action" => "evaluate")
+      expect(call_dialog(reviewing(started: 3800), with: limit_pass.merge(allow: ->(_) { "own pane" }))).to include("outcome" => "nothing", "reason" => "refused")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+
+    it "never decides a round on a question to the person, nor with the limit off" do
+      review_waits([nil, false, 90_000])
+      expect(call_dialog(reviewing(started: 90_100))).to include("outcome" => "nothing", "reason" => "prompt")
+
+      review_waits(["a1", true, 90_000])
+      row = call_dialog(reviewing(started: 90_100), with: limit_pass.merge(permission_wait_limit: nil))
+      expect(row["message"]).to end_with("; no limit is set (workflows.permission_wait_limit)")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+  end
+
   describe "#held_row" do
     it "names the round a person decides" do
       run = reviewing.to_h.merge("state" => "waiting", "reason" => {"code" => "review_incomplete"})
