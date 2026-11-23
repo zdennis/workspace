@@ -2269,6 +2269,35 @@
       "unit": "seconds"
     },
     {
+      "key": "workflows.permission_wait_limit",
+      "scope": "global",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 3600,
+      "effective": 3600,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "How long a workflow step may wait at an agent permission dialog (time the machine was off does not count) before `workflow sweep` fails the step with code `permission_wait_timeout` and stops the run, whatever `on_fail` says (default `1h`). Nothing is typed and the dialog is left open for a person to answer or close. `0` or `off` turns the limit off, so the step waits at a dialog for as long as it stays",
+      "problems": [],
+      "unit": "seconds"
+    },
+    {
       "key": "workflows.downtime_after",
       "scope": "global",
       "type": "duration",

@@ -3,6 +3,7 @@ module Workspace
   class WorkflowConfig
     DEFAULT_STALL = 600
     DEFAULT_TURN_FAILED_AFTER = 1800
+    DEFAULT_PERMISSION_WAIT_LIMIT = 3600
     DEFAULT_DOWNTIME_AFTER = 120
     DEFAULT_INFRA_RETRY_MAX = 2
     DEFAULT_RECOVER_MAX_PER_RUN = 2
@@ -55,6 +56,20 @@ module Workspace
       value.nil? ? DEFAULT_TURN_FAILED_AFTER : ConfigSchema.parse("workflows.turn_failed_after", value)
     rescue ArgumentError, Workspace::ConfigParseError
       DEFAULT_TURN_FAILED_AFTER
+    end
+
+    # How long a step may wait at an agent permission dialog before the sweep
+    # fails it with `permission_wait_timeout` and stops the run:
+    # `workflows.permission_wait_limit` from the global file, `3600` when it is
+    # unset, when it holds a value `config set` would refuse, or when the file
+    # can not be parsed. `off` and `0` give nil.
+    #
+    # @return [Numeric, nil] seconds, or nil when the limit is turned off
+    def permission_wait_limit
+      value = read("", upto: "global", key: "workflows.permission_wait_limit")
+      value.nil? ? DEFAULT_PERMISSION_WAIT_LIMIT : ConfigSchema.parse("workflows.permission_wait_limit", value)
+    rescue ArgumentError, Workspace::ConfigParseError
+      DEFAULT_PERMISSION_WAIT_LIMIT
     end
 
     # How long the daemon's heartbeat may go unbeaten before the gap counts as

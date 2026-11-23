@@ -5,7 +5,7 @@ RSpec.describe Workspace::ConfigSchema do
 
   it "lists the settable keys in the order `config set` has always reported them" do
     expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto tmuxinator.template tmuxinator.worktree_template plan.stall_seconds go.branch_namer.enabled go.branch_namer.timeout go.branch_namer.command agent.kind agent.recovery.enabled agent.claude.trust_checkout agent.permissions.default agent.permissions.hang_guard agent.permissions.hang_guard_max_denies agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
-    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.sources workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt workflows.default_stall workflows.turn_failed_after workflows.downtime_after workflows.infra_retry.max workflows.recover.max_per_run events.rotate_size codex.hooks.install tmuxinator.backups.keep tmuxinator.backups.max_age])
+    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.sources workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt workflows.default_stall workflows.turn_failed_after workflows.permission_wait_limit workflows.downtime_after workflows.infra_retry.max workflows.recover.max_per_run events.rotate_size codex.hooks.install tmuxinator.backups.keep tmuxinator.backups.max_age])
   end
 
   describe "workflows.default_stall" do
@@ -32,6 +32,17 @@ RSpec.describe Workspace::ConfigSchema do
       expect(%w[off 0].map { |v| parse.call(v) }).to eq([nil, nil])
       expect(parse.call("10m")).to eq(600)
       expect { parse.call("soon") }.to raise_error(ArgumentError)
+    end
+  end
+
+  describe "workflows.permission_wait_limit" do
+    let(:key) { described_class.key("workflows.permission_wait_limit") }
+
+    it "reads off and a zero as nil, and a duration as seconds, with a 1h default" do
+      expect(key.default).to eq(3600)
+      expect(%w[off 0].map { |v| key.parser.call(v) }).to eq([nil, nil])
+      expect(key.parser.call("30m")).to eq(1800)
+      expect { key.parser.call("soon") }.to raise_error(ArgumentError)
     end
   end
 
