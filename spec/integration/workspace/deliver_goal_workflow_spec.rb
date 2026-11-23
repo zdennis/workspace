@@ -15,7 +15,7 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
       {"text" => File.read(file), "path" => file, "source" => "builtin"} if File.file?(file) && below.nil?
     end
   end
-  let(:definition) { Workspace::WorkflowDefinition.parse(File.read(path), id: "deliver-goal", source: "global", path: path, parent_lookup: lookup) }
+  let(:definition) { Workspace::WorkflowDefinition.parse(File.read(path), id: "deliver-goal", source: "global", path: path, parent_lookup: lookup, import_lookup: PresetSimulation.import_lookup) }
   let(:simulator) do
     factory = ->(**parts) { Workspace.build_workflow_engine(**parts) }
     Workspace::WorkflowSimulator.new(engine_factory: factory, tmpdir: tmpdir)
@@ -29,7 +29,7 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
       next {"text" => text, "path" => path, "source" => "global"} if id == "deliver-goal" && below.nil?
       lookup.call(id, below: below)
     end
-    Workspace::WorkflowDefinition.parse(File.read(fast_path), id: "deliver-goal-fast", source: "global", path: fast_path, parent_lookup: demo_lookup)
+    Workspace::WorkflowDefinition.parse(File.read(fast_path), id: "deliver-goal-fast", source: "global", path: fast_path, parent_lookup: demo_lookup, import_lookup: PresetSimulation.import_lookup)
   end
 
   let(:fast_definition) { fast_definition_over(File.read(path)) }
@@ -51,7 +51,7 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
   end
 
   it "overrides only the prompt and include of verify, keeping the parent's check, proofs, lock and loop" do
-    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup, import_lookup: PresetSimulation.import_lookup).to_h
     verify = ->(d) { d["steps"].find { |each| each["id"] == "verify" } }
     expect(verify.call(definition.to_h).except("prompt", "include")).to eq(verify.call(parent).except("prompt", "include"))
     expect(verify.call(definition.to_h)["include"]).to be_nil.or be_empty
@@ -62,7 +62,7 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
   end
 
   it "reviews the plan with one skeptical reviewer, keeping the parent's rounds" do
-    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup, import_lookup: PresetSimulation.import_lookup).to_h
     review = ->(d) { d["steps"].find { |each| each["id"] == "plan" }["review"] }
     expect(review.call(definition.to_h)).to include("from" => ["skeptical"], "need" => 1, "must" => ["skeptical"])
     expect(review.call(definition.to_h)["max_rounds"]).to eq(review.call(parent)["max_rounds"])
@@ -94,7 +94,7 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
   def fresh(result, id) = result["steps"].find { |each| each["id"] == id }["attempts"].map { |each| each["fresh"] }
 
   it "overrides only the prompt of implement, which tells it to start no sub-agents and finish before its status line" do
-    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup, import_lookup: PresetSimulation.import_lookup).to_h
     implement = ->(d) { d["steps"].find { |each| each["id"] == "implement" } }
     expect(implement.call(definition.to_h).except("prompt", "context")).to eq(implement.call(parent).except("prompt", "context"))
     expect(implement.call(definition.to_h)["context"]).to eq("continue")
@@ -105,7 +105,7 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
   end
 
   it "keeps the implement prompt equal to the parent's apart from its two added sentences" do
-    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup, import_lookup: PresetSimulation.import_lookup).to_h
     implement = ->(d) { d["steps"].find { |each| each["id"] == "implement" }["prompt"].gsub(/\s+/, " ").strip }
     stripped = implement.call(definition.to_h)
       .sub("Do not start sub-agents; the verify step runs the checks after you.", "")
@@ -169,7 +169,7 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
   it "refuses an on_fail goto from plan back to plan itself" do
     text = File.read(path).sub("    max_attempts: 8\n", "    max_attempts: 8\n    on_fail: {goto: plan, max: 2, log_tail: 10, context: continue}\n")
     expect(text).to include("on_fail: {goto: plan")
-    expect { Workspace::WorkflowDefinition.parse(text, id: "deliver-goal", source: "global", path: path, parent_lookup: lookup) }
+    expect { Workspace::WorkflowDefinition.parse(text, id: "deliver-goal", source: "global", path: path, parent_lookup: lookup, import_lookup: PresetSimulation.import_lookup) }
       .to raise_error(Workspace::Error) { |error| expect(error.details["problems"]).to include(%(step plan: on_fail goto must name an earlier step (research), got "plan")) }
   end
 

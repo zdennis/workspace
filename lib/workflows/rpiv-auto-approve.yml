@@ -31,19 +31,7 @@ max_attempts: 67
 
 steps:
   research:
-    title: Research
-    prompt: |
-      Research {{inputs.task}}. Read the code it touches, the tests that cover it, and
-      related docs. Don't change code or commit.
-      Write {{artifacts}}/research.md with: what exists (file:line), what has to change,
-      constraints, open questions, risks.
-      Write {{artifacts}}/requirements.md: one line per requirement of the task, each line
-      starting with its number and a space (`R1 `, `R2 `, ...). Then, for each part the task
-      leaves open, the reading you chose, the readings you rejected and why; if nothing is
-      open, write "No ambiguity."
-    produces: [research.md, requirements.md]
-    guard: unchanged
-    timeout: 45m
+    import: research
 
   plan:
     title: Plan
@@ -227,22 +215,7 @@ steps:
     timeout: 30m
 
   implement:
-    title: Implement
-    include: [notes, implementation-plan]
-    prompt: |
-      Implement the workspace plan (`workspace plan path`) one task at a time, marking
-      each task as the instructions say. Run the relevant tests before each commit. If the
-      plan turns out wrong, update the plan file and say why in {{artifacts}}/implement.md.
-      Write {{artifacts}}/implement.md listing the commits you made, then set the plan's
-      `status: done`; the run is waiting on that file and on that status. Make at least one commit.
-      On a rerun (after a failed verify, or a resume), make a new commit for the fix and never
-      amend or rebase, which the run's commit check can't follow. If no code change is needed,
-      run `git commit --allow-empty -m '<why>'`.
-    produces: [implement.md]
-    require:
-      - commits: 1
-      - plan_status: done
-    timeout: 3h
+    import: implement
 
   verify:
     title: Verify

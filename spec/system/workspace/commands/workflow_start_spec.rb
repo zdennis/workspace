@@ -642,7 +642,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "is refused for rpiv, whose research and plan steps are guarded" do
-      rpiv = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv.yml")), id: "rpiv", source: "preset", path: "rpiv.yml")
+      rpiv = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv.yml")), id: "rpiv", source: "preset", path: "rpiv.yml", import_lookup: PresetSimulation.import_lookup)
       allow(catalog).to receive(:find).with("rpiv", project: anything).and_return(rpiv)
 
       expect { build_command(real_engine).call(id: "rpiv", prompt: "x", branch: "mine", dry_run: true) }.to raise_error(Workspace::Error) do |e|
@@ -683,7 +683,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "is refused for every workflow, rpiv too" do
-      allow(catalog).to receive(:find).with("rpiv", project: anything).and_return(Workspace::WorkflowDefinition.parse("steps:\n  plan:\n    prompt: Go.\n", id: "rpiv", source: "preset", path: "rpiv.yml"))
+      allow(catalog).to receive(:find).with("rpiv", project: anything).and_return(Workspace::WorkflowDefinition.parse("steps:\n  plan:\n    prompt: Go.\n", id: "rpiv", source: "preset", path: "rpiv.yml", import_lookup: PresetSimulation.import_lookup))
 
       expect { command.call(id: "rpiv", ref: "#12", dry_run: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("fork_pull_request") }
     end

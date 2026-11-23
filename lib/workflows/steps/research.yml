@@ -1,0 +1,18 @@
+schema_version: 0.1
+description: The research step rpiv and rpiv-auto-approve share. It reads the code and writes research.md and requirements.md, changing nothing.
+
+steps:
+  research:
+    title: Research
+    prompt: |
+      Research {{inputs.task}}. Read the code it touches, the tests that cover it, and
+      related docs. Don't change code or commit.
+      Write {{artifacts}}/research.md with: what exists (file:line), what has to change,
+      constraints, open questions, risks.
+      Write {{artifacts}}/requirements.md: one line per requirement of the task, each line
+      starting with its number and a space (`R1 `, `R2 `, ...). Then, for each part the task
+      leaves open, the reading you chose, the readings you rejected and why; if nothing is
+      open, write "No ambiguity."
+    produces: [research.md, requirements.md]
+    guard: unchanged
+    timeout: 45m

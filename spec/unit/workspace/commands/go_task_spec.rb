@@ -18,7 +18,7 @@ RSpec.describe Workspace::Commands::GoTask do
   let(:tmux) { instance_spy(Workspace::Tmux) }
   let(:run_store) { instance_double(Workspace::WorkflowRunStore) }
   let(:checkout) { Workspace::Commands::WorkflowStart::Here.new(workspace: "app.worktree-x", path: "/src/app/.worktrees/x", caller_pane: nil) }
-  let(:definition) { Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "#{workflow}.yml")), id: workflow, source: "preset", path: "/defs/#{workflow}.yml").to_h }
+  let(:definition) { Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "#{workflow}.yml")), id: workflow, source: "preset", path: "/defs/#{workflow}.yml", import_lookup: PresetSimulation.import_lookup).to_h }
   let(:workflow) { "rpiv" }
   let(:step) { "plan" }
   let(:stored) { {"id" => "wr_1", "workflow" => workflow, "current" => step, "state" => "running", "worktree" => checkout.path, "definition" => definition} }

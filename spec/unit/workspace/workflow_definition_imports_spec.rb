@@ -361,7 +361,13 @@ RSpec.describe Workspace::WorkflowDefinition do
 
   describe "R24: a definition with no import" do
     it "reads the same with an import lookup as without one" do
-      Dir[File.join(PresetSimulation::WORKFLOWS, "*.yml")].each do |path|
+      plain_presets = Dir[File.join(PresetSimulation::WORKFLOWS, "*.yml")].reject do |path|
+        definition = PresetSimulation.definition(File.basename(path, ".yml"))
+        definition.imports.any? || definition.parents.any? { |parent| parent["import_sha256s"].any? }
+      end
+      expect(plain_presets.map { |path| File.basename(path, ".yml") }).to include("bugfix", "investigate")
+
+      plain_presets.each do |path|
         id = File.basename(path, ".yml")
         plain = PresetSimulation.definition(id)
         parent_lookup = ->(parent, below: nil) {
