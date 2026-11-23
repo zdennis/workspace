@@ -22,7 +22,7 @@ require_relative "../lib/workspace"
 
 module C3
   ROOT = File.realpath(File.expand_path("..", __dir__))
-  VAULT = File.expand_path("~/Library/Mobile Documents")
+  VAULT = File.expand_path("~/Library/Mobile Documents").then { |path| File.exist?(path) ? File.realpath(path) : path }
   WORKFLOWS = File.join("demo", "calculator2", "workflows")
   SIMULATE = File.join("demo", "calculator2", "simulate")
   DEFINITIONS = %w[deliver-goal deliver-goal-fast integrate-branch].freeze
@@ -102,7 +102,8 @@ module C3
   end
 
   def export(dir)
-    dirty, = Open3.capture2("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no")
+    dirty, status = Open3.capture2("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no")
+    abort "git status failed" unless status.success?
     abort "the checkout has uncommitted changes and the copy is HEAD: commit them first" unless dirty.empty?
     FileUtils.mkdir_p(dir)
     archive, status = Open3.capture2("git", "-C", ROOT, "archive", "HEAD", binmode: true)
