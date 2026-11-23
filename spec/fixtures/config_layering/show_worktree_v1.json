@@ -804,29 +804,6 @@
       "problems": []
     },
     {
-      "key": "event_log_compact_threshold",
-      "scope": "global",
-      "type": "text",
-      "value": null,
-      "masked": false,
-      "default": null,
-      "effective": null,
-      "source": "default",
-      "source_file": null,
-      "line": null,
-      "column": null,
-      "resolve": "global",
-      "target_layer": null,
-      "affects": [
-        "main",
-        "main.worktree-a"
-      ],
-      "applies": "next_call",
-      "settable": false,
-      "sensitive": false,
-      "problems": []
-    },
-    {
       "key": "dev.configured",
       "scope": "project",
       "type": "boolean",

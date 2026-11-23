@@ -118,7 +118,6 @@ module CLITestHelpers
 
     def exists? = false
     def size = 0
-    def warn_if_large = nil
     def compact = reconstruct
   end
 

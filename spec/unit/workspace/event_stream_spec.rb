@@ -248,6 +248,24 @@ RSpec.describe Workspace::EventStream do
     expect(summary(s.read)).to eq([["lifecycle", "proj", "compacted"], ["lifecycle", "proj", "plan_changed"]])
   end
 
+  it "resumes after an automatic compaction with no gap and no lost line" do
+    config = instance_double(Workspace::Config, event_log_file: lifecycle)
+    ticks = 0
+    ticking = double.tap { |c| allow(c).to receive(:now) { Time.utc(2026, 10, 17, 12, 0, 1) + (ticks += 1) } }
+    log = Workspace::EventLog.new(config: config, compact_threshold: 600, clock: ticking)
+    log.append(type: "launched", project: "proj", data: {"unique_id" => "u"})
+    cursor = stream.tap { |s| s.open(at: :start) }.read.last["cursor"]
+    log.append(type: "plan_changed", project: "proj", data: {"workspace" => "proj", "n" => 1})
+    log.append(type: "plan_changed", project: "proj", data: {"workspace" => "proj", "n" => 2, "pad" => "x" * 600})
+    expect(File.exist?("#{lifecycle}.1")).to be(true)
+    log.append(type: "plan_changed", project: "proj", data: {"workspace" => "proj", "n" => 3})
+
+    s = stream
+    expect(s.open(cursor: cursor)).to eq([])
+    expect(summary(s.read)).to eq([["lifecycle", "proj", "plan_changed"], ["lifecycle", "proj", "plan_changed"],
+      ["lifecycle", "proj", "compacted"], ["lifecycle", "proj", "plan_changed"]])
+  end
+
   it "reads a line that reached the old file just before it was replaced" do
     hook("alpha", 1, 1)
     s = stream

@@ -2998,13 +2998,13 @@ module Workspace
           "results, lock waits and takeovers, earlier pane states). A pane whose last change is older than 7 days,",
           "or whose project is gone, is dropped too. The idle and waiting alerts of the panes kept stay. The",
           "dropped history cannot be brought back.",
-          "Workspace suggests it when the log passes 1MB, and rotates the log by itself past 10MB.",
+          "The log also compacts itself once it passes `event_log.compact_threshold` (default 100KB), keeping the old file as `.1` to `.3`; `off` stops that.",
           "Prints `Compacted event log: BEFORE -> AFTER bytes (N project(s))`.",
           "There is no dry run. Any extra flag or word is ignored, and the log is still compacted."
         ],
         options: [],
         examples: [
-          ["workspace event-log compact", "the log has grown past 1MB and the history in it is no longer needed"],
+          ["workspace event-log compact", "automatic compaction is off and the history in the log is no longer needed"],
           ["workspace event-log compact && workspace event-log show --type compacted", "check what was kept: one compacted event per active project"],
           ["workspace event-log compact && workspace event-log show --type agent_state --limit 10", "check that each pane with an agent kept its latest state"]
         ]

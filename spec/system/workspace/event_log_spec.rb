@@ -64,6 +64,80 @@ RSpec.describe Workspace::EventLog do
     end
   end
 
+  describe "#recent with a rotated log" do
+    let(:line) { ->(n, stamp = "2026-10-17T10:05:00.000Z") { JSON.generate({"timestamp" => stamp, "type" => "spine_changed", "project" => "a", "data" => {"n" => n}}) + "\n" } }
+    let(:since) { Time.utc(2026, 10, 17, 10, 1) }
+
+    it "still returns a line written just before the rotation" do
+      File.write("#{event_log_file}.1", line.call(1))
+      File.write(event_log_file, line.call(2))
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 1}, {"n" => 2}])
+    end
+
+    it "leaves out a rotated line older than the cutoff" do
+      File.write("#{event_log_file}.1", line.call(1, "2026-10-17T09:00:00.000Z") + line.call(2))
+      File.write(event_log_file, line.call(3))
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 2}, {"n" => 3}])
+    end
+
+    it "works when there is no rotated file" do
+      File.write(event_log_file, line.call(1))
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 1}])
+    end
+
+    it "does not read the rotated file when the current one fills the tail" do
+      File.write("#{event_log_file}.1", line.call(1))
+      File.write(event_log_file, line.call(0) * 4_000 + line.call(2))
+      expect(File.size(event_log_file)).to be > Workspace::EventLog::RECENT_TAIL
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since).map { |d| d["n"] }).not_to include(1)
+    end
+
+    it "still returns the current file's lines when the rotated file is unreadable" do
+      skip "root reads any file" if Process.uid.zero?
+      File.write("#{event_log_file}.1", line.call(1))
+      File.write(event_log_file, line.call(2))
+      File.chmod(0o000, "#{event_log_file}.1")
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 2}])
+    ensure
+      File.chmod(0o644, "#{event_log_file}.1") if File.exist?("#{event_log_file}.1")
+    end
+
+    it "still returns the current file's lines when the rotated path is a directory" do
+      Dir.mkdir("#{event_log_file}.1")
+      File.write(event_log_file, line.call(2))
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 2}])
+    end
+
+    it "reads through a symlinked rotated file to its target, as intended" do
+      target = "#{event_log_file}.target"
+      File.write(target, line.call(1))
+      File.symlink(target, "#{event_log_file}.1")
+      File.write(event_log_file, line.call(2))
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 1}, {"n" => 2}])
+    end
+
+    it "drops the partial first line of the rotated tail" do
+      whole = line.call(1)
+      File.write("#{event_log_file}.1", whole * 3000)
+      File.write(event_log_file, line.call(2))
+      room = Workspace::EventLog::RECENT_TAIL - File.size(event_log_file)
+      expect(File.size("#{event_log_file}.1")).to be > room
+      expect(room % whole.bytesize).not_to eq(0)
+
+      result = event_log.recent(type: "spine_changed", project: "a", since: since)
+
+      expect(result.size).to eq(room / whole.bytesize + 1)
+      expect(result.last).to eq({"n" => 2})
+    end
+  end
+
   describe "#events" do
     it "returns empty array when file does not exist" do
       expect(event_log.events).to eq([])
@@ -186,7 +260,7 @@ RSpec.describe Workspace::EventLog do
       payload = "x" * 6_000
       pids = 4.times.map do |n|
         fork do
-          log = described_class.new(config: config, error_output: StringIO.new)
+          log = described_class.new(config: config, error_output: StringIO.new, compact_threshold: nil)
           50.times { |i| log.record(type: "dispatched", project: "p#{n}", data: {"i" => i, "pad" => payload}) }
           exit!(0)
         end
@@ -419,67 +493,6 @@ RSpec.describe Workspace::EventLog do
     it "returns file size in bytes" do
       event_log.append(type: "launched", project: "proj1")
       expect(event_log.size).to be > 0
-    end
-  end
-
-  describe "#warn_if_large" do
-    it "warns when file exceeds threshold" do
-      File.write(event_log_file, "x" * 1_100_000)
-      event_log.warn_if_large
-      expect(output.string).to include("event-log compact")
-    end
-
-    it "does not warn when file is small" do
-      event_log.append(type: "launched", project: "proj1")
-      event_log.warn_if_large
-      expect(output.string).to be_empty
-    end
-
-    it "uses threshold from global config" do
-      project_settings = instance_double(Workspace::ProjectSettings)
-      allow(project_settings).to receive(:load_global).and_return({"event_log_compact_threshold" => "1kb"})
-
-      el = described_class.new(config: config, project_settings: project_settings, error_output: output)
-      File.write(event_log_file, "x" * 4_000) # 2KB > 1KB threshold
-      el.warn_if_large
-      expect(output.string).to include("event-log compact")
-    end
-
-    it "does not warn when below custom threshold" do
-      project_settings = instance_double(Workspace::ProjectSettings)
-      allow(project_settings).to receive(:load_global).and_return({"event_log_compact_threshold" => "1mb"})
-
-      el = described_class.new(config: config, project_settings: project_settings, error_output: output)
-      File.write(event_log_file, "x" * 11_000) # 11KB < 1MB threshold
-      el.warn_if_large
-      expect(output.string).to be_empty
-    end
-  end
-
-  describe "#compact_threshold" do
-    it "parses kb" do
-      ps = instance_double(Workspace::ProjectSettings)
-      allow(ps).to receive(:load_global).and_return({"event_log_compact_threshold" => "50kb"})
-      el = described_class.new(config: config, project_settings: ps)
-      expect(el.compact_threshold).to eq(50 * 1024)
-    end
-
-    it "parses mb" do
-      ps = instance_double(Workspace::ProjectSettings)
-      allow(ps).to receive(:load_global).and_return({"event_log_compact_threshold" => "2mb"})
-      el = described_class.new(config: config, project_settings: ps)
-      expect(el.compact_threshold).to eq(2 * 1024 * 1024)
-    end
-
-    it "parses plain number as bytes" do
-      ps = instance_double(Workspace::ProjectSettings)
-      allow(ps).to receive(:load_global).and_return({"event_log_compact_threshold" => "5000"})
-      el = described_class.new(config: config, project_settings: ps)
-      expect(el.compact_threshold).to eq(5000)
-    end
-
-    it "falls back to default when not configured" do
-      expect(event_log.compact_threshold).to eq(Workspace::EventLog::DEFAULT_COMPACT_THRESHOLD)
     end
   end
 end

@@ -2414,6 +2414,36 @@
       "unit": "bytes"
     },
     {
+      "key": "event_log.compact_threshold",
+      "scope": "global",
+      "type": "size",
+      "value": null,
+      "masked": false,
+      "default": 102400,
+      "effective": 102400,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "daemon_restart",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "Size at which the lifecycle event log `~/.workspace-events.jsonl` (not the hook event files) compacts itself, keeping the old file as `.1` (default `100KB`, at least `16KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes. `off` (or `0`) turns off all automatic compaction, so the log then grows until `workspace event-log compact` is run by hand. Agent daemons read it when they start; see [`workspace event-log`](README.event-log.md)",
+      "problems": [],
+      "min": 16384,
+      "unit": "bytes"
+    },
+    {
       "key": "codex.hooks.install",
       "scope": "global",
       "type": "boolean",
@@ -2578,34 +2608,6 @@
         }
       ],
       "doc": "Default tmux pane layouts",
-      "problems": []
-    },
-    {
-      "key": "event_log_compact_threshold",
-      "scope": "global",
-      "type": "text",
-      "value": null,
-      "masked": false,
-      "default": null,
-      "effective": null,
-      "source": "default",
-      "source_file": null,
-      "line": null,
-      "column": null,
-      "resolve": "global",
-      "target_layer": null,
-      "affects": [
-        "main",
-        "main.worktree-a"
-      ],
-      "applies": "next_call",
-      "settable": false,
-      "sensitive": false,
-      "overridable_in": [
-        "global"
-      ],
-      "layers": [],
-      "doc": "Size warning threshold (e.g., \"10kb\", \"1mb\"). Default: 1mb",
       "problems": []
     },
     {

@@ -5,7 +5,7 @@ RSpec.describe Workspace::ConfigSchema do
 
   it "lists the settable keys in the order `config set` has always reported them" do
     expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto tmuxinator.template tmuxinator.worktree_template plan.stall_seconds go.branch_namer.enabled go.branch_namer.timeout go.branch_namer.command agent.kind agent.recovery.enabled agent.claude.trust_checkout agent.permissions.default agent.permissions.hang_guard agent.permissions.hang_guard_max_denies agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
-    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.sources workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt workflows.default_stall workflows.turn_failed_after workflows.permission_wait_limit workflows.downtime_after workflows.infra_retry.max workflows.recover.max_per_run events.rotate_size codex.hooks.install tmuxinator.backups.keep tmuxinator.backups.max_age])
+    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.sources workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt workflows.default_stall workflows.turn_failed_after workflows.permission_wait_limit workflows.downtime_after workflows.infra_retry.max workflows.recover.max_per_run events.rotate_size event_log.compact_threshold codex.hooks.install tmuxinator.backups.keep tmuxinator.backups.max_age])
   end
 
   describe "workflows.default_stall" do
@@ -125,7 +125,7 @@ RSpec.describe Workspace::ConfigSchema do
   end
 
   it "names the keys a running daemon only reads at startup" do
-    expect(described_class.restart_required_names).to eq(%w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi events.rotate_size])
+    expect(described_class.restart_required_names).to eq(%w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi events.rotate_size event_log.compact_threshold])
   end
 
   it "tells settable keys from keys that are only documented" do
@@ -408,6 +408,16 @@ RSpec.describe Workspace::ConfigSchema do
       expect { described_class.parse("events.rotate_size", "abc") }.to raise_error(ArgumentError, /expected a size/)
       expect(described_class.parse("events.rotate_size", "1MB")).to eq(1_048_576)
       expect(described_class.parse("events.rotate_size", "65536")).to eq(65_536)
+    end
+
+    it "parses event_log.compact_threshold as a size of at least 16KB, with off, false and 0 as nil" do
+      expect(described_class.parse("event_log.compact_threshold", "100KB")).to eq(102_400)
+      expect(described_class.parse("event_log.compact_threshold", "1MB")).to eq(1_048_576)
+      expect(described_class.parse("event_log.compact_threshold", "16KB")).to eq(16_384)
+      expect(["off", "OFF", false, "0", 0].map { |v| described_class.parse("event_log.compact_threshold", v) }).to all(be_nil)
+      expect { described_class.parse("event_log.compact_threshold", "15KB") }.to raise_error(ArgumentError, /at least 16KB/)
+      expect { described_class.parse("event_log.compact_threshold", "junk") }.to raise_error(ArgumentError, /expected a size/)
+      expect(described_class.default("event_log.compact_threshold")).to eq(102_400)
     end
 
     it "checks the go.branch_namer keys" do

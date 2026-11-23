@@ -296,6 +296,17 @@ module Workspace
     EVENTS_ROTATE_SIZE = ->(value) { ByteSize.parse_at_least(value, min: MIN_EVENTS_ROTATE_SIZE) }
     private_constant :EVENTS_ROTATE_SIZE
 
+    # Smallest `event_log.compact_threshold`, in bytes: below it the log would compact on almost every burst of events.
+    MIN_EVENT_LOG_COMPACT_THRESHOLD = 16 * 1024
+
+    # A size of at least 16KB; `off`, a YAML false and a zero all mean "never compact": nil.
+    EVENT_LOG_COMPACT_THRESHOLD = lambda do |value|
+      return nil if value == false || value.to_s.strip.casecmp?("off")
+      return nil if value.to_s.strip.match?(/\A0+\z/)
+      ByteSize.parse_at_least(value, min: MIN_EVENT_LOG_COMPACT_THRESHOLD)
+    end
+    private_constant :EVENT_LOG_COMPACT_THRESHOLD
+
     PERCENT = lambda do |value|
       pct = Integer(value)
       raise ArgumentError, "must be between 1 and 100" unless pct.between?(1, 100)
@@ -702,6 +713,8 @@ module Workspace
         doc: "How many times `workspace workflow recover` restarts a workflow run's steps on its own after a reboot or tmux restart took their panes (default `2`), counted per run. `0` turns automatic reboot recovery off"),
       Key.new(name: "events.rotate_size", scope: :global, type: :size, unit: "bytes", settable: true, examples: ["512KB", "5MB"], default: 5 * 1024 * 1024, restart: true, min: MIN_EVENTS_ROTATE_SIZE, parser: EVENTS_ROTATE_SIZE,
         doc: "Size at which a daemon's hook-event file rotates to `<workspace>.jsonl.1` (default `5MB`, at least `64KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes; see [`workspace events`](README.events.md)"),
+      Key.new(name: "event_log.compact_threshold", scope: :global, type: :size, unit: "bytes", settable: true, examples: ["100KB", "1MB", "off"], default: 100 * 1024, restart: true, min: MIN_EVENT_LOG_COMPACT_THRESHOLD, parser: EVENT_LOG_COMPACT_THRESHOLD,
+        doc: "Size at which the lifecycle event log `~/.workspace-events.jsonl` (not the hook event files) compacts itself, keeping the old file as `.1` (default `100KB`, at least `16KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes. `off` (or `0`) turns off all automatic compaction, so the log then grows until `workspace event-log compact` is run by hand. Agent daemons read it when they start; see [`workspace event-log`](README.event-log.md)"),
       Key.new(name: "codex.hooks.install", scope: :global, type: :boolean, settable: true, default: true, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` installs workspace's hooks into Codex's user-level `$CODEX_HOME/hooks.json` (default `true`). `false` leaves that file alone, `doctor` reports the hooks as turned off by config, and Codex panes read as `hook_mode: \"scrape\"`; `init`, `doctor --fix` and `hooks uninstall` are unaffected. See [`start`](README.start.md)"),
       # tmuxinator.backups.* bound the batches of tmuxinator config copies `template apply`, `restore` and `template backup` keep.
@@ -711,8 +724,6 @@ module Workspace
         doc: "How old a tmuxinator config backup batch may get before pruning removes it (a duration; unset: batches are only limited by `tmuxinator.backups.keep`); pruning never drops the newest batch holding a workspace or a template set `template import` replaced"),
       Key.new(name: "hooks", scope: :global, type: :mapping, sensitive: true, resolve: :none, settable: false, doc: "Global hooks applied to all projects"),
       Key.new(name: "layouts", scope: :global, type: :mapping, resolve: :merge, settable: false, doc: "Default tmux pane layouts"),
-      Key.new(name: "event_log_compact_threshold", scope: :global, type: :text, settable: false,
-        doc: "Size warning threshold (e.g., \"10kb\", \"1mb\"). Default: 1mb"),
       Key.new(name: "dev.configured", scope: :project, type: :boolean, default: false, resolve: :none, settable: false,
         doc: "Read-only, shown by `config show --json` only: `effective` is `true` when the project's `dev.up` is set, which is what makes `start` and `launch` send the `dev` pack. Not a key to write"),
       Key.new(name: "hooks", scope: :project, type: :mapping, sensitive: true, resolve: :own, applies: :next_event, settable: false,

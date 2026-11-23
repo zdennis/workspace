@@ -51,7 +51,6 @@ module Workspace
         @logger.debug { "state: reconstructing from event log" }
         @data = @event_log.reconstruct
         @logger.debug { "state: reconstructed #{@data.keys.size} project(s): #{@data.keys.join(", ")}" }
-        @event_log.warn_if_large
       else
         @logger.debug { "state: no event log or state file, starting empty" }
         @data = {}

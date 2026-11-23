@@ -19,17 +19,21 @@ module Workspace
   # exclusively, so no append lands in the old file while compact is
   # rewriting it.
   #
-  # An append that leaves the log over {DEFAULT_ROTATE_THRESHOLD} rotates it:
+  # An append that leaves the log over its compact threshold compacts it:
   # under the same exclusive lock the log is renamed to `<log>.1` (older
   # rotated files shift to `.2`, `.3`, and the one past {KEEP_ROTATED} is
   # deleted) and a new file, seeded with the compacted state, is renamed into
   # place. A reader that tails the log sees a new inode, as it does after
-  # {#compact}, and starts over on the new file.
+  # {#compact}, and starts over on the new file. The threshold is set by
+  # `event_log.compact_threshold`; nil turns the automatic compaction off.
+  # The first `compacted` line records the seed's size as `seed_bytes`, and an
+  # append skips the compaction while the log holds less than half the
+  # threshold beyond that seed, so a seed near the threshold can't compact on
+  # every append.
   class EventLog
-    DEFAULT_COMPACT_THRESHOLD = 1_048_576 # 1MB
-
-    # The log size (bytes) past which an append rotates it.
-    DEFAULT_ROTATE_THRESHOLD = 10 * 1_048_576
+    # The log size (bytes) past which an append compacts it, when none is given;
+    # equal to ConfigSchema's default for `event_log.compact_threshold`.
+    DEFAULT_AUTO_COMPACT_THRESHOLD = 100 * 1024
 
     # How many rotated files (`<log>.1` .. `<log>.N`) are kept.
     KEEP_ROTATED = 3
@@ -102,27 +106,26 @@ module Workspace
     STALE_PANE_SECONDS = 24 * 60 * 60
 
     # @param config [Workspace::Config] configuration for file paths
-    # @param project_settings [Workspace::ProjectSettings, nil] for reading global config
     # @param error_output [IO] error output stream for warnings (stderr)
     # @param logger [Workspace::Logger] debug logger
     # @param clock [#now] time source, injected for deterministic tests
-    # @param rotate_threshold [Integer] log size in bytes past which an append rotates it
+    # @param compact_threshold [Integer, nil, #call] log size in bytes past which an append compacts it, nil for
+    #   never, or a callable returning either; a callable is called once, on the first append
     # @param keep_rotated [Integer] how many rotated files to keep
     # @param lock_wait [Numeric] seconds an append or a compact waits for the log's lock
     # @param rotate_lock_wait [Numeric] seconds a rotation waits for the log's lock
     # @param renamer [#call] renames a file, given the old and new path
     # @param linker [#call] hard-links a file, given the existing and new path
-    def initialize(config:, project_settings: nil, error_output: $stderr, logger: Workspace::Logger.new, clock: Time,
-      rotate_threshold: DEFAULT_ROTATE_THRESHOLD, keep_rotated: KEEP_ROTATED, lock_wait: LOCK_WAIT, rotate_lock_wait: ROTATE_LOCK_WAIT,
+    def initialize(config:, error_output: $stderr, logger: Workspace::Logger.new, clock: Time,
+      compact_threshold: DEFAULT_AUTO_COMPACT_THRESHOLD, keep_rotated: KEEP_ROTATED, lock_wait: LOCK_WAIT, rotate_lock_wait: ROTATE_LOCK_WAIT,
       renamer: File.method(:rename), linker: File.method(:link))
       @renamer = renamer
       @linker = linker
-      @rotate_threshold = rotate_threshold
+      @compact_threshold_source = compact_threshold
       @keep_rotated = keep_rotated
       @lock_wait = lock_wait
       @rotate_lock_wait = rotate_lock_wait
       @config = config
-      @project_settings = project_settings
       @error_output = error_output
       @logger = logger
       @clock = clock
@@ -252,7 +255,9 @@ module Workspace
     RECENT_TAIL = 256 * 1024
 
     # The payloads of the events of one type and project written since a time, found in the
-    # last {RECENT_TAIL} bytes of the log (an event further back is not seen).
+    # last {RECENT_TAIL} bytes of the log (an event further back is not seen). When the
+    # current log is shorter than that, the rest is read from the end of the rotated
+    # `<log>.1`, so events written just before a rotation or compaction are still found.
     #
     # @param type [String] event type
     # @param project [String] project name
@@ -342,30 +347,6 @@ module Workspace
       File.exist?(@config.event_log_file)
     end
 
-    # Warns the user if the event log exceeds the size threshold.
-    #
-    # @return [void]
-    def warn_if_large
-      threshold = compact_threshold
-      return unless size > threshold
-      kb = (size / 1024.0).round(1)
-      @error_output.puts "Note: Event log is #{kb}KB. Run 'workspace event-log compact' to compact it."
-    end
-
-    # Returns the configured compaction threshold in bytes.
-    # Reads from global config `event_log_compact_threshold` (e.g., "10kb", "1mb").
-    # Falls back to DEFAULT_COMPACT_THRESHOLD.
-    #
-    # @return [Integer] threshold in bytes
-    def compact_threshold
-      return DEFAULT_COMPACT_THRESHOLD unless @project_settings
-      raw = @project_settings.load_global["event_log_compact_threshold"]
-      return DEFAULT_COMPACT_THRESHOLD unless raw
-      parse_size(raw.to_s)
-    rescue
-      DEFAULT_COMPACT_THRESHOLD
-    end
-
     private
 
     # States that mean the pane has no agent any more, so nothing to carry
@@ -373,18 +354,39 @@ module Workspace
     GONE_STATES = ["closed", "exited"].freeze
     private_constant :GONE_STATES
 
-    # The whole lines in the last {RECENT_TAIL} bytes; a partial first line is dropped.
+    # The whole lines in the last {RECENT_TAIL} bytes, counting the rotated
+    # `<log>.1` when the current file is shorter than that; a partial first line is dropped.
     def tail_lines
-      return [] unless File.exist?(@config.event_log_file)
-      File.open(@config.event_log_file, "rb") do |file|
+      log = @config.event_log_file
+      return [] unless File.exist?(log)
+      File.open(log, "rb") do |file|
         offset = [file.size - RECENT_TAIL, 0].max
         file.seek(offset)
-        lines = file.read.to_s.force_encoding(Encoding::UTF_8).lines
+        lines = tail_text(file).lines
         lines.shift if offset.positive?
-        lines.map(&:strip).reject(&:empty?)
+        rotated_tail_lines(RECENT_TAIL - file.size) + lines.map(&:strip).reject(&:empty?)
       end
     rescue SystemCallError, IOError => e
       warn_unreadable(e)
+      []
+    end
+
+    def tail_text(file)
+      file.read.to_s.force_encoding(Encoding::UTF_8)
+    end
+
+    # The whole lines in the last `room` bytes of `<log>.1`; none when there is no room or no file.
+    def rotated_tail_lines(room)
+      rotated = "#{@config.event_log_file}.1"
+      return [] unless room.positive? && File.file?(rotated)
+      File.open(rotated, "rb") do |file|
+        offset = [file.size - room, 0].max
+        file.seek(offset)
+        lines = tail_text(file).lines
+        lines.shift if offset.positive?
+        lines.map(&:strip).reject(&:empty?)
+      end
+    rescue SystemCallError, IOError
       []
     end
 
@@ -449,18 +451,14 @@ module Workspace
       tmp = "#{@config.event_log_file}.#{Process.pid}.tmp"
       remove(tmp)
       timestamp = @clock.now.utc.iso8601(3)
-      File.open(tmp, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |f|
-        state.each do |project, data|
-          event = {
-            "timestamp" => timestamp,
-            "type" => "compacted",
-            "project" => project,
-            "data" => data
-          }
-          f.puts JSON.generate(event)
-        end
-        pane_states.each { |event| f.puts JSON.generate(event) }
+      seeds = state.map { |project, data| {"timestamp" => timestamp, "type" => "compacted", "project" => project, "data" => data} }
+      lines = (seeds + pane_states).map { |event| JSON.generate(event) + "\n" }
+      unless seeds.empty?
+        bytes = lines.sum(&:bytesize)
+        bytes += %(,"seed_bytes":#{bytes}).bytesize
+        lines[0] = JSON.generate(seeds.first.merge("seed_bytes" => bytes)) + "\n"
       end
+      File.open(tmp, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |f| f.write(lines.join) }
       shift_rotated if rotate
       @renamer.call(tmp, @config.event_log_file)
       state
@@ -473,15 +471,44 @@ module Workspace
     # just keeps growing until the next try. The size is checked again under
     # the exclusive lock, so of several processes that notice at once only the
     # first rotates, and one that can't get the lock leaves it to the others.
+    # A log holding less than half the threshold beyond its own seed is left
+    # alone, so a seed near or over the threshold does not compact on every append.
     def rotate_if_large
-      return unless size > @rotate_threshold
+      threshold = auto_compact_threshold
+      return unless threshold && size > threshold && size - seed_bytes >= threshold / 2
       with_lock(File::LOCK_EX, wait: @rotate_lock_wait) do |locked|
-        next unless locked && size > @rotate_threshold
+        next unless locked && size > threshold
+        next if size - seed_bytes < threshold / 2
         @logger.debug { "event_log: rotating #{size} bytes" }
         rewrite(rotate: true)
       end
     rescue => e
       @logger.debug { "event_log: could not rotate (#{e.class}: #{e.message})" }
+    end
+
+    # The size past which an append compacts the log, nil for never. A callable
+    # is called once per instance, so config is not read on every append; one that
+    # raises turns the automatic compaction off for the instance.
+    def auto_compact_threshold
+      return @auto_compact_threshold if defined?(@auto_compact_threshold)
+      source = @compact_threshold_source
+      @auto_compact_threshold = begin
+        source.respond_to?(:call) ? source.call : source
+      rescue => e
+        @logger.debug { "event_log: could not read the compact threshold, compaction is off (#{e.class}: #{e.message})" }
+        nil
+      end
+    end
+
+    # The seed size the last compaction recorded on the log's first line; 0 when
+    # there is none (a log never compacted, or one compacted before it was recorded).
+    def seed_bytes
+      first = File.open(@config.event_log_file, "rb") { |f| f.gets }
+      event = first && JSON.parse(first)
+      bytes = event.is_a?(Hash) && event["type"] == "compacted" && event["seed_bytes"]
+      bytes.is_a?(Integer) ? bytes : 0
+    rescue JSON::ParserError, SystemCallError, IOError, EncodingError
+      0
     end
 
     # Moves each rotated file up one number, dropping the oldest, then links
@@ -599,27 +626,6 @@ module Workspace
       end
     rescue SystemCallError, IOError
       false
-    end
-
-    # Parses a human-readable size string into bytes.
-    # Supports: "10kb", "1mb", "500b", "1024" (plain number = bytes).
-    #
-    # @param str [String] size string
-    # @return [Integer] size in bytes
-    def parse_size(str)
-      str = str.strip.downcase
-      case str
-      when /\A(\d+(?:\.\d+)?)\s*kb\z/
-        ($1.to_f * 1024).to_i
-      when /\A(\d+(?:\.\d+)?)\s*mb\z/
-        ($1.to_f * 1024 * 1024).to_i
-      when /\A(\d+(?:\.\d+)?)\s*gb\z/
-        ($1.to_f * 1024 * 1024 * 1024).to_i
-      when /\A(\d+(?:\.\d+)?)\s*b?\z/
-        $1.to_i
-      else
-        DEFAULT_COMPACT_THRESHOLD
-      end
     end
   end
 end
