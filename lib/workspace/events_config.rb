@@ -1,5 +1,5 @@
 module Workspace
-  # Reads the global `events:` block, as written by `workspace config set`.
+  # Reads the global `events:` and `event_log:` blocks, as written by `workspace config set`.
   #
   # A bad stored value never stops the daemon: it falls back to the default
   # with a warning, since `config set` already rejects bad input.
@@ -19,6 +19,18 @@ module Workspace
       value.nil? ? default : ConfigSchema.parse("events.rotate_size", value)
     rescue Workspace::ConfigParseError, ArgumentError => e
       @error_output.puts "Warning: events.rotate_size: #{e.message} Using #{ByteSize.humanize(default)}."
+      default
+    end
+
+    # @return [Integer, nil] bytes at which the lifecycle event log compacts:
+    #   `event_log.compact_threshold`, nil when it is `off`, or its default when
+    #   unset, invalid or unreadable
+    def compact_threshold
+      default = ConfigSchema.default("event_log.compact_threshold")
+      value = @config_resolver.view(workspace: "", upto: "global").raw("event_log.compact_threshold")
+      value.nil? ? default : ConfigSchema.parse("event_log.compact_threshold", value)
+    rescue Workspace::ConfigParseError, ArgumentError => e
+      @error_output.puts "Warning: event_log.compact_threshold: #{e.message} Using #{ByteSize.humanize(default)}."
       default
     end
   end

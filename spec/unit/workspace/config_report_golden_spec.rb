@@ -52,7 +52,7 @@ RSpec.describe Workspace::ConfigReport, "golden documents" do
         now = JSON.parse(File.read(File.join(fixtures, new_file)))
         added = %w[overridable_in layers doc choices min max unit]
         # Keys declared since v1 have no old document to compare with.
-        since_v1 = %w[alerts.workflow start.copy_files commands.test_files launch.restore_window_position launch.window_width_percent events.rotate_size spine.template spine.auto codex.hooks.install
+        since_v1 = %w[alerts.workflow start.copy_files commands.test_files launch.restore_window_position launch.window_width_percent events.rotate_size event_log.compact_threshold spine.template spine.auto codex.hooks.install
           library.install.skills_dir library.install.agents_dir library.install.user_skills_dir library.install.user_agents_dir
           tmuxinator.template tmuxinator.worktree_template tmuxinator.backups.keep tmuxinator.backups.max_age
           agent.kind agent.recovery.enabled agent.claude.trust_checkout agent.permissions.default agent.permissions.rules agent.permissions.hang_guard agent.permissions.hang_guard_max_denies agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi

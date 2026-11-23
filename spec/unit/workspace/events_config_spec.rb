@@ -34,4 +34,32 @@ RSpec.describe Workspace::EventsConfig do
     expect(config.rotate_size).to eq(5 * 1024 * 1024)
     expect(error_output.string).to include("Warning: events.rotate_size")
   end
+
+  describe "#compact_threshold" do
+    it "defaults to 100KB" do
+      expect(config.compact_threshold).to eq(100 * 1024)
+      expect(error_output.string).to be_empty
+    end
+
+    it "reads event_log.compact_threshold" do
+      global["event_log"] = {"compact_threshold" => "1MB"}
+      expect(config.compact_threshold).to eq(1_048_576)
+    end
+
+    it "is nil when off" do
+      global["event_log"] = {"compact_threshold" => "off"}
+      expect(config.compact_threshold).to be_nil
+
+      global["event_log"] = {"compact_threshold" => false}
+      expect(config.compact_threshold).to be_nil
+      expect(error_output.string).to be_empty
+    end
+
+    it "warns and uses the default for a value `config set` would refuse" do
+      global["event_log"] = {"compact_threshold" => "1KB"}
+
+      expect(config.compact_threshold).to eq(100 * 1024)
+      expect(error_output.string).to match(/Warning: event_log.compact_threshold: .*at least 16KB.*Using 100KB/)
+    end
+  end
 end
