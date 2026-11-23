@@ -1,0 +1,10 @@
+The step's work is finished and the files it must leave are in place.
+The step's work is finished and the files it must leave are in place.
+The step's work is finished and the files it must leave are in place.
+The step's work is finished and the files it must leave are in place.
+The step's work is finished and the files it must leave are in place.
+The step's work is finished and the files it must leave are in place.
+The step's work is finished and the files it must leave are in place.
+The step's work is finished and the files it must leave are in place.
+
+WORKFLOW_STATUS: done — T1 to T4 done; commits a1b2c3d and e4f5a6b add the window change with specs, the note's Results section is written, the branch is pushed, and the reader spec, evaluation spec and prompt spec all pass with lint clean

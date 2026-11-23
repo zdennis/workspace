@@ -99,6 +99,23 @@ RSpec.describe Workspace::WorkflowReportedStatus do
     expect(parse("\xFF\xFE\nWORKFLOW_STATUS: done".b.force_encoding("UTF-8"))).to eq(state: "done", detail: "")
   end
 
+  # Synthetic final messages in the shapes S2 measured; the prose before each line puts it past the 200-char tail.
+  describe "golden final-message shapes" do
+    golden = File.join(PROJECT_ROOT, "spec", "fixtures", "workflow_reported_status_golden")
+    expected = JSON.parse(File.read(File.join(golden, "expected.json")))
+
+    it "has an expected parse for every fixture and a fixture for every expected parse" do
+      expect(Dir.children(golden).grep(/\.txt\z/).sort).to eq(expected.keys.sort)
+    end
+
+    expected.each do |name, want|
+      it "parses #{name} as expected" do
+        got = parse(File.read(File.join(golden, name)))
+        expect(got&.transform_keys(&:to_s)).to eq(want)
+      end
+    end
+  end
+
   describe ".words and .shown" do
     it "words a report as state, or state and detail" do
       expect(described_class.words({"state" => "stuck", "detail" => "no access"})).to eq("stuck: no access")
