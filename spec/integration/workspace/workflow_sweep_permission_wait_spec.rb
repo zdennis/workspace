@@ -347,6 +347,7 @@ RSpec.describe Workspace::WorkflowSweep, "a permission dialog nobody answers" do
     expect(run["current"]).to eq("verify")
     expect(stalls).to be_empty
   end
+
   it "stops once the pane has been quiet for the window after a redraw minutes after the dialog opened" do
     begin_run
     advance(4000)
@@ -361,5 +362,23 @@ RSpec.describe Workspace::WorkflowSweep, "a permission dialog nobody answers" do
 
     expect(row).to include("outcome" => "timed_out", "cause" => "permission_wait")
     expect(run.dig("reason", "details")).to include("code" => "permission_wait_timeout", "waited" => 3800)
+  end
+
+  it "gives workflow sweep --json the focus, resume and cancel next actions for the stopped run, naming the dialog's pane" do
+    begin_run
+    advance(4000)
+    dialog_since(3700)
+    actions = Workspace::WorkflowSweepActions.new(store: store, panes: panes, status: nil, clock: -> { now.first })
+    command = Workspace::Commands::Workflow.new(lint: nil, catalog: nil, engine: engine, status: nil, store: store, panes: panes, files: nil, run_files: nil,
+      process_tree: nil, lock_holder: nil, sweep: sweep_with, sweep_actions: actions, output: StringIO.new)
+
+    result = command.sweep(json: true)
+
+    expect(result[:results].first).to include("outcome" => "timed_out", "cause" => "permission_wait")
+    expect(result.dig(:extra, "next_actions")).to eq([
+      {"action" => "focus", "args" => ["app.worktree-x", "--pane", "%5"], "needs" => [], "why" => "permission_wait"},
+      {"action" => "workflow resume", "args" => ["wr_1"], "needs" => [], "why" => "permission_wait"},
+      {"action" => "workflow cancel", "args" => ["wr_1"], "needs" => [], "why" => "permission_wait"}
+    ])
   end
 end

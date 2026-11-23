@@ -147,6 +147,42 @@ RSpec.describe Workspace::WorkflowSweepActions do
     end
   end
 
+  describe "a stop at a dialog nobody answered (cause permission_wait)" do
+    def dialog_actions(stored_run, row_fields)
+      allow(store).to receive(:run).and_return(Workspace::WorkflowRun.from_h(stored_run))
+      call([row(nil, "cause" => "permission_wait", "action" => "fail", **row_fields)])
+    end
+
+    it "focuses the pane the failed step's reason names, then offers resume and cancel" do
+      failed = {"id" => "wr_1", "workspace" => "api.worktree-x", "state" => "waiting", "current" => "plan",
+                "reason" => {"code" => "failed_check", "details" => {"cause" => "permission_wait", "code" => "permission_wait_timeout", "pane" => "%5"}},
+                "steps" => {"plan" => {"state" => "failed"}}}
+
+      expect(dialog_actions(failed, "outcome" => "timed_out")).to eq([
+        {"action" => "focus", "args" => ["api.worktree-x", "--pane", "%5"], "needs" => [], "why" => "permission_wait"},
+        {"action" => "workflow resume", "args" => ["wr_1"], "needs" => [], "why" => "permission_wait"},
+        {"action" => "workflow cancel", "args" => ["wr_1"], "needs" => [], "why" => "permission_wait"}
+      ])
+    end
+
+    it "focuses a stopped round's review pane" do
+      stopped = {"id" => "wr_1", "workspace" => "api.worktree-x", "state" => "waiting", "current" => "plan",
+                 "reason" => {"code" => "review_incomplete", "details" => {"step" => "plan"}},
+                 "steps" => {"plan" => {"state" => "reviewing", "review" => {"round" => 1, "pane" => "%9"}}}}
+
+      found = dialog_actions(stopped, "outcome" => "stopped", "action" => "evaluate")
+
+      expect(found.map { |each| [each["action"], each["args"]] }).to eq([["focus", ["api.worktree-x", "--pane", "%9"]], ["workflow resume", ["wr_1"]], ["workflow cancel", ["wr_1"]]])
+    end
+
+    it "offers resume and cancel with no focus when the pane can't be read, and nothing for a round decided on its verdicts" do
+      allow(store).to receive(:run).and_raise(Workspace::Error.new("gone", code: "unknown_run"))
+
+      expect(call([row(nil, "outcome" => "timed_out", "cause" => "permission_wait")]).map { |each| each["action"] }).to eq(["workflow resume", "workflow cancel"])
+      expect(call([row(nil, "outcome" => "evaluated", "cause" => "permission_wait")])).to eq([])
+    end
+  end
+
   it "suggests the real sweep once after a dry run, saying how many changes it would make" do
     dry = row(nil, "outcome" => "dry_run", "action" => "record")
 

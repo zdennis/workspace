@@ -2,6 +2,9 @@ module Workspace
   # What a person can do about the rows of a `workflow sweep` pass, for `--json`'s `next_actions`. Every action
   # carries the row's reason (or, for a stall the pass recorded, its cause) as `why`.
   #
+  # A step failed or a review round stopped at a dialog nobody answered (cause `permission_wait`) gives `focus` on the
+  # dialog's pane, `workflow resume` and `workflow cancel`.
+  #
   # Rows that clear themselves, `refused` (the caller is the run's own pane), `failed` and closed orphan review
   # windows give none. `launch` needs a workspace name, so a row without one gets none; a row without a run id,
   # or whose run or pane cannot be read, gets none of the actions that name the run or its pane.
@@ -44,6 +47,7 @@ module Workspace
       return [] unless id
       return scheduled_actions(id, row["cause"], row["step"]) if row["outcome"] == "recorded" && row["action"] == "infra_retry_scheduled"
       return recorded_actions(id, why, row["step"]) if row["outcome"] == "recorded"
+      return dialog_actions(row, id) if row["cause"] == "permission_wait" && %w[timed_out stopped].include?(row["outcome"])
       return [] unless row["outcome"] == "nothing"
       reason_actions(row, id, why)
     end
@@ -67,6 +71,27 @@ module Workspace
         []
       end
       [NextAction.build("workflow resume", id, why: why)] + restart + [NextAction.build("workflow cancel", id, why: why)]
+    end
+
+    # A step failed, or a review round stopped, at a dialog nobody answered (cause `permission_wait`): the dialog is
+    # still up, so first focus its pane to deny or close it (or stop the agent), then resume or cancel the run. A
+    # pane that can't be read gives no focus.
+    def dialog_actions(row, id)
+      why = row["cause"]
+      pane = lookup { dialog_pane(id, row["step"]) }
+      focus = (row["workspace"] && pane) ? [NextAction.build("focus", row["workspace"], "--pane", pane, why: why)] : []
+      focus + [NextAction.build("workflow resume", id, why: why), NextAction.build("workflow cancel", id, why: why)]
+    end
+
+    # The pane the dialog is in: the one a failed step's `permission_wait` reason names (its binding is given up by
+    # then), else the stopped round's review pane.
+    def dialog_pane(id, step)
+      stored = @store.run(id)
+      at = step || stored.current
+      details = stored.reason_for(at)&.dig("details")
+      named = details["pane"] if details.is_a?(Hash) && details["cause"] == "permission_wait"
+      review = stored.step(at)&.review
+      named || (review.is_a?(Hash) ? review["pane"] : nil)
     end
 
     def reason_actions(row, id, why)

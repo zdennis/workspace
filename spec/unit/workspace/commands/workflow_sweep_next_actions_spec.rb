@@ -14,6 +14,19 @@ RSpec.describe Workspace::Commands::Workflow, "#sweep next_actions" do
     expect(sweep_actions).to have_received(:call).with([{"outcome" => "nothing"}], run: nil, name: "app")
   end
 
+  it "puts a permission-wait stop's focus, resume and cancel in extra.next_actions" do
+    stopped = {"workspace" => "app", "outcome" => "timed_out", "reason" => nil, "run_id" => "wr_1", "step" => "plan", "cause" => "permission_wait", "action" => "fail"}
+    store = instance_double(Workspace::WorkflowRunStore, run: Workspace::WorkflowRun.from_h("id" => "wr_1", "workspace" => "app", "state" => "waiting", "current" => "plan",
+      "reason" => {"code" => "failed_check", "details" => {"cause" => "permission_wait", "pane" => "%5"}}, "steps" => {"plan" => {"state" => "failed"}}))
+    actions = Workspace::WorkflowSweepActions.new(store: store, panes: nil, status: nil)
+    command = described_class.new(lint: nil, catalog: nil, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil,
+      process_tree: nil, lock_holder: nil, sweep: double("sweep", call: [stopped]), sweep_actions: actions, output: StringIO.new)
+
+    found = command.sweep(json: true, name: "app").dig(:extra, "next_actions")
+
+    expect(found.map { |each| [each["action"], each["args"]] }).to eq([["focus", ["app", "--pane", "%5"]], ["workflow resume", ["wr_1"]], ["workflow cancel", ["wr_1"]]])
+  end
+
   it "builds no next actions for text output" do
     command = described_class.new(lint: nil, catalog: nil, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil,
       process_tree: nil, lock_holder: nil, sweep: sweep, sweep_actions: nil, output: StringIO.new)
