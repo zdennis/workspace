@@ -216,6 +216,25 @@ exec env FOO=1 claude --model sonnet "$@"
 
 The command is used by every config written from then on, and at once by what workspace types itself: `restore`, `reactivate` and `--spawn`. A pane whose program is the configured command counts as that agent for `sessions`, `handoff` and the rest. A tmuxinator template's Claude Code pane is recognised by its program (`claude`), not by one flag, so a hand-edited tmuxinator template still renders with the configured command in each half (an agent pane line is a shell chain such as `claude --continue || claude`: the first half runs, and the second runs if the first exits with an error); your tmuxinator templates are not changed. Configs written earlier keep the pane they have, including one where only the fallback half still runs `claude`; `workspace doctor` lists them and `workspace doctor --fix` rewrites the pane line (see [`doctor`](README.doctor.md#agent-pane-commands)). After upgrading, `workspace doctor` also reports configs whose fallback half still runs the old program; `workspace doctor --fix` rewrites them, keeping a backup beside each file, and a running session needs a relaunch. Or do nothing: `launch` fixes a stopped project when it next starts it. `launch` rewrites it, but only just before it starts a session that is not running (see [`launch`](README.launch.md#agent-pane-refresh)). The `agent.commands.*` keys only take effect in an agent daemon the next time it starts, and the value can carry `VAR=value` words, so `config show --json` masks it. Quote a program path that has a space (`"/Users/me/my bin/claude-dev" --model x`); the command is still typed as written.
 
+### Trusting a checkout for Claude Code
+
+Claude Code asks "Do you trust the files in this folder?" the first time it starts in a directory, and waits there until someone answers. A headless launch has no one to answer, so its prompt wait ends with `agent prompt never appeared`. `agent.claude.trust_checkout` answers the dialog ahead of time:
+
+```sh
+workspace config set --scope global agent.claude.trust_checkout true
+# or one project, or one worktree:
+workspace config set --scope project --name api agent.claude.trust_checkout true
+```
+
+When the key is `true` and the workspace's main agent is `claude`, `launch`, `start` (and what launches through them: `relaunch`, `restore`, `promote --launch`) and `add` set `projects["<checkout>"].hasTrustDialogAccepted` to `true` in Claude Code's own config file before the agent starts, and, when they newly set it, print `Note: marked <checkout> as trusted in <file> (agent.claude.trust_checkout).` (on stderr under `--json`; `add --json` rows also carry [`claude_trust`](README.add.md)).
+
+- **The file** is `$CLAUDE_CONFIG_DIR/.claude.json` when `CLAUDE_CONFIG_DIR` is set to an absolute path, else `~/.claude.json`. Claude Code moves its config directory with that variable; that it reads `.claude.json` from there too is assumed, not confirmed. A symlinked file is written through to its target.
+- **`<checkout>`** is the checkout's real path (`/tmp/demo` is recorded as `/private/tmp/demo`), and only that directory: never the parent repository, a main checkout or `$HOME`.
+- **What is left alone.** Every other key in the file stays as it was. Nothing is written when the file is missing (Claude Code has never run), when the flag is already `true`, or when the key is off or the agent is another. A file that doesn't parse as JSON, or whose `projects` isn't an object, is left unchanged with a warning, and so is one that can't be written. A failure never stops the launch: the agent just meets the dialog.
+- **The write** goes through a temp file and a rename, keeping the file's mode, then reads the file back. A running Claude Code rewrites this file often and its lock can't be taken, so when another writer replaced the file in between, the write is done once more, then given up with a warning.
+
+**Why it is off by default.** Trusting a folder lets Claude Code act on what the folder holds without asking: its `.claude/settings.json` (permissions, and hooks that run shell commands), its MCP servers and its `CLAUDE.md`. Turn it on only for repositories whose contents you would accept running on your machine. A checkout of a stranger's pull request is not one of them until you have read it.
+
 ### Permission policy
 
 `agent.permissions` lets configuration answer a coding agent's permission dialogs, so a request you have already decided on never waits for you. It has two keys, edited by hand in the config file of the layer you want (`config set` doesn't write a list): `~/.config/workspace/config.yml` (global), `~/.config/workspace/projects/<project>.yml` (project) or `~/.config/workspace/projects/<project>.worktree-<name>.yml` (one worktree); see [Layers](#layers) for which file a workspace reads.
