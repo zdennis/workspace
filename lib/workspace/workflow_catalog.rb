@@ -173,11 +173,12 @@ module Workspace
     # lookup serves a whole `extends:` chain, each file asking from its own layer.
     #
     # @param project [String, nil] the project whose definitions are searched first
-    # @param file_layer [String, nil] the layer a definition read by path (source "file") sits in, per {#scope_of}; nil searches from the top
+    # @param file_layer [String, nil] the layer a definition read by path or from stdin (source "file" or "stdin") sits in,
+    #   per {#scope_of} or the layer `add` and `update` write to; nil searches from the top
     # @return [#call] `(name, layer:)` answering what {#import_step} answers
     def import_lookup(project = nil, file_layer: nil)
       lambda do |name, layer:|
-        layer = file_layer if layer == "file"
+        layer = file_layer if layer == "file" || layer == "stdin"
         import_step(name, layer: layer, project: project)
       end
     end

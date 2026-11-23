@@ -141,14 +141,15 @@ RSpec.describe Workspace::WorkflowImports do
       expect(lookups).to eq([])
     end
 
-    it "refuses a PATH that doesn't end in .yml, and a NAME off the id pattern" do
+    it "refuses a PATH that doesn't end in .yml or holds a NUL byte, and a NAME off the id pattern" do
       importer = imports
-      importer.expand({"steps" => {"a" => {"import" => "lib.yaml#verify"}, "b" => {"import" => "lib.yml#Bad Name"}, "c" => {"import" => 3}}})
+      importer.expand({"steps" => {"a" => {"import" => "lib.yaml#verify"}, "b" => {"import" => "lib.yml#Bad Name"}, "c" => {"import" => 3}, "d" => {"import" => "li\0b.yml#verify"}}})
 
       expect(importer.failure).to eq([
         "step a: import must be a step name (#{Workspace::IdPatterns::WORKFLOW_ID_RULE}) or PATH.yml#NAME, got \"lib.yaml#verify\"",
         "step b: import must be a step name (#{Workspace::IdPatterns::WORKFLOW_ID_RULE}) or PATH.yml#NAME, got \"lib.yml#Bad Name\"",
-        "step c: import must be a step name (#{Workspace::IdPatterns::WORKFLOW_ID_RULE}) or PATH.yml#NAME, got 3"
+        "step c: import must be a step name (#{Workspace::IdPatterns::WORKFLOW_ID_RULE}) or PATH.yml#NAME, got 3",
+        "step d: import must be a step name (#{Workspace::IdPatterns::WORKFLOW_ID_RULE}) or PATH.yml#NAME, got \"li\\u0000b.yml#verify\""
       ])
     end
   end

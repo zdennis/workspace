@@ -29,7 +29,7 @@ module Workspace
     # Host keys that place the step rather than change it, so they are never counted as overrides.
     PLACEMENT_KEYS = %w[after].freeze
 
-    FILE_REFERENCE = /\A(?<path>.+\.yml)#(?<name>[^#]+)\z/
+    FILE_REFERENCE = /\A(?<path>[^\0]+\.yml)#(?<name>[^#]+)\z/
 
     # The faults of a step library file as a whole: its text, top-level keys, `schema_version`, and each step's
     # shape and refused keys. The one check an import, `workflow validate` on a library and the source installer share.

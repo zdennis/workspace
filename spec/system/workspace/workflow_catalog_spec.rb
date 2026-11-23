@@ -666,6 +666,14 @@ RSpec.describe Workspace::WorkflowCatalog do
       expect(imported(with_sources.find("shared", project: "app"))).to eq([["source:1", File.join(src1, "steps", "verify.yml")], src1])
     end
 
+    it "searches a draft read from stdin or a file from the layer it will be written to, not the project's" do
+      library(project_dir, project_dir)
+      lookup = catalog.import_lookup("app", file_layer: "global")
+
+      %w[stdin file].each { |source| expect(lookup.call("verify", layer: source)["path"]).to be_nil }
+      expect(catalog.import_lookup("app").call("verify", layer: "stdin")["path"]).to eq(File.join(project_dir, "steps", "verify.yml"))
+    end
+
     it "lists every layer searched when no layer has the library" do
       write(global_dir, "mine", host)
 
