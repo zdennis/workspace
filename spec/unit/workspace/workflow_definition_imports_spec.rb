@@ -116,6 +116,17 @@ RSpec.describe Workspace::WorkflowDefinition do
       library("verify", verify_library.sub("produces: [verify.md]", "produces: [checked.md]"))
       expect(parse(host("check:\n  import: verify\n")).resolved_sha256).not_to eq(before)
     end
+
+    it "keeps resolved_sha256 when only a prompt file the library step names changes, and moves it when the library step changes" do
+      write("global/steps/verify.md", "Verify from the library.\n")
+      by_file = verify_library.sub("prompt: Run the tests for {{inputs.task}}.", "prompt_file: verify.md")
+      library("verify", by_file)
+      before = parse(host("check:\n  import: verify\n")).resolved_sha256
+      write("global/steps/verify.md", "Verify some other way.\n")
+      expect(parse(host("check:\n  import: verify\n")).resolved_sha256).to eq(before)
+      library("verify", by_file.sub("Verify", "Verify it"))
+      expect(parse(host("check:\n  import: verify\n")).resolved_sha256).not_to eq(before)
+    end
   end
 
   describe "R2: one library step imported twice" do

@@ -5415,6 +5415,16 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json["workflow"]["steps"].map { |step| [step["id"], step["prompt"]] }).to eq([["look", "Research it."]])
     end
 
+    it "validates from stdin, resolving a PATH#NAME import relative to the current directory" do
+      FileUtils.mkdir_p(File.join(dir, "here", "lib"))
+      File.write(File.join(dir, "here", "lib", "mine.yml"), "steps:\n  mine:\n    prompt: From here.\n")
+      input.string = "title: Flow\nsteps:\n  look:\n    import: ./lib/mine.yml#mine\n"
+
+      Dir.chdir(File.join(dir, "here")) { command.validate(path: "-", json: true) }
+
+      expect(json["workflow"]["steps"].map { |step| [step["id"], step["prompt"]] }).to eq([["look", "From here."]])
+    end
+
     it "validates a file by path" do
       command.validate(path: draft_file, json: true)
 
