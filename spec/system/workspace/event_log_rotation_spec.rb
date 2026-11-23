@@ -263,6 +263,8 @@ RSpec.describe Workspace::EventLog, "rotation" do
       expect(statuses.map(&:success?)).to all(be(true))
       expect(File.exist?("#{event_log_file}.1")).to be(true)
       expect(File.exist?("#{event_log_file}.2")).to be(false)
+      written = [event_log_file, "#{event_log_file}.1"].flat_map { |f| lines_of(f) }.select { |e| e["type"] == "dispatched" }
+      expect(written.map { |e| e["project"] }.sort).to eq(["seed", "w1", "w2"])
     end
 
     it "replays the same state after an automatic compaction as before it" do
@@ -282,6 +284,34 @@ RSpec.describe Workspace::EventLog, "rotation" do
 
       expect { log.append(type: "dispatched", project: "proj1", data: {"pad" => "x" * 2_000}) }.not_to raise_error
       expect(lines_of(event_log_file).map { |e| e["type"] }).to eq(["dispatched"])
+    end
+
+    it "does not compact again while the log is mostly a seed over the threshold, and resumes once enough is added" do
+      log = log_with(threshold)
+      15.times { |i| log.append(type: "launched", project: "p#{i}", data: {"pad" => "z" * 80}) }
+      log.compact
+      seed = File.size(event_log_file)
+      expect(seed).to be > threshold
+      expect(lines_of(event_log_file).first["seed_bytes"]).to be_within(2).of(seed)
+      inode = File.stat(event_log_file).ino
+
+      3.times { log.append(type: "dispatched", project: "p0") }
+      expect(File.stat(event_log_file).ino).to eq(inode)
+
+      10.times { log.append(type: "dispatched", project: "p0", data: {"pad" => "x" * 50}) }
+      expect(File.stat(event_log_file).ino).not_to eq(inode)
+      expect(lines_of(event_log_file).first["seed_bytes"]).to be_within(2).of(seed)
+      expect(log.reconstruct["p0"]).to eq({"pad" => "z" * 80})
+    end
+
+    it "compacts past 100KB when built with no threshold, the same default ConfigSchema gives" do
+      expect(described_class::DEFAULT_AUTO_COMPACT_THRESHOLD).to eq(Workspace::ConfigSchema.default("event_log.compact_threshold"))
+      log = described_class.new(config: config, error_output: errors)
+      log.append(type: "dispatched", project: "proj1", data: {"pad" => "x" * (100 * 1024 - 200)})
+      expect(File.exist?("#{event_log_file}.1")).to be(false)
+
+      log.append(type: "dispatched", project: "proj1", data: {"pad" => "x" * 300})
+      expect(File.exist?("#{event_log_file}.1")).to be(true)
     end
   end
 end
