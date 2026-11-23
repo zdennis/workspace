@@ -448,6 +448,7 @@ New per-file detail goes there, never here.
 - `script/hook-timeline` — Times a headless Claude Code session's hooks through logging shims and prints per-hook medians, the PreToolUse-to-PostToolUse gap X and the predicted Read delta.
 - `script/hook-latency` — Prints n, median and p90 of a workspace's tool_started-to-tool_finished delta from its hook event log, or with `--process N` the median wall time of `session-event` run in a throwaway HOME.
 - `script/permission-replay` — Replays logged Bash permission dialogs through `PermissionPolicy` offline, under today's config and an optional `--rules` candidate, to measure what a rule set would auto-allow.
+- `script/r4-damaged-run` — Applies damaged-run-file and stale-lock faults to a run holding a lock in a throwaway HOME and prints how each `bin/workspace` command met them, as a Markdown table or `--json`.
 
 - State tracked in `~/.workspace-state.json`
 - Configs installed to `~/.config/tmuxinator/`

@@ -133,6 +133,7 @@ module Workspace
     # @param log_path [String, nil] the launchd entry's `sweep.log`; cut to its last `log_keep` bytes at the start of a pass
     #   when over `log_limit` (nil: left alone)
     # @param last_path [String, nil] `sweep-last.json`, which every pass but a dry run writes at its end (nil: none)
+    # @param alerts [Workspace::WorkflowAlerts, nil] sends `unreadable_run` once for each file, on a full pass that is not a dry run (nil: none)
     # @param log_limit [Integer] bytes the log may reach before it is cut
     # @param log_keep [Integer] bytes of the log's end kept when it is cut
     # @param live_usage [Workspace::WorkflowLiveUsage, nil] the tokens a run's running attempt has used so far, read only
@@ -143,11 +144,12 @@ module Workspace
     # @param clock [#call] returns the current Time
     def initialize(store:, engine:, panes:, interrupter:, reviews:, default_stall: -> {}, turn_failed_after: -> {},
       recovery_entry: ->(*) {}, clock: -> { Time.now }, downtime: nil, live_usage: nil, infra_retry_max: -> { 0 },
-      log_path: nil, last_path: nil, log_limit: 1024 * 1024, log_keep: 256 * 1024)
+      log_path: nil, last_path: nil, alerts: nil, log_limit: 1024 * 1024, log_keep: 256 * 1024)
       @infra_retry_max = infra_retry_max
       @live_usage = live_usage
       @log_path = log_path
       @last_path = last_path
+      @alerts = alerts
       @log_limit = log_limit
       @log_keep = log_keep
       @downtime = downtime
@@ -262,6 +264,7 @@ module Workspace
       LockedJsonFile.new(@last_path, parse: parse).exclusive do |data|
         data["last"] = entry
         data["last_full"] = entry if scope == "all"
+        data["unreadable_notified"] = alert_unreadable(data["unreadable_notified"]) if scope == "all" && @alerts
       end
     rescue
       nil
@@ -276,6 +279,13 @@ module Workspace
 
     def downtime_stops
       @downtime&.spans(@clock.call) || []
+    end
+
+    # Called inside the `sweep-last.json` lock of a full pass, so two passes at once don't both alert. Alerts each
+    # unreadable file not in +told+ and returns the files told of: a fixed file drops out, and a file the alert wasn't
+    # sent for (event off, no notify command) is tried again.
+    def alert_unreadable(told)
+      @store.unreadable.select { |path| Array(told).include?(path) || @alerts.unreadable(path) }
     end
 
     def unreadable_rows

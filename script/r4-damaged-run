@@ -1,0 +1,430 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Experiment R4: how the CLI meets a damaged workflow run file and a stale run lock. In a throwaway HOME it starts
+# run A through a real engine (spec/fixtures/workflows/e2e_recovery.yml, over the fake panes and composer of
+# spec/support/fake_workflow_run.rb) so that A holds the `test-db` lock, then applies one fault at a time to A's
+# files and runs `bin/workspace` from this checkout against that HOME: workflow status, sweep, advance, recover
+# --dry-run, doctor and lock status. Each fault is applied to saved copies of A's run file, events file and the
+# lock store, which are put back afterwards. While A's file is cut in half it also starts run B, which needs
+# `test-db`, and runs `workflow sweep` twice to count the alerts each pass sends.
+#
+# No tmux server runs in the throwaway HOME, so A's pane and agent are gone in every row: `going_no_agent` changes
+# nothing and is the control row. Nothing outside the throwaway directory is read or written but this checkout's
+# files; the script refuses to run if a state path resolves outside it.
+#
+#   script/r4-damaged-run [--json] [--alert-events gate,failed,stalled,finished] [--alert-wait SECONDS]
+#                         [--timeout SECONDS] [--keep]
+
+require "fileutils"
+require "json"
+require "open3"
+require "optparse"
+require "shellwords"
+require "tmpdir"
+require "yaml"
+
+module R4DamagedRun
+  ROOT = File.expand_path("..", __dir__)
+  FIXTURE = File.join(ROOT, "spec", "fixtures", "workflows", "e2e_recovery.yml")
+  LOCK = "test-db"
+  FAULTS = %w[half_json empty garbage_bytes wrong_shape_json dead_pid_holder going_no_agent half_events_line].freeze
+  COMMANDS = [
+    ["workflow status", %w[workflow status --all]],
+    ["workflow sweep --json", %w[workflow sweep --json]],
+    ["workflow advance A", %w[workflow advance RUN]],
+    ["workflow recover --dry-run", %w[workflow recover --dry-run --json]],
+    ["doctor", %w[doctor --headless --json]],
+    ["lock status", %w[lock status]]
+  ].freeze
+  # What a command's output says when it saw the fault, per fault.
+  NOTICE = {
+    "half_json" => /can't be read|unreadable|not a run/i,
+    "empty" => /can't be read|unreadable|not a run/i,
+    "garbage_bytes" => /can't be read|unreadable|not a run/i,
+    "wrong_shape_json" => /can't be read|unreadable|not a run/i,
+    "dead_pid_holder" => /\bstale\b|\bdead\b|\bpid\b/i,
+    "going_no_agent" => /pane_gone|agent_gone|pane .* gone|agent .*(exited|gone)|stalled|no tmux session|workspace_stopped/i,
+    "half_events_line" => /history|events\.jsonl|line \d+/i
+  }.freeze
+
+  # Fakes for the parts of a run the experiment does not exercise: the guard, the check, the notes and the task.
+  class Guard
+    def base(*, **) = {"base_sha" => "0" * 40, "base_guard" => {}}
+
+    def head(*, **) = "1" * 40
+
+    def check(*, **) = nil
+
+    def config_change(*, **) = nil
+
+    def commits_since(*, **) = 1
+
+    def round_snapshot(*, **) = {"head" => "1" * 40, "tree_sha256" => "t" * 64}
+
+    def round_check(*, **) = nil
+  end
+
+  class CommandsConfig
+    def for_project(_workspace) = {test: "bin/test", lint: nil}
+  end
+
+  class Notes
+    def initialize(dir) = @dir = dir
+
+    def info(*, **) = {"dir" => @dir}
+  end
+
+  class TaskStore
+    def active_for(_workspace) = {"id" => "t1"}
+  end
+
+  class Experiment
+    def initialize(alert_events:, alert_wait:, timeout:, keep:)
+      @alert_events = alert_events
+      @alert_wait = alert_wait
+      @timeout = timeout
+      @keep = keep
+    end
+
+    # @return [Hash] the whole result document
+    def call
+      @tmp = File.realpath(Dir.mktmpdir("r4-", "/tmp"))
+      isolate
+      load_workspace
+      check_isolation
+      setup_checkouts
+      write_config
+      @run_a = start_a
+      result = {"tmpdir" => (@keep ? @tmp : nil), "run_a" => @run_a, "alert_events" => @alert_events, "faults" => [], "run_b" => nil, "sweep_twice" => nil}
+      FAULTS.each { |fault| result["faults"] << with_fault(fault) { extra(fault, result) } }
+      result["tmux_server_started"] = tmux_cleanup
+      result["stragglers"] = wait_for_stragglers
+      result
+    ensure
+      FileUtils.remove_entry(@tmp) if @tmp && !@keep && File.directory?(@tmp)
+    end
+
+    private
+
+    def isolate
+      @home = File.join(@tmp, "home")
+      @env = {"HOME" => @home, "XDG_STATE_HOME" => File.join(@home, ".local", "state"), "TMUX_TMPDIR" => File.join(@tmp, "tmux"), "TMUX" => nil, "TMUX_PANE" => nil}
+      [@home, @env["XDG_STATE_HOME"], @env["TMUX_TMPDIR"]].each { |dir| FileUtils.mkdir_p(dir) }
+      @env.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      @alert_file = File.join(@tmp, "alerts.log")
+      FileUtils.touch(@alert_file)
+    end
+
+    def load_workspace
+      $LOAD_PATH.unshift(File.join(ROOT, "lib"))
+      require "workspace"
+      require File.join(ROOT, "spec", "support", "fake_workflow_run")
+      require File.join(ROOT, "spec", "support", "fakes", "fake_git")
+      @config = Workspace::Config.new
+    end
+
+    def check_isolation
+      paths = [File.expand_path("~"), @config.state_dir, @config.workflow_runs_dir, @config.workflow_archive_dir, @config.lock_dir,
+        @config.workspace_config_dir, @config.state_file, @config.event_log_file, @env["TMUX_TMPDIR"]]
+      outside = paths.reject { |path| inside?(path) }
+      raise "refusing to run: #{outside.join(", ")} resolves outside #{@tmp}" unless outside.empty?
+    end
+
+    def inside?(path)
+      real = File.expand_path(path)
+      parent = File.dirname(real)
+      parent = File.dirname(parent) until File.exist?(parent)
+      File.join(File.realpath(parent), real.delete_prefix(parent)).start_with?("#{@tmp}/")
+    end
+
+    def git(*args, chdir:)
+      _out, err, status = Open3.capture3(@env, "git", "-c", "user.name=r4", "-c", "user.email=r4@example.invalid", *args, chdir: chdir)
+      raise "git #{args.join(" ")} failed: #{err}" unless status.success?
+    end
+
+    def setup_checkouts
+      @checkout_a = File.join(@tmp, "app")
+      @checkout_b = File.join(@tmp, "app-b")
+      FileUtils.mkdir_p(@checkout_a)
+      git("init", "-q", "-b", "main", chdir: @checkout_a)
+      git("commit", "-q", "--allow-empty", "-m", "init", chdir: @checkout_a)
+      git("worktree", "add", "-q", "-b", "b", @checkout_b, chdir: @checkout_a)
+      @notes = File.join(@tmp, "notes")
+      FileUtils.mkdir_p(@notes)
+      lineage = Workspace::WorkspaceLineage.new(rev_parse: Workspace::Git.new.method(:path_of))
+      @namespace = Workspace::LockNamespace.new(config: @config, lineage: lineage).resolve(cwd: @checkout_a)
+      raise "refusing to run: lock dir #{@namespace[:dir]} is outside #{@tmp}" unless inside?(@namespace[:dir])
+      @lineage = lineage
+    end
+
+    def write_config
+      notify = "printf '%s %s\\n' \"$WORKSPACE_ALERT_EVENT\" \"$WORKSPACE_ALERT_RUN_ID\" >> #{Shellwords.escape(@alert_file)}"
+      FileUtils.mkdir_p(@config.workspace_config_dir)
+      File.write(File.join(@config.workspace_config_dir, "config.yml"), YAML.dump("alerts" => {"notify" => notify, "workflow" => @alert_events.join(",")}))
+      # A config for each workspace, so the runs' workspaces exist (stopped: no tmux session) rather than look removed.
+      FileUtils.mkdir_p(@config.tmuxinator_dir)
+      {"app" => @checkout_a, "app.b" => @checkout_b}.each do |name, root|
+        File.write(@config.config_path_for(name), YAML.dump("name" => name, "root" => root, "windows" => [{"main" => ""}]))
+      end
+    end
+
+    def engine
+      @engine ||= begin
+        store = Workspace::WorkflowRunStore.new(dir: @config.workflow_runs_dir, archive_dir: @config.workflow_archive_dir)
+        namespace = Workspace::LockNamespace.new(config: @config, lineage: @lineage)
+        resources = Workspace::RunResources.new(lock_namespace: namespace, lock_holder: RunFileLiveness.new(@config.workflow_runs_dir))
+        git = FakeGit.new(worktree_branch: "main")
+        @store = store
+        Workspace.build_workflow_engine(store: store, resources: resources, composer: FakeStepComposer.new, panes: FakeWorkflowPanes.new,
+          checker: ->(**) { {exit_code: 0, timed_out: false} }, commands_config: CommandsConfig.new, lineage: @lineage, git: git, guard: Guard.new,
+          excludes: Workspace::GitExclude.new(git: git), gate_note: Workspace::WorkflowGateNote.new(notes: Notes.new(@notes)),
+          env_stopper: ->(**) {}, workspace_known: ->(_name) { false }, task_store: TaskStore.new)
+      end
+    end
+
+    def definition
+      @definition ||= Workspace::WorkflowDefinition.parse(File.read(FIXTURE), id: "e2e_recovery", source: "global", path: FIXTURE)
+    end
+
+    # Starts a run on +checkout+ and ends its build turn, so its verify step asks for test-db.
+    def start_to_verify(workspace, checkout, pane)
+      run = engine.start(actor: "person", definition: definition, workspace: workspace, worktree: checkout, inputs: {"task" => "R4"}, pane: pane)
+      path = File.join(checkout, ".workflow", run["id"], "build.md")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "done\n")
+      engine.turn_ended(run["id"], actor: "agent", pane: pane)
+    end
+
+    def start_a
+      run = start_to_verify("app", @checkout_a, "%5")
+      id = run["id"]
+      raise "run A does not hold #{LOCK}: #{lock_holder.inspect} #{run.slice("state", "current", "reason").inspect}" unless holder_id == id
+      @run_file = File.join(@config.workflow_runs_dir, "#{id}.json")
+      @events_file = @store.events_path(id)
+      @lock_file = File.join(@namespace[:dir], "locks.json")
+      id
+    end
+
+    def lock_holder
+      JSON.parse(File.read(File.join(@namespace[:dir], "locks.json"))).dig(LOCK, "holder")
+    rescue Errno::ENOENT, JSON::ParserError
+      nil
+    end
+
+    def holder_id = lock_holder&.fetch("run_id", nil)
+
+    def saved_files = [@run_file, @events_file, @lock_file]
+
+    def with_fault(fault)
+      saved = saved_files.to_h { |path| [path, File.exist?(path) ? File.binread(path) : nil] }
+      apply(fault)
+      row = {"fault" => fault, "commands" => COMMANDS.map { |label, argv| run_command(fault, label, argv) }}
+      yield
+      row
+    ensure
+      saved.each { |path, bytes| bytes.nil? ? FileUtils.rm_f(path) : File.binwrite(path, bytes) }
+    end
+
+    def apply(fault)
+      bytes = File.binread(@run_file)
+      case fault
+      when "half_json" then File.binwrite(@run_file, bytes[0, bytes.bytesize / 2])
+      when "empty" then File.binwrite(@run_file, "")
+      when "garbage_bytes" then File.binwrite(@run_file, "\xFF\xFE\x00garbage\x80\x81".b * 8)
+      when "wrong_shape_json" then File.write(@run_file, JSON.generate({"note" => "valid JSON, not a run"}))
+      when "dead_pid_holder"
+        store = JSON.parse(File.read(@lock_file))
+        store[LOCK]["holder"]["pid"] = dead_pid
+        File.write(@lock_file, JSON.generate(store))
+      when "going_no_agent" then nil
+      when "half_events_line" then File.write(@events_file, "{\"type\":\"step_dispatch", mode: "a")
+      end
+    end
+
+    def dead_pid
+      pid = Process.spawn("true")
+      Process.wait(pid)
+      pid
+    end
+
+    def extra(fault, result)
+      return unless fault == "half_json"
+      result["sweep_twice"] = sweep_twice
+      result["run_b"] = start_b
+    end
+
+    def sweep_twice
+      2.times.map do |pass|
+        before = alert_lines
+        outcome = spawn_cli(%w[workflow sweep])
+        sent = new_alerts(before)
+        {"pass" => pass + 1, "exit" => outcome[:exit], "alerts_sent" => sent.size, "alerts_total" => before + sent.size, "alerts" => sent}
+      end
+    end
+
+    def start_b
+      run = start_to_verify("app.b", @checkout_b, "%6")
+      shown = spawn_cli(["workflow", "status", run["id"]])
+      details = JSON.parse(tidy(JSON.generate(run.dig("reason", "details"))).gsub(run["id"], "B"))
+      found = {"id" => run["id"], "state" => run["state"], "reason" => run.dig("reason", "code"), "details" => details, "holder" => details&.dig("holder"),
+               "status_exit" => shown[:exit], "status_text" => tidy(shown[:out] + shown[:err]).gsub(run["id"], "B")}
+      engine.cancel(run["id"], actor: "person")
+      found
+    end
+
+    def run_command(fault, label, argv)
+      argv = argv.map { |arg| (arg == "RUN") ? @run_a : arg }
+      before = alert_lines
+      outcome = spawn_cli(argv)
+      json = parse_json(outcome[:out])
+      evidence = json ? json_evidence(json) : tidy(outcome[:out] + outcome[:err]).lines.map(&:strip).reject(&:empty?)
+      hit = evidence.find { |line| NOTICE.fetch(fault).match?(line) }
+      summary = hit || evidence.find { |line| line.match?(/\A(?!definition)[a-z_]+: /) } || evidence.first
+      sent = new_alerts(before)
+      {"command" => label, "argv" => argv, "exit" => outcome[:exit], "timed_out" => outcome[:timed_out], "noticed" => !hit.nil?,
+       "reason" => short(summary || (json&.key?("checks") ? "(no workflow-run or lock row)" : "(no output)")), "next_action" => next_action(json, summary, evidence),
+       "lock_freed" => holder_id != @run_a, "alert_grew" => !sent.empty?, "alerts" => sent, "evidence" => evidence,
+       "stdout" => tidy(outcome[:out]), "stderr" => tidy(outcome[:err])}
+    end
+
+    # The JSON rows about run A: sweep and recover results that name it, doctor's workflow-run and lock checks that are not ok.
+    def json_evidence(json)
+      if json["checks"]
+        json["checks"].select { |check| check["status"] != "ok" && check["id"].to_s.match?(/\A(workflow-run|lock)/) }
+          .map { |check| tidy("#{check["id"]} (#{check["status"]}): #{check["message"]}") }
+      else
+        Array(json["results"]).select { |row| row.is_a?(Hash) && (row["run_id"] == @run_a || row["message"].to_s.include?(@run_a)) }
+          .map { |row| tidy("#{row["outcome"]}/#{row["reason"] || "-"}: #{row["message"]}") }
+      end
+    end
+
+    # The `next_actions` of a JSON document, a doctor row's fix command, or the first command the text names.
+    def next_action(json, line, evidence)
+      actions = json && json["next_actions"]
+      return tidy("next_actions: #{actions.map { |a| [a["action"], *Array(a["args"])].join(" ") }.join("; ")}") if actions.is_a?(Array) && !actions.empty?
+      fixes = json && Array(json["checks"]).filter_map { |check| check["fix_command"] if check["status"] != "ok" && check["id"].to_s.start_with?("workflow-run", "lock") }
+      return "fix_command: #{fixes.join("; ")}" if fixes && !fixes.empty?
+      prose = line.to_s[/`(workspace [^`]+)`/, 1] || (json ? nil : evidence.find { |each| each.start_with?("workspace ") })
+      prose ? "prose: #{prose}" : "none"
+    end
+
+    def tidy(text) = text.to_s.gsub(ROOT, "$ROOT").gsub(@home, "~").gsub(@tmp, "$TMP").gsub(@run_a.to_s, "A")
+
+    def spawn_cli(argv)
+      out = +""
+      err = +""
+      status = nil
+      timed_out = false
+      Open3.popen3(@env, RbConfig.ruby, File.join(ROOT, "bin", "workspace"), *argv, chdir: @checkout_a, pgroup: true) do |stdin, stdout, stderr, thread|
+        stdin.close
+        readers = [Thread.new { out << stdout.read }, Thread.new { err << stderr.read }]
+        unless thread.join(@timeout)
+          timed_out = true
+          Process.kill("KILL", -thread.pid)
+        end
+        readers.each(&:join)
+        status = thread.value
+      end
+      {out: out, err: err, exit: timed_out ? nil : status.exitstatus, timed_out: timed_out}
+    rescue Errno::ESRCH
+      {out: out, err: err, exit: nil, timed_out: true}
+    end
+
+    def parse_json(text)
+      value = JSON.parse(text)
+      value.is_a?(Hash) ? value : nil
+    rescue JSON::ParserError
+      nil
+    end
+
+    def short(text) = text && ((text.length > 110) ? "#{text[0, 107]}..." : text)
+
+    def alert_lines = File.readlines(@alert_file).size
+
+    # Alerts go out from a detached supervisor, so the file is read until it grows or the wait is up.
+    # @return [Array<String>] the alert lines written after the first +before+, with run ids shortened
+    def new_alerts(before)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @alert_wait
+      sleep 0.1 until alert_lines > before || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      File.readlines(@alert_file).drop(before).map { |line| tidy(line.strip) }
+    end
+
+    # Alert supervisors run detached and write their log under the throwaway state directory, so the directory is
+    # removed only once none of them is left (up to the notifier's 10s limit and a little more).
+    # @return [Integer] how many processes naming the throwaway directory were still running at the end
+    def wait_for_stragglers
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
+      loop do
+        out, _status = Open3.capture2("ps", "-axww", "-o", "pid=,command=")
+        left = out.lines.count { |line| line.include?(@tmp) && line.split(" ", 2).first.to_i != Process.pid }
+        return left if left.zero? || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        sleep 0.2
+      end
+    end
+
+    # @return [Boolean] whether a tmux server was found on the throwaway socket directory (and stopped)
+    def tmux_cleanup
+      sockets = Dir[File.join(@env["TMUX_TMPDIR"], "**", "*")].select { |path| File.socket?(path) }
+      sockets.each { |socket| system("tmux", "-S", socket, "kill-server", out: File::NULL, err: File::NULL) }
+      !sockets.empty?
+    end
+  end
+
+  def self.cell(value)
+    case value
+    when true then "yes"
+    when false then "no"
+    when nil then "-"
+    else value.to_s.gsub("|", "\\|").tr("\n", " ")
+    end
+  end
+
+  def self.markdown(result)
+    lines = ["Run A (A below): #{result["run_a"]}, at step verify holding `#{LOCK}`; alerts.workflow: #{result["alert_events"].join(",")}",
+      "No tmux server runs, so A's pane and agent are gone in every row (going_no_agent is the control). A run holder records no pid; " \
+      "dead_pid_holder adds a dead one. Each fault's files are put back before the next.", "",
+      "| Fault | Command | Exit | Noticed | Reason / warning | Next action | Lock freed | Alert |", "|---|---|---|---|---|---|---|---|"]
+    result["faults"].each do |fault|
+      fault["commands"].each do |cmd|
+        exit_cell = cmd["timed_out"] ? "timeout" : cmd["exit"]
+        lines << "| #{[fault["fault"], cmd["command"], exit_cell, cmd["noticed"], cmd["reason"], cmd["next_action"], cmd["lock_freed"], cmd["alert_grew"] ? "yes: #{cmd["alerts"].join(", ")}" : false].map { |v| cell(v) }.join(" | ")} |"
+      end
+    end
+    b = result["run_b"]
+    if b
+      holder = b["holder"] ? JSON.generate(b["holder"]) : "-"
+      said = b["status_text"].to_s.lines.map(&:strip).find { |line| line.start_with?(b["reason"].to_s) }
+      lines += ["", "Run B (half_json): state #{b["state"]}, reason #{cell(b["reason"])}, details.holder #{holder}",
+        "`workflow status B` (exit #{b["status_exit"]}): #{cell(said)}"]
+    end
+    if result["sweep_twice"]
+      lines << ""
+      lines << "Sweep twice (half_json): " + result["sweep_twice"].map { |p| "pass #{p["pass"]} exit #{p["exit"]}, #{p["alerts_sent"]} alert(s) sent, #{p["alerts_total"]} in the file" }.join("; ")
+    end
+    lines << "" << "A tmux server was found on the throwaway socket and stopped." if result["tmux_server_started"]
+    lines.join("\n") + "\n"
+  end
+
+  def self.main(argv, out: $stdout, err: $stderr)
+    options = {json: false, alert_events: %w[gate failed stalled finished], alert_wait: 2.0, timeout: 60.0, keep: false}
+    OptionParser.new do |opts|
+      opts.banner = "Usage: script/r4-damaged-run [--json] [--alert-events LIST] [--alert-wait SECONDS] [--timeout SECONDS] [--keep]"
+      opts.on("--json", "Print one JSON document") { options[:json] = true }
+      opts.on("--alert-events LIST", "alerts.workflow events, separated by commas (default gate,failed,stalled,finished)") { |v| options[:alert_events] = v.split(",").map(&:strip).reject(&:empty?) }
+      opts.on("--alert-wait SECONDS", Float, "How long to watch the alert file after each command (default 2)") { |v| options[:alert_wait] = v }
+      opts.on("--timeout SECONDS", Float, "Time limit for each command (default 60)") { |v| options[:timeout] = v }
+      opts.on("--keep", "Keep the throwaway directory and print its path") { options[:keep] = true }
+    end.parse!(argv)
+  rescue OptionParser::ParseError => e
+    err.puts "r4-damaged-run: #{e.message}"
+    2
+  else
+    result = Experiment.new(alert_events: options[:alert_events], alert_wait: options[:alert_wait], timeout: options[:timeout], keep: options[:keep]).call
+    out.write(options[:json] ? JSON.pretty_generate(result) + "\n" : markdown(result))
+    err.puts "r4-damaged-run: kept #{result["tmpdir"]}" if result["tmpdir"]
+    0
+  end
+end
+
+exit R4DamagedRun.main(ARGV) if $PROGRAM_NAME == __FILE__
