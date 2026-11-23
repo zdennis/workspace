@@ -120,13 +120,14 @@ module Workspace
         definition = @catalog.find(id, project: project)
         data = definition.to_h
         if json
-          return document("workflow" => with_branch_fills(data).merge(stall_fields(data)).merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge("project" => (definition.source == "project") ? project : nil).merge(extends_field(definition)))
+          return document("workflow" => with_branch_fills(data).merge(stall_fields(data)).merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge("project" => (definition.source == "project") ? project : nil).merge(extends_field(definition)).merge(imports_field(definition)))
         end
         @output.puts "#{data["id"]}: #{data["title"]} (#{definition.source}, #{definition.path})"
         @output.puts data["description"] if data["description"]
         @output.puts "Use when: #{data["use_when"]}" if data["use_when"]
         @output.puts "Version: #{data["version"]}" if data["version"]
         definition.parents.each { |parent| @output.puts "Extends: #{parent["id"]} (#{parent["source"]}, #{parent["path"]})" }
+        print_imports(definition.imports)
         @output.puts "Applies to: #{data["applies_to"].join(", ")}" if data["applies_to"].any?
         @output.puts "Inputs:" if data["inputs"].any?
         data["inputs"].each { |name, spec| @output.puts "  #{name}#{" (required)" if spec["required"]}#{": #{spec["description"]}" if spec["description"]}" }
@@ -229,10 +230,11 @@ module Workspace
         scope = layer
         warnings = definition.warnings + found["warnings"] + shadow_warnings(definition.id, scope, project)
         if json
-          document("workflow" => definition.to_h.merge("source" => definition.source, "scope" => scope, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge(extends_field(definition)),
+          document("workflow" => definition.to_h.merge("source" => definition.source, "scope" => scope, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge(extends_field(definition)).merge(imports_field(definition)),
             "warnings" => warnings, "not_checked" => found["not_checked"])
         else
           @output.puts "#{definition.to_h["id"]}: valid (#{definition.steps.size} steps)#{", in the #{scope} definitions" if scope}"
+          print_imports(definition.imports)
           warnings.each { |warning| @output.puts "warning: #{TerminalText.escape(warning["message"])}" }
           found["not_checked"].each { |each| @output.puts "not checked: #{TerminalText.escape(each["message"])}" }
         end
@@ -1807,6 +1809,25 @@ module Workspace
       def extends_field(definition)
         parents = definition.parents
         parents.empty? ? {} : {"extends" => parents.map { |parent| parent.slice("id", "source", "path", "sha256") }}
+      end
+
+      # The `imports` field of a definition document: one entry per imported step ({WorkflowDefinition#imports}), left
+      # out when there are none, as `extends` is, so a definition with no import reads as before.
+      def imports_field(definition)
+        definition.imports.empty? ? {} : {"imports" => definition.imports}
+      end
+
+      # The `Imports:` block: each imported step, its reference and where it resolved, then the keys the host set, the
+      # library keys gone from the result and the lower-layer files of the same name it shadows.
+      def print_imports(imports)
+        return if imports.empty?
+        @output.puts "Imports:"
+        imports.each do |each|
+          @output.puts TerminalText.escape("  #{each["step"]}: #{each["import"]} (#{[each["layer"], each["path"]].compact.join(", ")})")
+          @output.puts TerminalText.escape("    overrides: #{each["overrides"].join(", ")}") if each["overrides"].any?
+          @output.puts TerminalText.escape("    removes: #{each["removes"].join(", ")}") if each["removes"].any?
+          each["shadows"].each { |path| @output.puts TerminalText.escape("    shadows: #{path}") }
+        end
       end
 
       # The parent lookup and chain for a draft that will be installed as +id+: the draft stands in for the installed file, so a

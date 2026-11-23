@@ -5443,5 +5443,61 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json["workflow"]).to include("problems" => [])
       expect(json["workflow"]["steps"].map { |step| [step["id"], step["prompt"]] }).to eq([["look", "Research it."]])
     end
+
+    context "naming where each import came from" do
+      let(:library) { File.join(global_dir, "steps", "research.yml") }
+      let(:shadowed) { File.join(builtin_dir, "steps", "research.yml") }
+      let(:host) { "title: Flow\nsteps:\n  look:\n    import: research\n    prompt: Look.\n    produces: [notes.md]\n" }
+      let(:entry) do
+        {"step" => "look", "import" => "research", "layer" => "global", "path" => library,
+         "overrides" => ["prompt", "produces"], "removes" => ["prompt_file"], "shadows" => [shadowed], "sha256" => a_string_matching(/\A\h{64}\z/)}
+      end
+
+      before do
+        FileUtils.mkdir_p(File.dirname(shadowed))
+        File.write(shadowed, "steps:\n  research:\n    prompt: Builtin research.\n")
+        File.write(library, "steps:\n  research:\n    prompt_file: research.md\n    produces: [notes.md, sources.md]\n    gate: approve\n")
+        File.write(target, host)
+      end
+
+      it "show --json carries an imports array and leaves the rest of the document as it was" do
+        command.show(id: "flow", json: true)
+
+        expect(json["workflow"]["imports"]).to match([entry])
+        expect(json["workflow"]).to include("id" => "flow", "source" => "global", "path" => target)
+      end
+
+      it "show prints an Imports block with the overrides, the removed prompt_file and the shadowed file" do
+        command.show(id: "flow")
+
+        expect(output.string).to include("Imports:\n  look: research (global, #{library})\n    overrides: prompt, produces\n    removes: prompt_file\n    shadows: #{shadowed}\n")
+      end
+
+      it "validate --json carries the imports and the dropped-value note among the warnings" do
+        command.validate(path: target, json: true)
+
+        expect(json["workflow"]["imports"]).to match([entry])
+        expect(json["warnings"]).to include(include("code" => "import_dropped", "step" => "look", "message" => include("drops sources.md")))
+      end
+
+      it "validate prints the Imports block and the dropped-value warning, and still succeeds" do
+        expect { command.validate(path: target) }.not_to raise_error
+
+        expect(output.string).to start_with("flow: valid (1 steps), in the global definitions\nImports:\n  look: research (global, #{library})\n")
+        expect(output.string).to include("warning: step look: produces replaces the produces of imported step research whole and drops sources.md")
+      end
+
+      it "a definition with no import has no imports field and no Imports block" do
+        File.write(target, "title: Flow\nsteps:\n  look:\n    prompt: Look.\n    gate: approve\n")
+
+        command.show(id: "flow", json: true)
+        expect(json["workflow"]).not_to have_key("imports")
+
+        output.truncate(0)
+        output.rewind
+        command.show(id: "flow")
+        expect(output.string).not_to include("Imports:")
+      end
+    end
   end
 end
