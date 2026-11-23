@@ -3,6 +3,7 @@ require "tmpdir"
 require "fileutils"
 require "json"
 require "delegate"
+require "stringio"
 
 # The harness for an engine that dies in the middle of a change: the parts the simulator plays a run with
 # (WorkflowSimulator#play), assembled here so one crash point can be armed in them, and the in-memory fakes (pane,
@@ -22,7 +23,8 @@ module RunChangeCrash
   # One armed crash point at a time; it fires once, on the nth call whose info the match accepts, then disarms.
   # Points: :before_kick and :after_kick (info: the typed text), :record_event (the event type), :recorded (the
   # event type and data, once written), :stored (the run, once a change has written it), :event_log (the
-  # `workflow_changed` data), :alerts_marks and :alerts_fire (the run), :inbox (the item's dedupe key).
+  # `workflow_changed` data), :alerts_marks and :alerts_fire (the run), :inbox (the item's dedupe key), :review_round
+  # (the round a change registered, before the simulator's stand-in delivers it).
   class Points
     attr_reader :fired
 
@@ -112,19 +114,29 @@ module RunChangeCrash
     end
   end
 
+  # Every `alerts.workflow` event on, with a notify command that never runs: the real WorkflowAlerts decides what
+  # fires, and its spawner records each alert in +sent+ (shared between engines) as `[event, step]`.
   class Alerts
-    def initialize(points)
+    # Stands in for AlertConfig#for_workspace: keep this hash in its shape.
+    Config = Struct.new(:events) do
+      def for_workspace(_workspace) = {notify: "true", idle_after: nil, workflow: events}
+    end
+
+    def initialize(points, sent, clock)
       @points = points
+      spawner = ->(_argv, env, _log) { sent << env.values_at("WORKSPACE_ALERT_EVENT", "WORKSPACE_ALERT_STEP") }
+      @alerts = Workspace::WorkflowAlerts.new(alert_config: Config.new(Workspace::WorkflowAlerts::EVENTS), spawner: spawner,
+        error_output: StringIO.new, clock: clock)
     end
 
     def marks(run)
       @points.check!(:alerts_marks, run)
-      nil
+      @alerts.marks(run)
     end
 
-    def fire(_before, run)
+    def fire(before, run)
       @points.check!(:alerts_fire, run)
-      nil
+      @alerts.fire(before, run)
     end
   end
 
@@ -180,6 +192,8 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
   let(:refusals) { [] }
   # The fake agent's turns taken, by prompt file: it takes one for each line typed.
   let(:turns) { Hash.new(0) }
+  # The alerts every engine sent, as `[event, step]`.
+  let(:alerts_sent) { [] }
 
   # One engine over the run directory and the shared fakes; +points+ arms its crash points.
   # Mirrors WorkflowSimulator#play, its round_runner and drive/next_move/act: change this when they change.
@@ -191,15 +205,16 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     engine = Workspace.build_workflow_engine(store: store, resources: sim::SimResources.new, composer: sim::SimComposer.new, panes: panes,
       checker: sim::SimChecker.new(script), commands_config: sim::SimCommands.new, lineage: sim::SimLineage.new, git: sim::SimGit.new, guard: guard,
       excludes: sim::SimExcludes.new, gate_note: sim::SimGateNote.new, attempt_record: records, require_check: sim::SimRequire.new(script, guard),
-      exec_program: sim::SimExecProgram.new, review_round: round_runner(store), review_closer: ->(_run_id, _round) {},
+      exec_program: sim::SimExecProgram.new, review_round: round_runner(store, points), review_closer: ->(_run_id, _round) {},
       review_tally: Workspace::WorkflowReviewTally.new(proof: sim::SimVerdictProof.new), review_revision: sim::SimRevision.new(script),
-      event_log: RunChangeCrash::EventLog.new(points), alerts: RunChangeCrash::Alerts.new(points), inbox_for: ->(_workspace) { inbox }, clock: clock)
+      event_log: RunChangeCrash::EventLog.new(points), alerts: RunChangeCrash::Alerts.new(points, alerts_sent, clock), inbox_for: ->(_workspace) { inbox }, clock: clock)
     {engine: engine, store: store, panes: panes}
   end
 
   # The simulator's stand-in for a round's delivery (WorkflowSimulator#round_runner).
-  def round_runner(store)
+  def round_runner(store, points)
     lambda do |id, review|
+      points.check!(:review_round, review)
       run = store.change(id) do |read|
         hash = read.thawed
         revision = review["revision"] || sim.revision_of(script, review["step"], review["attempt"])
@@ -340,10 +355,33 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     expect(points.fired).to be_nil
     expect(typed_lines.keys).to contain_exactly(*%w[research.1 plan.1 plan.2 implement.1 implement.2 verify.1 verify.2].map { |each| "#{each}.prompt.md" })
     expect(typed_lines.values.uniq).to eq([1])
+    expect(history(parts[:store])).to eq(golden_history)
+    expect(alerts_sent).to eq([%w[finished verify]])
+    expect(inbox.items.keys).to eq(["review:#{run_id}:plan"])
 
     fresh, passes = recover
     expect(passes).to eq(0)
     expect(final_state(fresh[:store])).to eq(golden.slice("run", "steps"))
+  end
+
+  # The run's history lines as `[type, step, attempt]`.
+  def history(store) = store.events(run_id)["events"].map { |each| each.values_at("type", "step", "attempt") }
+
+  # The golden transcript's history lines, but for the simulator's own lines about its fake agents.
+  def golden_history
+    golden["transitions"].reject { |each| each["type"].start_with?("simulated_") }.map { |each| each.values_at("type", "step", "attempt") }
+  end
+
+  # The golden history lines missing from the run's history, one entry per copy missing.
+  def lost_lines(store)
+    now = history(store).tally
+    golden_history.tally.flat_map { |line, count| [line] * [count - now.fetch(line, 0), 0].max }
+  end
+
+  # The history lines the run's history holds more copies of than the golden one.
+  def extra_lines(store)
+    base = golden_history.tally
+    history(store).tally.flat_map { |line, count| [line] * [count - base.fetch(line, 0), 0].max }
   end
 
   # The crash points of a step's delivery are armed at the plan step's first line: the first dispatch that comes out
@@ -474,5 +512,90 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     expect(points.fired).to be_nil
     expect(passes).to eq(1)
     expect_baseline(fresh[:store], refused_baseline("pane_busy"))
+  end
+
+  # The plan step's second check: in the change a turn's end makes, its flush writes check_finished first, then
+  # step_checks_passed and review_started, and the round's delivery follows the change.
+  it "B1: a crash in the history flush of plan.2's checked change ends at the golden state, its two lines lost and its round redelivered by tick :review (1 pass)" do
+    points.arm(:record_event, nth: 2) { |type| type == "check_finished" }
+    result = crash_and_recover
+
+    expect(points.fired).to eq([:record_event, "check_finished"])
+    expect(result[:left].slice("n", "outcome")).to eq("n" => 2, "outcome" => "checks_passed")
+    expect(result[:passes]).to eq(1)
+    expect_baseline(result[:store], golden.slice("run", "steps"))
+    # No events_lost mark: the flush raised at its first line, so the change's queued lines are gone, and the
+    # review_started there is the one tick :review's redelivery wrote (lib/workspace/workflow_recovery.rb:829-893).
+    expect(lost_lines(result[:store])).to eq([["check_finished", "plan", 2], ["step_checks_passed", "plan", 2]])
+    expect(extra_lines(result[:store])).to eq([])
+    expect(history(result[:store]).map(&:first)).not_to include("events_lost")
+    expect(alerts_sent).to eq([%w[finished verify]])
+  end
+
+  it "B2: an event log that raises on the run's last workflow_changed ends at the golden state, its history whole (0 passes)" do
+    points.arm(:event_log) { |data| data["state"] == "completed" }
+    result = crash_and_recover
+
+    expect(points.fired.first).to eq(:event_log)
+    expect(result[:passes]).to eq(0)
+    expect_baseline(result[:store], golden.slice("run", "steps"))
+    expect(lost_lines(result[:store])).to eq([])
+    # The crash in `changed` comes before `@alerts&.fire` (lib/workspace/workflow_run_change.rb:166-167), so the
+    # `finished` alert goes with it, as at B3.
+    expect(alerts_sent).to eq([])
+  end
+
+  # The golden script has no gate or failure alert: plan's rejection retries and verify's failed check loops back to
+  # implement, neither with a reason WorkflowAlerts#marks reads as `failed`. Its one alert is `finished`.
+  it "B3: alerts.fire raising on the run's completion ends at the golden state with the finished alert lost (0 passes)" do
+    points.arm(:alerts_fire) { |run| run.state == "completed" }
+    result = crash_and_recover
+
+    expect(points.fired.first).to eq(:alerts_fire)
+    expect(result[:passes]).to eq(0)
+    expect_baseline(result[:store], golden.slice("run", "steps"))
+    expect(lost_lines(result[:store])).to eq([])
+    expect(alerts_sent).to eq([])
+    pending "an alert is only the new episodes between the marks one change took, and the marks are never stored " \
+      "(lib/workspace/workflow_alerts.rb:150-166), so the crash loses `finished` for good and recovery re-derives none"
+    expect(alerts_sent).to eq([%w[finished verify]])
+  end
+
+  # Every decided round of the golden script is decided in the change that starts the next line (plan.2 after round
+  # 1's rejection), and the after-lock blocks run before the deliveries (lib/workspace/workflow_run_change.rb:168-170).
+  it "B4: the round 1 inbox notify raising keeps summary.md but loses the review item, and plan.2's line too (1 pass)" do
+    points.arm(:inbox) { |key| key == "review:#{run_id}:plan" }
+    result = crash_and_recover
+
+    expect(points.fired.first).to eq(:inbox)
+    expect(File.file?(Workspace::WorkflowReviewSummary.path(result[:store].run(run_id).artifacts_dir, "plan", 1, 1))).to be(true)
+    expect(result[:left].slice("n", "delivery")).to eq("n" => 2, "delivery" => "delivering")
+    expect(result[:passes]).to eq(1)
+    expect(typed_lines["plan.2.prompt.md"]).to eq(0)
+    expect(typed_lines.values.max).to eq(1)
+    final = final_state(result[:store])
+    expect(final["run"].slice("state", "current", "reason")).to eq("state" => "waiting", "current" => "plan", "reason" => "turn_ended_incomplete")
+    expect(final["steps"].find { |each| each["id"] == "plan" }["attempts"].map { |each| each["n"] }).to eq([1, 2])
+    expect(alerts_sent).to eq([%w[stalled plan]])
+    expect(inbox.items).to eq({})
+    pending "WorkflowReviewSummary#notify posts the review_request item once, after the lock, and nothing posts it " \
+      "again (lib/workspace/workflow_review_summary.rb:92-114); the same crash skips plan.2's delivery, and #{RunChangeCrash::NEVER_TYPED}"
+    expect(inbox.items.keys).to eq(["review:#{run_id}:plan"])
+    expect_baseline(result[:store], golden.slice("run", "steps"))
+  end
+
+  # The simulator's round stand-in types no line, so a review round adds no kick: the counts are the step lines'.
+  it "C4: a crash before plan.1's review round is delivered ends at the golden state through tick :review's redelivery (1 pass)" do
+    points.arm(:review_round) { |review| review.slice("step", "attempt", "round") == {"step" => "plan", "attempt" => 1, "round" => 1} }
+    result = crash_and_recover
+
+    expect(points.fired.first).to eq(:review_round)
+    expect(result[:left].slice("n", "outcome")).to eq("n" => 1, "outcome" => "checks_passed")
+    expect(result[:passes]).to eq(1)
+    expect_baseline(result[:store], golden.slice("run", "steps"))
+    # The redelivery starts the round again (lib/workspace/workflow_recovery.rb:829-893), writing a second review_started.
+    expect(lost_lines(result[:store])).to eq([])
+    expect(extra_lines(result[:store])).to eq([["review_started", "plan", 1]])
+    expect(alerts_sent).to eq([%w[finished verify]])
   end
 end
