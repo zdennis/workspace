@@ -209,10 +209,16 @@ module Workspace
       {"path" => path, "text" => text, "packs" => packs}
     end
 
+    # The plain-command rule the review text carries, since a reviewer composes no default packs.
+    SHELL_RULE = "Keep each Bash call to one plain command: no `$(...)`, backticks, arrays, `for`/`while` loops or pipes into loops. " \
+      "For more steps, write them to a script outside the checkout (a temp directory) and run it with one `bash <path>` call. " \
+      "A command the agent harness can't read safely stops at a permission dialog that nobody answers."
+
     # How a round with sub-agents is told its verdicts are counted.
     SUBAGENT_TEXT = "The agent daemon records every Write and Edit a sub-agent of this pane makes. The engine counts a verdict only if its file was " \
       "written by a sub-agent of this pane, one sub-agent to one verdict, and holds the hash of the bytes now in the file. " \
-      "A verdict you write yourself, or a file edited afterwards, is not counted. Change nothing in the checkout."
+      "A verdict you write yourself, or a file edited afterwards, is not counted. Change nothing in the checkout. " \
+      "Tell each sub-agent: #{SHELL_RULE}"
 
     # What a direct round ({WorkflowDefinition.direct_review?}) is told in place of the sub-agent order: this pane is
     # the one reviewer and writes its verdict itself.
@@ -221,7 +227,8 @@ module Workspace
         "and start no sub-agent. End your turn when the verdict file is written.",
       "The agent daemon records every Write and Edit this pane makes. The engine counts the verdict only if its file was written " \
         "in this pane with a file tool and holds the hash of the bytes now in the file. A file edited afterwards is not counted. " \
-        "Change nothing in the checkout."
+        "Change nothing in the checkout.",
+      SHELL_RULE
     ].freeze
 
     # Closes each reviewer's section; the intro says a section runs to it.
