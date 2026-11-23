@@ -10,6 +10,10 @@ module Workspace
   # `tick` (the socket watcher's, {#tick}) and `turn_ended` (a main agent's turn settled, {#turn_ended}).
   # A later event such as `wait_opened(pane)` is one more `notify(:wait_opened, pane)` call, with no change
   # to the subscribers that have no method of that name.
+  #
+  # To add a watcher or desk, build it in {Workspace.build_agentd_parts}, put it on `subscribers:` where its
+  # order against the others matters, and give it public methods named for the events it takes. Any public
+  # method of an event's name is called as that event, so a subscriber keeps other methods of those names private.
   class HookFanout
     # Spawns a thread for the owner report on a main agent's Stop.
     class OwnerFinished

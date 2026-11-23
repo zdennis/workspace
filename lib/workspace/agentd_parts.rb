@@ -30,7 +30,7 @@ module Workspace
   # @!attribute [r] work_queue_desk
   #   @return [Workspace::WorkQueueDesk] starts the work queue's pass after a turn ends and on the monitor's scan
   # @!attribute [r] hook_fanout
-  #   @return [Workspace::HookFanout] hands each hook event to the parts in order, and runs the desks' scans
+  #   @return [Workspace::HookFanout] hands each hook event, scan, tick and settled turn to its subscribers in order (see {Workspace::HookFanout})
   AgentdParts = Struct.new(:hook_event_log, :monitor, :restart_runner, :restart_desk, :plan_progress_watcher, :spine_owner_report,
     :spine_watcher, :status_desk, :queue_desk, :recovery_desk, :handoff_watcher, :pipeline_desk, :work_queue_desk, :hook_fanout, keyword_init: true)
 end

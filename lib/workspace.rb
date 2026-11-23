@@ -622,8 +622,8 @@ module Workspace
   #   the workspace's persisted state file
   # @param sentinel_poller_factory [#call, nil] given +session_name:+, +pane:+, +token:+ and +deadline:+, builds the
   #   {Workspace::SentinelPoller} that watches a pipeline stage; nil builds the real one
-  # @param workflow_nudger [Workspace::WorkflowNudger, nil] the {Workspace::HookFanout} wakes a workflow run with it when a
-  #   turn ends in the run's pane; nil wakes none
+  # @param workflow_nudger [Workspace::WorkflowNudger, nil] the shared nudger, wrapped per workspace in a {Workspace::WorkflowNudge}
+  #   subscriber of the {Workspace::HookFanout}, that wakes a workflow run when a turn ends in its pane; nil wakes none
   # @param workflow_store [Workspace::WorkflowRunStore, nil] the runs the work queue desk reads; nil builds one over the config's run dirs
   # @param work_queue_desk_factory [#call, nil] given +workspace:+, builds the {Workspace::WorkQueueDesk} that starts the
   #   work queue's pass; nil builds the real one
