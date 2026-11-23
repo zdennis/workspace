@@ -947,15 +947,15 @@ RSpec.describe Workspace::SessionMonitor do
         expect(pane("%2")).to include("waiting_tool" => "Bash")
       end
 
-      it "wipes the wait and the request on a main Stop after the Notification" do
+      it "keeps a sub-agent's wait and request across a main Stop after the Notification, and a prompt ends them" do
         request(agent_id: "sub-1")
         prompt
 
         event("stop")
 
+        expect(waits.keys).to eq(["sub-1"])
+        event("user_prompt")
         expect(waits).to be_empty
-        prompt
-        expect_null_fields
       end
 
       it "leaves the request on a tool_use of another name and clears it on one of the same" do

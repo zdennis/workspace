@@ -15,13 +15,18 @@ module Workspace
       "user_prompt" => "main_prompt_after_stop", "session_start" => "session_start_after_stop", "session_end" => "session_end_after_stop"
     }.freeze
 
-    # Events that start, end, or restart a turn clear a wait whoever raised it.
+    # Events that start, end, or restart a turn clear a wait whoever raised it,
+    # except that a main stop or failed turn leaves a sub-agent's wait.
     TURN_EVENTS = ["user_prompt", "stop", "session_start", "session_end", "turn_failed"].freeze
     private_constant :TURN_EVENTS
 
     # Events that leave no tool of the main agent running.
     TOOL_RESET_EVENTS = ["user_prompt", "stop", "session_start", "session_end", "turn_failed"].freeze
     private_constant :TOOL_RESET_EVENTS
+
+    # The key {PaneScreenRules} files a wait the screen showed under.
+    SCREEN_WAIT_KEY = "screen"
+    private_constant :SCREEN_WAIT_KEY
 
     # How long a decided request keeps a following Claude permission_prompt
     # notification for the same agent from opening a wait.
@@ -159,7 +164,7 @@ module Workspace
           end
           wait[:message] = SessionMonitor.clean_message(event["message"])
         elsif TURN_EVENTS.include?(event["event"])
-          clear_waiting(pane)
+          main_turn_end?(event) ? clear_main_waits(pane) : clear_waiting(pane)
           pane.delete(:decided_request)
           pane[:turn_ended] = (event["event"] != "user_prompt")
           update_turn_failed(pane, event, now)
@@ -357,6 +362,20 @@ module Workspace
         when "tool_use"
           request = requests[event["agent_id"]]
           requests.delete(event["agent_id"]) if request && request[:tool] == SessionMonitor.clean_message(event["tool"])
+        end
+      end
+
+      # A main Stop or failed turn says nothing of a sub-agent: its permission dialog
+      # is still open, and only its own events or the next prompt end it.
+      def main_turn_end?(event)
+        %w[stop turn_failed].include?(event["event"]) && event["agent_id"].nil?
+      end
+
+      def clear_main_waits(pane)
+        [nil, SCREEN_WAIT_KEY].each do |key|
+          pane[:waits].delete(key)
+          pane[:permission_requests].delete(key)
+          pane[:alerted_waits]&.delete(key)
         end
       end
 
