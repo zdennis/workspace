@@ -40,7 +40,7 @@ RSpec.describe Workspace::WorkflowSimulator, "event keys" do
       file = File.join(EventKeysSpec::PRESETS, "#{parent}.yml")
       {"text" => File.read(file), "path" => file, "source" => "builtin"} if File.file?(file) && below.nil?
     end
-    Workspace::WorkflowDefinition.parse(File.read(path), id: id, source: "builtin", path: path, parent_lookup: lookup)
+    Workspace::WorkflowDefinition.parse(File.read(path), id: id, source: "builtin", path: path, parent_lookup: lookup, import_lookup: PresetSimulation.import_lookup)
   end
 
   def play(definition_path, id, script_path)

@@ -18,7 +18,7 @@ RSpec.describe "the rpiv-auto-approve-v2 preset in the simulator" do
       {"text" => File.read(file), "path" => file, "source" => "builtin"} if File.file?(file) && below.nil?
     end
   end
-  let(:definition) { Workspace::WorkflowDefinition.parse(File.read(path), id: "rpiv-auto-approve-v2", source: "builtin", path: path, parent_lookup: lookup) }
+  let(:definition) { Workspace::WorkflowDefinition.parse(File.read(path), id: "rpiv-auto-approve-v2", source: "builtin", path: path, parent_lookup: lookup, import_lookup: PresetSimulation.import_lookup) }
   let(:answers) { [] }
   let(:elapse) { {} }
   let(:people) { [] }
@@ -201,7 +201,7 @@ RSpec.describe "the rpiv-auto-approve-v2 plan step's review revision" do
     end
   end
   let(:step) do
-    definition = Workspace::WorkflowDefinition.parse(File.read(path), id: "rpiv-auto-approve-v2", source: "builtin", path: path, parent_lookup: lookup)
+    definition = Workspace::WorkflowDefinition.parse(File.read(path), id: "rpiv-auto-approve-v2", source: "builtin", path: path, parent_lookup: lookup, import_lookup: PresetSimulation.import_lookup)
     definition.to_h["steps"].find { |each| each["id"] == "plan" }
   end
   let(:guard) { instance_double(Workspace::WorkflowGuard, head: "1" * 40, tree_digest: "t" * 64) }

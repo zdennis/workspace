@@ -46,7 +46,8 @@ module Workspace
     def find(id, project: nil)
       source, path = locate(id.to_s, project: project)
       raise_unknown(id, project) unless path
-      WorkflowDefinition.parse(File.read(path, encoding: Encoding::UTF_8), id: id.to_s, source: source, path: path, parent_lookup: parent_lookup(project))
+      WorkflowDefinition.parse(File.read(path, encoding: Encoding::UTF_8), id: id.to_s, source: source, path: path, parent_lookup: parent_lookup(project),
+        import_lookup: import_lookup(project), confine_dir: confine_dir(source, project))
     end
 
     # Reads a definition from a file path (`--file`), the one way a path becomes a definition. The id is a string
@@ -68,7 +69,9 @@ module Workspace
         raise UsageError, "Can't read #{path}: #{e.message.sub(/ (@ .*)?- .*\z/, "")}"
       end
       id = IdPatterns.claimed_id(text) || IdPatterns.file_id(full)
-      WorkflowDefinition.parse(text, id: id, source: "file", path: full, parent_lookup: parent_lookup(project))
+      layer = scope_of(full, project: project)
+      WorkflowDefinition.parse(text, id: id, source: "file", path: full, parent_lookup: parent_lookup(project),
+        import_lookup: import_lookup(project, file_layer: layer), confine_dir: layer && confine_dir(layer, project))
     end
 
     # Like {#load_file}, but refuses a definition whose id fell all the way back to {IdPatterns::FILE_ID}: a run
@@ -125,7 +128,7 @@ module Workspace
     # @param id [String]
     # @param below [String, nil] the source of the definition asking when it has this same id ("project", "global", "builtin"; "file" and "stdin" count as "global", where they would be installed): only sources after it are searched, so a user's `rpiv` can extend the preset `rpiv` and a project's `rpiv` the user's or the preset
     # @param project [String, nil] the project whose definitions are searched first
-    # @return [Hash{String=>String}, nil] "text", "path" and "source", or nil when no file has that id or it can't be read
+    # @return [Hash{String=>String}, nil] "text", "path", "source" and "confine_dir" (see {#confine_dir}), or nil when no file has that id or it can't be read
     def parent(id, below: nil, project: nil)
       return nil unless IdPatterns::WORKFLOW_ID.match?(id.to_s)
       all = dirs(project)
@@ -134,9 +137,101 @@ module Workspace
       source = names.find { |each| File.file?(File.join(all.fetch(each), "#{id}.yml")) }
       return nil unless source
       path = File.join(all.fetch(source), "#{id}.yml")
-      {"text" => File.read(path, encoding: Encoding::UTF_8), "path" => path, "source" => source}
+      {"text" => File.read(path, encoding: Encoding::UTF_8), "path" => path, "source" => source, "confine_dir" => confine_dir(source, project)}
     rescue SystemCallError
       nil
+    end
+
+    # The step library file a bare-name `import:` names: the first `<layer>/steps/NAME.yml` from +layer+ down, +layer+
+    # included, so a project's library shadows the user's for a project workflow while a user's never reaches a source
+    # or a preset. A layer the catalog does not have ("file", "stdin", or "project" with no project) searches from the top.
+    #
+    # @param name [String] the library step's name
+    # @param layer [String] the importing file's layer: "project", "global", "source:N" or "builtin"
+    # @param project [String, nil] the project whose layer is on top
+    # @return [Hash{String=>Object}] "path" (nil when no layer has the file), "layer" (where it was found), "searched"
+    #   (each layer tried, in order, as "layer" and "path") and "shadows" (the lower layers' files of that name)
+    def import_step(name, layer:, project: nil)
+      found = {"path" => nil, "layer" => nil, "searched" => [], "shadows" => []}
+      return found unless IdPatterns::WORKFLOW_ID.match?(name.to_s)
+      all = dirs(project)
+      names = all.keys
+      names = names.drop(names.index(layer)) if all.key?(layer)
+      names.each do |each|
+        path = File.join(all.fetch(each), "steps", "#{name}.yml")
+        if found["path"]
+          found["shadows"] << path if File.file?(path)
+        else
+          found["searched"] << {"layer" => each, "path" => path}
+          found.merge!("path" => path, "layer" => each) if File.file?(path)
+        end
+      end
+      found
+    end
+
+    # The lookup a definition being read finds its bare-name imports with: {#import_step} for a fixed project. One
+    # lookup serves a whole `extends:` chain, each file asking from its own layer.
+    #
+    # @param project [String, nil] the project whose definitions are searched first
+    # @param file_layer [String, nil] the layer a definition read by path or from stdin (source "file" or "stdin") sits in,
+    #   per {#scope_of} or the layer `add` and `update` write to; nil searches from the top
+    # @return [#call] `(name, layer:)` answering what {#import_step} answers
+    def import_lookup(project = nil, file_layer: nil)
+      lambda do |name, layer:|
+        layer = file_layer if layer == "file" || layer == "stdin"
+        import_step(name, layer: layer, project: project)
+      end
+    end
+
+    # The directory a definition's file references must stay inside: a source's or the presets' own directory,
+    # symlinks followed, since neither is the person's own file; nil for the other layers.
+    #
+    # @param source [String] the definition's layer
+    # @param project [String, nil]
+    # @return [String, nil]
+    def confine_dir(source, project = nil)
+      return nil unless source == "builtin" || source.to_s.start_with?("source:")
+      dir = dirs(project)[source]
+      return nil unless dir
+      File.realpath(dir)
+    rescue SystemCallError
+      dir
+    end
+
+    # Which layer's step library directory (`<layer>/steps/`) a file sits in, for a file read by path (`validate`).
+    # A file in any project's `workflows/steps/` counts as "project", whatever the caller's project.
+    #
+    # @param path [String]
+    # @param project [String, nil]
+    # @return [String, nil] "project", "global", "source:N", "builtin", or nil when it is in none
+    def library_scope_of(path, project: nil)
+      dir = File.dirname(File.expand_path(path))
+      found = dirs(project).find { |_, each| same_dir?(File.join(each, "steps"), dir) }&.first
+      return found if found
+      "project" if project_names.filter_map { |name| @config.project_workflows_dir(name) }.any? { |own| same_dir?(File.join(own, "steps"), dir) }
+    end
+
+    # Every workflow file, in every layer and every project's directory, with a step whose `import:` reaches the
+    # library file at +realpath+, symlinks followed. Read from each file's raw YAML, not a parse, so an importer is
+    # found even while the library is broken; a file that can't be read or parsed as YAML is left out.
+    #
+    # @param realpath [String] the library file
+    # @return [Array<Hash{String=>Object}>] "id", "source", "project" (the project's name for a project file, else nil)
+    #   and "path", sorted by project then source order then id
+    def importers_of(realpath)
+      target = real(realpath)
+      return [] unless target
+      scopes = [[nil, dirs.to_a]] + project_names.filter_map { |name| (own = @config.project_workflows_dir(name)) && [name, [["project", own]]] }
+      scopes.flat_map do |project, layers|
+        layers.flat_map do |source, dir|
+          @globber.call(File.join(dir, "*.yml")).sort.filter_map do |path|
+            id = File.basename(path, ".yml")
+            next unless IdPatterns::WORKFLOW_ID.match?(id) && File.file?(path)
+            next unless declared_imports(path).any? { |reference| real(import_path(reference, path, source, project)) == target }
+            {"id" => id, "source" => source, "project" => project, "path" => path}
+          end
+        end
+      end
     end
 
     # The definitions, other than +id+ itself, that extend it, directly or through others: the ones a change to the
@@ -232,7 +327,8 @@ module Workspace
         end
         row = summary(id, source, path, project).merge("sha256" => read["sha256"], "problems" => read["problems"])
         next row unless read["problems"].empty?
-        data = WorkflowDefinition.parse(read["text"], id: id, source: source, path: path, parent_lookup: parent_lookup(project)).to_h
+        data = WorkflowDefinition.parse(read["text"], id: id, source: source, path: path, parent_lookup: parent_lookup(project),
+          import_lookup: import_lookup(project), confine_dir: confine_dir(source, project)).to_h
         row.merge("title" => data["title"], "description" => data["description"], "use_when" => data["use_when"], "applies_to" => data["applies_to"])
       end
     end
@@ -269,6 +365,35 @@ module Workspace
       (parsed.is_a?(Hash) && parsed["extends"].is_a?(String)) ? parsed["extends"] : nil
     rescue
       nil
+    end
+
+    # The `import:` references a definition file's own `steps:` and `replace:` entries write, or none when it can't be read as YAML.
+    def declared_imports(path)
+      parsed = YAML.safe_load(File.read(path, encoding: Encoding::UTF_8))
+      return [] unless parsed.is_a?(Hash)
+      %w[steps replace].flat_map do |key|
+        next [] unless parsed[key].is_a?(Hash)
+        parsed[key].values.filter_map { |step| step["import"] if step.is_a?(Hash) && step["import"].is_a?(String) && !step.key?("fan_out") }
+      end
+    rescue
+      []
+    end
+
+    # The library file a reference written in the file at +path+ (of layer +source+) names, by {WorkflowImports}' rules; nil when it names none.
+    def import_path(reference, path, source, project)
+      return import_step(reference, layer: source, project: project)["path"] if IdPatterns::WORKFLOW_ID.match?(reference)
+      match = WorkflowImports::FILE_REFERENCE.match(reference)
+      match && File.expand_path(match[:path], File.dirname(path))
+    end
+
+    def real(path)
+      path && File.realpath(path)
+    rescue SystemCallError
+      nil
+    end
+
+    def same_dir?(dir, other)
+      File.expand_path(dir) == other || (!real(dir).nil? && real(dir) == real(other))
     end
 
     def summary(id, source, path, project)
@@ -321,7 +446,8 @@ module Workspace
       text = bytes.dup.force_encoding(Encoding::UTF_8)
       text = nil unless text.valid_encoding?
       problems = begin
-        WorkflowDefinition.parse(bytes.dup.force_encoding(Encoding::UTF_8), id: id, source: source, path: path, parent_lookup: parent_lookup(project))
+        WorkflowDefinition.parse(bytes.dup.force_encoding(Encoding::UTF_8), id: id, source: source, path: path, parent_lookup: parent_lookup(project),
+          import_lookup: import_lookup(project), confine_dir: confine_dir(source, project))
         []
       rescue Workspace::Error => e
         e.details["problems"] || [e.message]

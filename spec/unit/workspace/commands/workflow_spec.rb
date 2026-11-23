@@ -12,7 +12,7 @@ RSpec.describe Workspace::Commands::Workflow do
     ENV["TZ"] = zone
   end
 
-  let(:catalog) { instance_double(Workspace::WorkflowCatalog) }
+  let(:catalog) { instance_double(Workspace::WorkflowCatalog, import_lookup: nil, confine_dir: nil) }
   let(:engine) { instance_double(Workspace::WorkflowEngine) }
   let(:status) { instance_double(Workspace::WorkflowStatus) }
   let(:store) { instance_double(Workspace::WorkflowRunStore) }
@@ -3982,7 +3982,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:input) { StringIO.new }
     let(:dir) { Dir.mktmpdir }
     let(:lint) { instance_double(Workspace::WorkflowLint, call: {"warnings" => [], "not_checked" => []}) }
-    before { allow(catalog).to receive(:scope_of).and_return(nil) }
+    before { allow(catalog).to receive_messages(scope_of: nil, library_scope_of: nil) }
     subject(:command) do
       described_class.new(lint: lint, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
@@ -5376,6 +5376,243 @@ RSpec.describe Workspace::Commands::Workflow do
 
       expect { command.workflow_of_run("wr_gone") }.to raise_error(Workspace::Error) { |error|
         expect(error.code).to eq("unknown_run")
+      }
+    end
+  end
+
+  describe "a workflow that imports a library step" do
+    let(:input) { StringIO.new }
+    let(:error_output) { StringIO.new }
+    let(:dir) { Dir.mktmpdir }
+    let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
+    let(:builtin_dir) { File.join(dir, "lib", "workflows") }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil) }
+    let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
+    let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
+    let(:lint) { instance_double(Workspace::WorkflowLint, call: {"warnings" => [], "not_checked" => []}) }
+    let(:draft) { "title: Flow\nsteps:\n  look:\n    import: research\n" }
+    let(:target) { File.join(global_dir, "flow.yml") }
+    subject(:command) do
+      described_class.new(lint: lint, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input, error_output: error_output)
+    end
+
+    before do
+      FileUtils.mkdir_p([File.join(global_dir, "steps"), builtin_dir])
+      File.write(File.join(global_dir, "steps", "research.yml"), "steps:\n  research:\n    prompt: Research it.\n    gate: approve\n")
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    def draft_file
+      File.join(dir, "draft.yml").tap { |path| File.write(path, draft) }
+    end
+
+    it "validates from stdin, resolving the import through the catalog" do
+      input.string = draft
+
+      command.validate(path: "-", json: true)
+
+      expect(json["workflow"]["steps"].map { |step| [step["id"], step["prompt"]] }).to eq([["look", "Research it."]])
+    end
+
+    it "validates from stdin, resolving a PATH#NAME import relative to the current directory" do
+      FileUtils.mkdir_p(File.join(dir, "here", "lib"))
+      File.write(File.join(dir, "here", "lib", "mine.yml"), "steps:\n  mine:\n    prompt: From here.\n")
+      input.string = "title: Flow\nsteps:\n  look:\n    import: ./lib/mine.yml#mine\n"
+
+      Dir.chdir(File.join(dir, "here")) { command.validate(path: "-", json: true) }
+
+      expect(json["workflow"]["steps"].map { |step| [step["id"], step["prompt"]] }).to eq([["look", "From here."]])
+    end
+
+    it "validates a file by path" do
+      command.validate(path: draft_file, json: true)
+
+      expect(json["workflow"]["steps"].map { |step| [step["id"], step["prompt"]] }).to eq([["look", "Research it."]])
+    end
+
+    it "is refused by add when the library has no such step" do
+      File.write(File.join(dir, "draft.yml"), draft.sub("research", "missing"))
+
+      expect { command.add(id: "flow", path: File.join(dir, "draft.yml")) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+
+    it "is refused by update when the library has no such step" do
+      old = "title: Old\nsteps:\n  plan:\n    prompt: Old.\n"
+      File.write(target, old)
+      File.write(File.join(dir, "draft.yml"), draft.sub("research", "missing"))
+
+      expect { command.update(id: "flow", path: File.join(dir, "draft.yml"), if_sha256: Digest::SHA256.hexdigest(old)) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+
+    it "is shown with its source" do
+      File.write(target, draft)
+
+      command.show(id: "flow", json: true, source: true)
+
+      expect(json["workflow"]).to include("problems" => [])
+      expect(json["workflow"]["steps"].map { |step| [step["id"], step["prompt"]] }).to eq([["look", "Research it."]])
+    end
+
+    context "naming where each import came from" do
+      let(:library) { File.join(global_dir, "steps", "research.yml") }
+      let(:shadowed) { File.join(builtin_dir, "steps", "research.yml") }
+      let(:host) { "title: Flow\nsteps:\n  look:\n    import: research\n    prompt: Look.\n    produces: [notes.md]\n" }
+      let(:entry) do
+        {"step" => "look", "import" => "research", "layer" => "global", "path" => library,
+         "overrides" => ["prompt", "produces"], "removes" => ["prompt_file"], "shadows" => [shadowed], "sha256" => a_string_matching(/\A\h{64}\z/)}
+      end
+
+      before do
+        FileUtils.mkdir_p(File.dirname(shadowed))
+        File.write(shadowed, "steps:\n  research:\n    prompt: Builtin research.\n")
+        File.write(library, "steps:\n  research:\n    prompt_file: research.md\n    produces: [notes.md, sources.md]\n    gate: approve\n")
+        File.write(target, host)
+      end
+
+      it "show --json carries an imports array and leaves the rest of the document as it was" do
+        command.show(id: "flow", json: true)
+
+        expect(json["workflow"]["imports"]).to match([entry])
+        expect(json["workflow"]).to include("id" => "flow", "source" => "global", "path" => target)
+      end
+
+      it "show prints an Imports block with the overrides, the removed prompt_file and the shadowed file" do
+        command.show(id: "flow")
+
+        expect(output.string).to include("Imports:\n  look: research (global, #{library})\n    overrides: prompt, produces\n    removes: prompt_file\n    shadows: #{shadowed}\n")
+      end
+
+      it "validate --json carries the imports and the dropped-value note among the warnings" do
+        command.validate(path: target, json: true)
+
+        expect(json["workflow"]["imports"]).to match([entry])
+        expect(json["warnings"]).to include(include("code" => "import_dropped", "step" => "look", "message" => include("drops sources.md")))
+      end
+
+      it "validate prints the Imports block and the dropped-value warning, and still succeeds" do
+        expect { command.validate(path: target) }.not_to raise_error
+
+        expect(output.string).to start_with("flow: valid (1 steps), in the global definitions\nImports:\n  look: research (global, #{library})\n")
+        expect(output.string).to include("warning: step look: produces replaces the produces of imported step research whole and drops sources.md")
+      end
+
+      it "a definition with no import has no imports field and no Imports block" do
+        File.write(target, "title: Flow\nsteps:\n  look:\n    prompt: Look.\n    gate: approve\n")
+
+        command.show(id: "flow", json: true)
+        expect(json["workflow"]).not_to have_key("imports")
+
+        output.truncate(0)
+        output.rewind
+        command.show(id: "flow")
+        expect(output.string).not_to include("Imports:")
+      end
+    end
+  end
+
+  describe "#validate of a step library" do
+    let(:input) { StringIO.new }
+    let(:dir) { Dir.mktmpdir }
+    let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
+    let(:builtin_dir) { File.join(dir, "lib", "workflows") }
+    let(:projects_dir) { File.join(dir, "home", ".config", "workspace", "projects") }
+    let(:config) do
+      instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: projects_dir).tap do |config|
+        allow(config).to receive(:project_workflows_dir) { |name| name && File.join(projects_dir, name, "workflows") }
+      end
+    end
+    let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
+    let(:lint) { instance_double(Workspace::WorkflowLint, call: {"warnings" => [], "not_checked" => []}) }
+    let(:library) { File.join(global_dir, "steps", "research.yml") }
+    let(:good) { File.join(global_dir, "flow.yml") }
+    let(:broken) { File.join(projects_dir, "app", "workflows", "broken.yml") }
+    subject(:command) do
+      described_class.new(lint: lint, catalog: real_catalog, files: nil, engine: engine, status: status, store: store, panes: panes, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
+    end
+
+    before do
+      FileUtils.mkdir_p([File.dirname(library), File.dirname(broken), builtin_dir])
+      File.write(library, "steps:\n  research:\n    prompt: Research it.\n    gate: approve\n")
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    def importers
+      File.write(good, "title: Flow\nsteps:\n  look:\n    import: research\n")
+      File.write(broken, "title: Broken\nsteps:\n  look:\n    import: research\n    on_fail: {goto: nowhere, max: 1}\n")
+    end
+
+    it "checks the library, then each importer, and exits non-zero when one importer fails, printing both" do
+      importers
+
+      expect { command.validate(path: library) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_step_library")
+        expect(e.message).to eq("Step library #{library}: 1 of 2 workflows that import it are not valid (broken (project app)).")
+      }
+      expect(output.string).to start_with("#{library}: valid step library (1 steps: research), in the global definitions\nImported by:\n")
+      expect(output.string).to include("  broken (project app, #{broken}): not valid\n    - step look: on_fail goto must name an earlier step")
+      expect(output.string).to include("  flow (global, #{good}): valid\n")
+    end
+
+    it "carries the library and one result per importer in the error's details for --json, printing no document" do
+      importers
+
+      expect { command.validate(path: library, json: true) }.to raise_error(Workspace::Error) { |e|
+        expect(e.details["library"]).to eq("path" => library, "scope" => "global", "valid" => true, "steps" => ["research"], "problems" => [])
+        expect(e.details["importers"]).to contain_exactly(
+          {"id" => "flow", "source" => "global", "project" => nil, "path" => good, "valid" => true, "problems" => []},
+          {"id" => "broken", "source" => "project", "project" => "app", "path" => broken, "valid" => false, "problems" => [include("on_fail goto must name an earlier step")]}
+        )
+      }
+      expect(output.string).to eq("")
+    end
+
+    it "answers one document when the library and every importer pass" do
+      File.write(good, "title: Flow\nsteps:\n  look:\n    import: research\n")
+
+      command.validate(path: library, json: true)
+
+      expect(json).to eq("schema_version" => 1, "ok" => true,
+        "library" => {"path" => library, "scope" => "global", "valid" => true, "steps" => ["research"], "problems" => []},
+        "importers" => [{"id" => "flow", "source" => "global", "project" => nil, "path" => good, "valid" => true, "problems" => []}])
+    end
+
+    it "refuses a broken library alone, naming its problems" do
+      File.write(library, "title: Not a library\nsteps:\n  research:\n    import: other\n")
+
+      expect { command.validate(path: library) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_step_library")
+        expect(e.message).to eq("Step library #{library}: the library is not valid.")
+        expect(e.details["library"]).to include("valid" => false, "problems" => [include("unknown key(s) title"), include("step research:")])
+      }
+      expect(output.string).to start_with("#{library}: not a valid step library, in the global definitions\n  - a step library has unknown key(s) title")
+      expect(output.string).to end_with("No workflow imports it.\n")
+    end
+
+    it "passes a good library that nothing imports" do
+      command.validate(path: library)
+
+      expect(output.string).to eq("#{library}: valid step library (1 steps: research), in the global definitions\nNo workflow imports it.\n")
+    end
+
+    it "reads a library-shaped file outside steps/ as a workflow, and its error names the steps/ rule" do
+      path = File.join(dir, "research.yml")
+      File.write(path, "steps:\n  research:\n    prompt: Research {{inputs.task}}.\n    gate: approve\n")
+
+      expect { command.validate(path: path) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_workflow")
+        expect(e.details["problems"]).to include(include("{{inputs.task}}"), include("only inside a layer's steps/ directory"))
+        expect(e.message).to include("  - this file has only a step library's keys")
+      }
+    end
+
+    it "does not name the steps/ rule for a workflow that fails" do
+      path = File.join(dir, "flow.yml")
+      File.write(path, "title: Flow\nsteps:\n  research:\n    prompt: Research {{inputs.task}}.\n")
+
+      expect { command.validate(path: path) }.to raise_error(Workspace::Error) { |e|
+        expect(e.details["problems"].join).not_to include("steps/ directory")
       }
     end
   end

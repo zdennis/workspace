@@ -375,6 +375,10 @@ module Workspace
           "\"Extends:\" line for each parent (source and path). --json adds \"extends\" and \"resolved_sha256\", the digest",
           "a run started now would record.",
           "",
+          "A step with import: NAME is copied from a step library file (steps/NAME.yml) and merged with the step's own",
+          "keys; an \"Imports:\" block names each one's library file and layer, the keys the step sets, the library keys",
+          "it removes and the lower-layer files of that name it hides. --json adds \"imports\" (absent when there are none).",
+          "",
           "A \"Stall:\" line gives the idle time after which the sweep decides a step: the definition's stall:, or",
           "the workflows.default_stall config value marked \"(default)\". --json adds \"effective_stall\" (seconds, or null",
           "when off) and \"stall_source\" (definition or default)."
@@ -437,6 +441,13 @@ module Workspace
           "are listed as \"not checked\" instead. --json lists warnings (code, step, message) and not_checked (same shape).",
           "A PATH inside the project's workflows directory, the user's, or the presets is reported with its scope, and a",
           "`shadowed` warning says when another file of that id is found first.",
+          "A step with import: is checked after it is merged; a valid definition prints an \"Imports:\" block (--json:",
+          "\"imports\", absent when there are none), and a key the step sets to null or a list that leaves out library",
+          "entries is a warning.",
+          "A PATH in a steps/ directory of a definitions folder (such as ~/.config/workspace/workflows/steps/NAME.yml) is",
+          "checked as a step library, then every workflow in every folder and project that imports it is checked again",
+          "and listed with its result; it exits 1 (invalid_step_library) when the library or any of them fails. --json:",
+          "\"library\" (path, scope, valid, steps, problems) and \"importers\" (id, source, project, path, valid, problems).",
           "",
           "A step's guard: (unchanged or config) checks the checkout when the turn ends, on_fail's context: (fresh or continue)",
           "sets the conversation of the step it goes back to, and a status: check gets WORKSPACE_RUN_ID,",
@@ -448,7 +459,8 @@ module Workspace
           ["workspace workflow validate draft.yml", "check a definition you are writing: prints valid, or exits 1 with an error listing every problem"],
           ["workspace workflow validate - < draft.yml", "check text read from stdin"],
           ["workspace workflow validate draft.yml --id ship", "check it as the workflow \"ship\" when the file is named otherwise"],
-          ["workspace workflow validate draft.yml --json", "the checked definition and its warnings as one document, or an error document with the problems"]
+          ["workspace workflow validate draft.yml --json", "the checked definition and its warnings as one document, or an error document with the problems"],
+          ["workspace workflow validate ~/.config/workspace/workflows/steps/verify.yml", "check a step library and every workflow that imports it"]
         ]
       },
       "add" => {

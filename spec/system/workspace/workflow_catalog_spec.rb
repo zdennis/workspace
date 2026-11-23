@@ -632,4 +632,127 @@ RSpec.describe Workspace::WorkflowCatalog do
       end
     end
   end
+
+  describe "step imports" do
+    let(:project_dir) { File.join(@dir, "projects", "app", "workflows") }
+    let(:src1) { File.join(@dir, "src1") }
+    let(:with_sources) { described_class.new(config: config, sources: -> { [src1] }) }
+    let(:host) { "steps:\n  check:\n    import: verify\n" }
+
+    def library(dir, title)
+      write(File.join(dir, "steps"), "verify", "steps:\n  verify:\n    prompt: #{title}\n")
+    end
+
+    def imported(definition)
+      [definition.imports.first.values_at("layer", "path"), definition.to_h["steps"].first["prompt"]]
+    end
+
+    it "resolves a bare name from the host's own layer, a project's library shadowing the user's" do
+      [project_dir, global_dir].each { |dir| library(dir, dir) }
+      write(project_dir, "team", host)
+      write(global_dir, "mine", host)
+
+      expect(imported(catalog.find("team", project: "app"))).to eq([["project", File.join(project_dir, "steps", "verify.yml")], project_dir])
+      expect(catalog.find("team", project: "app").imports.first["shadows"]).to eq([File.join(global_dir, "steps", "verify.yml")])
+      expect(imported(catalog.find("mine", project: "app"))).to eq([["global", File.join(global_dir, "steps", "verify.yml")], global_dir])
+    end
+
+    it "keeps a user's or project's library from changing what a preset or a source workflow imports" do
+      [project_dir, global_dir, src1, builtin_dir].each { |dir| library(dir, dir) }
+      write(builtin_dir, "shipped", host)
+      write(src1, "shared", host)
+
+      expect(imported(with_sources.find("shipped", project: "app"))).to eq([["builtin", File.join(builtin_dir, "steps", "verify.yml")], builtin_dir])
+      expect(imported(with_sources.find("shared", project: "app"))).to eq([["source:1", File.join(src1, "steps", "verify.yml")], src1])
+    end
+
+    it "searches a draft read from stdin or a file from the layer it will be written to, not the project's" do
+      library(project_dir, project_dir)
+      lookup = catalog.import_lookup("app", file_layer: "global")
+
+      %w[stdin file].each { |source| expect(lookup.call("verify", layer: source)["path"]).to be_nil }
+      expect(catalog.import_lookup("app").call("verify", layer: "stdin")["path"]).to eq(File.join(project_dir, "steps", "verify.yml"))
+    end
+
+    it "lists every layer searched when no layer has the library" do
+      write(global_dir, "mine", host)
+
+      expect { catalog.find("mine") }.to raise_error(Workspace::Error) { |error|
+        expect(error.message).to include("searched: global #{File.join(global_dir, "steps", "verify.yml")}, builtin #{File.join(builtin_dir, "steps", "verify.yml")}")
+      }
+    end
+
+    it "reads a file by path from the layer its directory matches, and from the top outside every layer" do
+      [global_dir, src1].each { |dir| library(dir, dir) }
+      write(src1, "shared", host)
+      outside = File.join(@dir, "elsewhere")
+      write(outside, "loose", host)
+
+      expect(imported(with_sources.load_file(File.join(src1, "shared.yml")))).to eq(imported(with_sources.find("shared")))
+      expect(imported(with_sources.load_file(File.join(src1, "shared.yml"))).first.first).to eq("source:1")
+      expect(imported(with_sources.load_file(File.join(outside, "loose.yml"))).first.first).to eq("global")
+    end
+
+    it "refuses a source workflow's file reference that a link takes outside the source" do
+      write(File.join(@dir, "outside"), "lib", "steps:\n  verify:\n    prompt: P\n")
+      FileUtils.mkdir_p(src1)
+      File.symlink(File.join(@dir, "outside", "lib.yml"), File.join(src1, "lib.yml"))
+      write(src1, "shared", "steps:\n  check:\n    import: lib.yml#verify\n")
+
+      expect { with_sources.find("shared") }.to raise_error(Workspace::Error) { |error| expect(error.message).to include("outside this workflow's directory") }
+      expect { with_sources.load_file(File.join(src1, "shared.yml")) }.to raise_error(Workspace::Error) { |error| expect(error.message).to include("outside this workflow's directory") }
+      expect(with_sources.list.find { |row| row["id"] == "shared" }["problems"].join).to include("outside this workflow's directory")
+      expect(with_sources.parent("shared")["confine_dir"]).to eq(File.realpath(src1))
+      expect(catalog.parent("rpiv")["confine_dir"]).to eq(File.realpath(builtin_dir))
+    end
+
+    it "lets a user's file reference follow a link out of its directory" do
+      write(File.join(@dir, "outside"), "lib", "steps:\n  verify:\n    prompt: P\n")
+      FileUtils.mkdir_p(global_dir)
+      File.symlink(File.join(@dir, "outside", "lib.yml"), File.join(global_dir, "lib.yml"))
+      write(global_dir, "mine", "steps:\n  check:\n    import: lib.yml#verify\n")
+
+      expect(catalog.find("mine").to_h["steps"].first["prompt"]).to eq("P")
+      expect(catalog.parent("mine")["confine_dir"]).to be_nil
+    end
+
+    it "never lists a steps/ library as a workflow" do
+      [global_dir, builtin_dir].each { |dir| library(dir, dir) }
+
+      expect(catalog.list.map { |row| row["id"] }).to eq(%w[rpiv])
+      expect(catalog.known?("verify")).to be(false)
+    end
+
+    it "tells a library file by its layer's steps/ directory" do
+      [project_dir, global_dir, src1].each { |dir| library(dir, dir) }
+
+      expect(with_sources.library_scope_of(File.join(global_dir, "steps", "verify.yml"))).to eq("global")
+      expect(with_sources.library_scope_of(File.join(src1, "steps", "verify.yml"))).to eq("source:1")
+      expect(with_sources.library_scope_of(File.join(project_dir, "steps", "verify.yml"))).to eq("project")
+      expect(with_sources.library_scope_of(File.join(global_dir, "rpiv.yml"))).to be_nil
+      expect(with_sources.library_scope_of(File.join(@dir, "steps", "verify.yml"))).to be_nil
+    end
+
+    it "passes over a directory under projects/ that could not be a project name" do
+      FileUtils.mkdir_p(File.join(@dir, "projects", "bad name", "workflows", "steps"))
+
+      expect(catalog.library_scope_of(File.join(@dir, "projects", "bad name", "workflows", "steps", "verify.yml"))).to be_nil
+      expect(catalog.importers_of(File.join(@dir, "projects", "bad name", "workflows", "steps", "verify.yml"))).to eq([])
+    end
+
+    it "finds the importers of a library across layers and projects, by realpath, even while it is broken" do
+      library(global_dir, "G")
+      library(project_dir, "P")
+      write(project_dir, "team", host)
+      write(global_dir, "mine", host)
+      write(global_dir, "byfile", "steps:\n  check:\n    import: steps/verify.yml#verify\n")
+      write(global_dir, "plain", "steps:\n  a:\n    prompt: P\n")
+      write(File.join(@dir, "projects", "other", "workflows"), "theirs", host)
+      File.write(File.join(global_dir, "steps", "verify.yml"), "steps: [broken\n")
+
+      found = catalog.importers_of(File.join(global_dir, "steps", "verify.yml"))
+      expect(found.map { |row| row.values_at("id", "source", "project") }).to eq([["byfile", "global", nil], ["mine", "global", nil], %w[theirs project other]])
+      expect(catalog.importers_of(File.join(project_dir, "steps", "verify.yml")).map { |row| row["id"] }).to eq(%w[team])
+    end
+  end
 end

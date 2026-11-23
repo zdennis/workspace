@@ -219,4 +219,16 @@ RSpec.describe Workspace::WorkflowLint do
     found = lint.call(definition(text), cwd: "/repo")["warnings"]
     expect(found).to match([include("code" => "unknown_pack", "step" => nil, "message" => /reviewer skeptic includes pack missing.*stop when a review round starts/)])
   end
+
+  it "warns of a missing pack included by an imported step, naming the host step" do
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "research.yml"), "steps:\n  research:\n    prompt: R\n    gate: approve\n    include: [nope]\n")
+      lookup = ->(name, layer:) { {"path" => File.join(dir, "#{name}.yml"), "layer" => "global", "searched" => [], "shadows" => []} }
+      imported = Workspace::WorkflowDefinition.parse("steps:\n  look:\n    import: research\n", id: "demo", source: "global", path: "/d/demo.yml", import_lookup: lookup)
+
+      found = lint.call(imported, cwd: "/repo")["warnings"]
+
+      expect(found).to match([include("code" => "unknown_pack", "step" => "look", "message" => /step look includes pack nope.*`start` would refuse it/)])
+    end
+  end
 end

@@ -92,6 +92,25 @@ RSpec.describe Workspace::WorkflowSourceFetcher do
       expect(Dir.children(stage).sort).to eq(%w[a.yml b.yml manifest.json])
     end
 
+    it "refuses a source whose directory holds a steps/ directory, before fetching any file" do
+      with_steps = listing + [{"type" => "dir", "name" => "steps", "path" => "wf/steps", "sha" => "sha-s"}]
+      responses["repos/acme/widgets/contents/wf"] = [JSON.generate(with_steps), "", true]
+
+      expect { fetcher.fetch(entry, into: stage) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("workflow_source_failed")
+        expect(e.message).to include("cannot carry step libraries")
+      }
+      expect(calls.size).to eq(1)
+      expect(File.exist?(File.join(stage, "a.yml"))).to be(false)
+    end
+
+    it "does not mind a file named steps" do
+      ok = listing + [{"type" => "file", "name" => "steps", "path" => "wf/steps", "sha" => "x"}]
+      responses["repos/acme/widgets/contents/wf"] = [JSON.generate(ok), "", true]
+
+      expect(fetcher.fetch(entry, into: stage).local).to be(false)
+    end
+
     it "raises on a later file failure and leaves the staging directory to the caller" do
       responses["repos/acme/widgets/contents/wf/b.yml"] = ["", "HTTP 404", false]
 

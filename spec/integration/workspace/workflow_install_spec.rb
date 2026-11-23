@@ -145,6 +145,60 @@ RSpec.describe "workflow install over a real cache directory" do
       expect(problems.map { |p| p["code"] }).to eq(["workflow_source_prompt_file"])
     end
 
+    def library(text = "schema_version: 0.1\nsteps:\n  research:\n    prompt: R\n")
+      write(File.join(local("src"), "steps"), "research", text)
+    end
+
+    it "installs a source with a steps/ library and resolves its workflow's import" do
+      library
+      write(local("src"), "ship", "title: T\nsteps:\n  research:\n    import: research\n")
+
+      source = command.install["sources"].first
+
+      expect(source["problems"]).to eq([])
+      expect(source["workflows"]).to eq(["ship"])
+    end
+
+    it "refuses an invalid library file even when nothing imports it" do
+      write(local("src"), "ship", step_yaml)
+      library("steps: nope\n")
+
+      problems = command.install["sources"].first["problems"]
+
+      expect(problems.map { |p| p["file"] }).to eq(["steps/research.yml"])
+    end
+
+    it "refuses a prompt_file in a library step" do
+      write(local("src"), "ship", step_yaml)
+      library("steps:\n  research:\n    prompt_file: p.md\n")
+
+      problems = command.install["sources"].first["problems"]
+
+      expect(problems.map { |p| p["code"] }).to eq(["workflow_source_prompt_file"])
+      expect(problems.first["file"]).to eq("steps/research.yml")
+    end
+
+    it "refuses a symlinked file in steps/" do
+      write(local("src"), "ship", step_yaml)
+      write(File.join(@dir, "elsewhere"), "outside", "steps:\n  outside:\n    prompt: O\n")
+      FileUtils.mkdir_p(File.join(local("src"), "steps"))
+      File.symlink(File.join(@dir, "elsewhere", "outside.yml"), File.join(local("src"), "steps", "outside.yml"))
+
+      problems = command.install["sources"].first["problems"]
+
+      expect(problems.map { |p| [p["file"], p["message"]] }).to eq([["steps/outside.yml", "is a link; a source's step library files must be real files"]])
+    end
+
+    it "refuses a steps/ that is itself a link" do
+      write(local("src"), "ship", step_yaml)
+      write(File.join(@dir, "elsewhere"), "outside", "steps:\n  outside:\n    prompt: O\n")
+      File.symlink(File.join(@dir, "elsewhere"), File.join(local("src"), "steps"))
+
+      problems = command.install["sources"].first["problems"]
+
+      expect(problems.map { |p| p["file"] }).to eq(["steps"])
+    end
+
     it "refuses a prompt_file a replace step would merge in over a preset" do
       write(local("src"), "ship", "extends: rpiv\ntitle: T\nreplace:\n  a:\n    prompt_file: p.md\n")
 

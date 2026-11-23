@@ -449,4 +449,47 @@ RSpec.describe Workspace::WorkflowCompare do
       expect(result["groups"].flat_map { |each| each["run_ids"] }).to eq(%w[wr_3])
     end
   end
+
+  describe "a library step edited between two runs (R16)" do
+    let(:global_dir) { File.join(dir, "workflows") }
+    let(:config) do
+      instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: File.join(dir, "builtin"), workspace_projects_dir: File.join(dir, "projects"), project_workflows_dir: nil)
+    end
+    let(:catalog) { Workspace::WorkflowCatalog.new(config: config) }
+
+    def library(prompt)
+      FileUtils.mkdir_p(File.join(global_dir, "steps"))
+      File.write(File.join(global_dir, "steps", "check.yml"), "schema_version: 0.1\nsteps:\n  check:\n    prompt: #{prompt}\n    produces: [check.md]\n")
+    end
+
+    # Stored the way WorkflowStarter stores a run: the checked definition and its resolved digest.
+    def start(definition)
+      store.create("workflow" => "rpiv", "workspace" => "app", "state" => "waiting", "current" => "check", "created_at" => "2026-10-30T09:00:00Z",
+        "definition" => definition.to_h, "definition_sha256" => definition.resolved_sha256,
+        "steps" => {"check" => {"state" => "pending", "attempts" => []}})["id"]
+    end
+
+    before do
+      FileUtils.mkdir_p(global_dir)
+      File.write(File.join(global_dir, "rpiv.yml"), "steps:\n  check:\n    import: check\n")
+    end
+
+    it "keeps the earlier run's stored definition and identity, gives the later run a new one, and groups them apart" do
+      library("Check it.")
+      before_edit = catalog.find("rpiv")
+      first = start(before_edit)
+
+      library("Check it twice.")
+      after_edit = catalog.find("rpiv")
+      second = start(after_edit)
+
+      expect(after_edit.sha256).to eq(before_edit.sha256)
+      expect(after_edit.resolved_sha256).not_to eq(before_edit.resolved_sha256)
+      expect(store.run(first).definition_sha256).to eq(before_edit.resolved_sha256)
+      expect(store.run(first).definition["steps"].first["prompt"]).to eq("Check it.")
+      expect(store.run(second).definition_sha256).to eq(after_edit.resolved_sha256)
+      expect(store.run(second).definition["steps"].first["prompt"]).to eq("Check it twice.")
+      expect(read["groups"].map { |each| [each["sha"], each["run_ids"]] }).to contain_exactly([before_edit.resolved_sha256, [first]], [after_edit.resolved_sha256, [second]])
+    end
+  end
 end

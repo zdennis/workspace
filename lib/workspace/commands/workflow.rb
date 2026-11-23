@@ -120,13 +120,14 @@ module Workspace
         definition = @catalog.find(id, project: project)
         data = definition.to_h
         if json
-          return document("workflow" => with_branch_fills(data).merge(stall_fields(data)).merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge("project" => (definition.source == "project") ? project : nil).merge(extends_field(definition)))
+          return document("workflow" => with_branch_fills(data).merge(stall_fields(data)).merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge("project" => (definition.source == "project") ? project : nil).merge(extends_field(definition)).merge(imports_field(definition)))
         end
         @output.puts "#{data["id"]}: #{data["title"]} (#{definition.source}, #{definition.path})"
         @output.puts data["description"] if data["description"]
         @output.puts "Use when: #{data["use_when"]}" if data["use_when"]
         @output.puts "Version: #{data["version"]}" if data["version"]
         definition.parents.each { |parent| @output.puts "Extends: #{parent["id"]} (#{parent["source"]}, #{parent["path"]})" }
+        print_imports(definition.imports)
         @output.puts "Applies to: #{data["applies_to"].join(", ")}" if data["applies_to"].any?
         @output.puts "Inputs:" if data["inputs"].any?
         data["inputs"].each { |name, spec| @output.puts "  #{name}#{" (required)" if spec["required"]}#{": #{spec["description"]}" if spec["description"]}" }
@@ -212,28 +213,74 @@ module Workspace
       # @param project [String, nil] the project whose definitions come first; `scope` and a `shadowed` warning say where PATH sits
       # @return [void]
       # @raise [Workspace::UsageError] when PATH can't be read
-      # @raise [Workspace::Error] code `invalid_workflow`, with `details.problems` listing every problem
+      # @raise [Workspace::Error] code `invalid_workflow`, with `details.problems` listing every problem; `invalid_step_library` for a library PATH
       #
       # A valid definition also prints its +warnings+ (text lines, or the `warnings` array in JSON) and what it could not check
       # (+not_checked+); neither changes the exit code.
+      #
+      # A PATH in a layer's `steps/` directory ({WorkflowCatalog#library_scope_of}) is checked as a step library instead,
+      # and every workflow whose import reaches it ({WorkflowCatalog#importers_of}) is checked again, each printed
+      # with its result; see {#validate_library}. A file with a library's shape anywhere else is read as a workflow,
+      # and its error names the `steps/` rule.
       def validate(path:, id: nil, json: false, project: nil)
         stdin = path == "-"
         text = read_text(path, stdin)
+        library = !stdin && @catalog.library_scope_of(path, project: project)
+        return validate_library(path, text, library, json) if library
         id ||= IdPatterns.claimed_id(text) || (stdin ? STDIN_ID : IdPatterns.file_id(path))
         lookup, chain = draft_lookup(id, text, project)
-        definition = WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file",
-          path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain)
+        layer = stdin ? nil : @catalog.scope_of(path, project: project)
+        definition = begin
+          WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file",
+            path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain,
+            import_lookup: @catalog.import_lookup(project, file_layer: layer), confine_dir: layer && @catalog.confine_dir(layer, project))
+        rescue Workspace::Error => e
+          raise unless e.code == "invalid_workflow" && e.details["problems"] && WorkflowImports.library_problems(text).empty?
+          problems = e.details["problems"] + [LIBRARY_OUTSIDE_STEPS]
+          raise Workspace::Error.new(e.message + "\n  - #{LIBRARY_OUTSIDE_STEPS}", code: e.code, details: e.details.merge("problems" => problems))
+        end
         found = @lint.call(definition, cwd: Dir.pwd)
-        scope = stdin ? nil : @catalog.scope_of(path, project: project)
+        scope = layer
         warnings = definition.warnings + found["warnings"] + shadow_warnings(definition.id, scope, project)
         if json
-          document("workflow" => definition.to_h.merge("source" => definition.source, "scope" => scope, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge(extends_field(definition)),
+          document("workflow" => definition.to_h.merge("source" => definition.source, "scope" => scope, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge(extends_field(definition)).merge(imports_field(definition)),
             "warnings" => warnings, "not_checked" => found["not_checked"])
         else
           @output.puts "#{definition.to_h["id"]}: valid (#{definition.steps.size} steps)#{", in the #{scope} definitions" if scope}"
+          print_imports(definition.imports)
           warnings.each { |warning| @output.puts "warning: #{TerminalText.escape(warning["message"])}" }
           found["not_checked"].each { |each| @output.puts "not checked: #{TerminalText.escape(each["message"])}" }
         end
+      end
+
+      LIBRARY_OUTSIDE_STEPS = "this file has only a step library's keys (schema_version, description, steps), so it was read " \
+        "as a workflow: a step library is checked as one only inside a layer's steps/ directory, such as " \
+        "~/.config/workspace/workflows/steps/NAME.yml"
+
+      # Checks a step library file (PATH in a layer's `steps/` directory) by {WorkflowImports.library_problems}, then every
+      # workflow, in every layer and every project, whose import reaches it, each parsed from its own file and layer.
+      # Prints one result for the library and one per importer; writes nothing.
+      #
+      # @param path [String]
+      # @param text [String]
+      # @param scope [String] the layer whose steps/ directory PATH is in
+      # @param json [Boolean]
+      # @return [void]
+      # @raise [Workspace::Error] code `invalid_step_library` when the library or any importer fails, with the
+      #   document's "library" and "importers" in `details` (text: the results are printed first)
+      def validate_library(path, text, scope, json)
+        full = File.expand_path(path)
+        steps, problems = WorkflowImports.read_library(text)
+        importers = @catalog.importers_of(full).map { |importer| importer_result(importer) }
+        body = {"library" => {"path" => full, "scope" => scope, "valid" => problems.empty?, "steps" => steps.keys, "problems" => problems},
+                "importers" => importers}
+        failed = importers.reject { |each| each["valid"] }
+        return (json ? document(body) : print_library_result(body)) if problems.empty? && failed.empty?
+        print_library_result(body) unless json
+        why = []
+        why << "the library is not valid" if problems.any?
+        why << "#{failed.size} of #{importers.size} workflows that import it are not valid (#{failed.map { |each| importer_name(each) }.join(", ")})" if failed.any?
+        raise Workspace::Error.new("Step library #{full}: #{why.join("; ")}.", code: "invalid_step_library", details: body)
       end
 
       # Prints the instructions a step's agent would be sent for its first attempt, composed
@@ -349,7 +396,8 @@ module Workspace
         stdin = path == "-"
         text = read_text(path, stdin)
         lookup, chain = draft_lookup(id, text, project)
-        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain)
+        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain,
+          import_lookup: @catalog.import_lookup(project, file_layer: "global"))
         found = @catalog.locate(id, project: project)
         written = @files.add(id, text, dry_run: dry_run)
         note = if found&.first == "project"
@@ -381,7 +429,8 @@ module Workspace
         stdin = path == "-"
         text = read_text(path, stdin)
         lookup, chain = draft_lookup(id, text, project)
-        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain)
+        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain,
+          import_lookup: @catalog.import_lookup(project, file_layer: "global"))
         written = @files.update(id, text, if_sha256: if_sha256, dry_run: dry_run, project: project)
         hidden = @catalog.locate(id, project: project)
         note = "; the project definition at #{hidden.last} hides it in #{project}" if hidden&.first == "project"
@@ -1805,6 +1854,57 @@ module Workspace
         parents.empty? ? {} : {"extends" => parents.map { |parent| parent.slice("id", "source", "path", "sha256") }}
       end
 
+      # The `imports` field of a definition document: one entry per imported step ({WorkflowDefinition#imports}), left
+      # out when there are none, as `extends` is, so a definition with no import reads as before.
+      def imports_field(definition)
+        definition.imports.empty? ? {} : {"imports" => definition.imports}
+      end
+
+      # One importer of a step library, checked from its own file as its own layer reads it.
+      def importer_result(importer)
+        project = importer["project"]
+        source = importer["source"]
+        WorkflowDefinition.parse(File.binread(importer["path"]).force_encoding(Encoding::UTF_8), id: importer["id"], source: source,
+          path: importer["path"], parent_lookup: parent_lookup(project: project),
+          import_lookup: @catalog.import_lookup(project), confine_dir: @catalog.confine_dir(source, project))
+        importer.merge("valid" => true, "problems" => [])
+      rescue Workspace::Error => e
+        importer.merge("valid" => false, "problems" => e.details["problems"] || [e.message])
+      rescue SystemCallError => e
+        importer.merge("valid" => false, "problems" => ["can't be read (#{e.class})"])
+      end
+
+      def importer_name(importer)
+        importer["project"] ? "#{importer["id"]} (project #{importer["project"]})" : importer["id"]
+      end
+
+      def print_library_result(body)
+        library = body["library"]
+        verdict = library["valid"] ? "valid step library (#{library["steps"].size} steps: #{library["steps"].join(", ")})" : "not a valid step library"
+        @output.puts TerminalText.escape("#{library["path"]}: #{verdict}, in the #{library["scope"]} definitions")
+        library["problems"].each { |problem| @output.puts TerminalText.escape("  - #{problem}") }
+        return @output.puts "No workflow imports it." if body["importers"].empty?
+        @output.puts "Imported by:"
+        body["importers"].each do |each|
+          where = each["project"] ? "project #{each["project"]}" : each["source"]
+          @output.puts TerminalText.escape("  #{each["id"]} (#{where}, #{each["path"]}): #{each["valid"] ? "valid" : "not valid"}")
+          each["problems"].each { |problem| @output.puts TerminalText.escape("    - #{problem}") }
+        end
+      end
+
+      # The `Imports:` block: each imported step, its reference and where it resolved, then the keys the host set, the
+      # library keys gone from the result and the lower-layer files of the same name it shadows.
+      def print_imports(imports)
+        return if imports.empty?
+        @output.puts "Imports:"
+        imports.each do |each|
+          @output.puts TerminalText.escape("  #{each["step"]}: #{each["import"]} (#{[each["layer"], each["path"]].compact.join(", ")})")
+          @output.puts TerminalText.escape("    overrides: #{each["overrides"].join(", ")}") if each["overrides"].any?
+          @output.puts TerminalText.escape("    removes: #{each["removes"].join(", ")}") if each["removes"].any?
+          each["shadows"].each { |path| @output.puts TerminalText.escape("    shadows: #{path}") }
+        end
+      end
+
       # The parent lookup and chain for a draft that will be installed as +id+: the draft stands in for the installed file, so a
       # cycle through it is found now and not when the next definition is read. Without a files directory, the plain lookup.
       def draft_lookup(id, text, project = nil)
@@ -1978,7 +2078,11 @@ module Workspace
       def show_source(id, json, project)
         found = @catalog.source(id, project: project)
         data = {"id" => id}.merge(found)
-        data = WorkflowDefinition.parse(found["text"], id: id, source: found["source"], path: found["path"], parent_lookup: parent_lookup).to_h.merge(data) if found["problems"].empty?
+        if found["problems"].empty?
+          definition = WorkflowDefinition.parse(found["text"], id: id, source: found["source"], path: found["path"], parent_lookup: parent_lookup,
+            import_lookup: @catalog.import_lookup(project), confine_dir: @catalog.confine_dir(found["source"], project))
+          data = definition.to_h.merge(data)
+        end
         return document("workflow" => data) if json
         @output.print found["text"] if found["text"]
         found["problems"].each { |problem| @error_output.puts TerminalText.escape("#{id}: #{problem}") }

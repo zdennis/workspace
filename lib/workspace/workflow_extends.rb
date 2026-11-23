@@ -14,7 +14,8 @@ module Workspace
     # The most workflows an `extends:` chain may reach above the one being read.
     MAX_DEPTH = 4
 
-    # @return [Array<Hash{String=>String}>] the workflows extended, nearest first: "id", "source", "path" and "sha256" (of that file's text)
+    # @return [Array<Hash{String=>Object}>] the workflows extended, nearest first: "id", "source", "path", "sha256" (of that file's text)
+    #   and "import_sha256s" (the digest of each step that file imports, in its step order; empty when it imports none)
     attr_reader :parents
 
     # @return [Hash{String=>String}] step id to where the step came from: the `extends:` parent's id (the
@@ -30,15 +31,23 @@ module Workspace
     # @return [Array<Hash{String=>String}>] things the merge did that are probably a mistake, never an error: "code" (`review_dropped`), "step" and "message"
     attr_reader :notes
 
+    # @return [Array<String>] the inherited steps whose bare-name `import:` a parent left as written because no import lookup was given
+    attr_reader :unchecked
+
     # @param id [String] the id of the definition being read
     # @param source [String] where it came from: "global", "builtin", "file" or "stdin"
     # @param lookup [#call, nil] given a workflow id and `below:` (a source name or nil), answers the parent's "text", "path" and "source", or nil
     # @param chain [Array<Array(String, String)>] the id and file of each definition from the first one read down to this one, to refuse a cycle
-    def initialize(id:, source:, lookup:, chain:)
+    # @param import_lookup [#call, nil] the import lookup each parent is parsed with ({WorkflowDefinition.parse}): a parent's
+    #   bare-name imports resolve from the parent's own layer (the "source" the lookup answers), and its file references
+    #   stay inside the "confine_dir" the lookup answers with it, if any
+    def initialize(id:, source:, lookup:, chain:, import_lookup: nil)
       @id = id
       @source = source
       @lookup = lookup
       @chain = chain
+      @import_lookup = import_lookup
+      @unchecked = []
       @parents = []
       @origins = {}
       @problems = []
@@ -65,7 +74,8 @@ module Workspace
       parent = parent_of(own)
       return raw unless parent
       definition, found = parent
-      @parents = [{"id" => own, "source" => found["source"], "path" => found["path"], "sha256" => Digest::SHA256.hexdigest(found["text"].to_s)}] + definition.parents
+      @parents = [{"id" => own, "source" => found["source"], "path" => found["path"], "sha256" => Digest::SHA256.hexdigest(found["text"].to_s),
+                   "import_sha256s" => definition.imports.map { |entry| entry["sha256"] }}] + definition.parents
       base = anchor_prompt_files(definition.resolved_raw, found["path"])
       merged = base.except("id", "schema_version", "version").merge(raw.except("steps"))
       merged["inputs"] = merge_inputs(base["inputs"], raw["inputs"]) if raw.key?("inputs")
@@ -78,10 +88,22 @@ module Workspace
         inherited = base["steps"].is_a?(Hash) && base["steps"].key?(step_id) && merged["steps"][step_id].equal?(base["steps"][step_id])
         [step_id.to_s, inherited ? inherited_origin(parent_origins[step_id.to_s], own) : "own"]
       end
+      note_unchecked(base["steps"], merged["steps"], own)
       merged
     end
 
     private
+
+    # A parent step whose import wasn't checked still holds its `import:`; inherited unchanged, it is unchecked here too.
+    def note_unchecked(parent_steps, steps, parent_id)
+      return unless parent_steps.is_a?(Hash)
+      steps.each do |step_id, step|
+        next unless step.equal?(parent_steps[step_id]) && step.is_a?(Hash) && step.key?("import") && !step.key?("fan_out")
+        @unchecked << step_id.to_s
+        @notes << {"code" => "import_not_checked", "step" => step_id.to_s,
+                   "message" => "step #{step_id}: import #{step["import"]} (inherited from #{parent_id}) names a step library that can't be found here, where no workflows are known, so the step is not checked"}
+      end
+    end
 
     # A `fan_out` group on either side of an `extends:` is refused for now: the merge's replace and after rules place
     # flat steps, and know nothing of a group's siblings.
@@ -126,7 +148,7 @@ module Workspace
       end
       begin
         [WorkflowDefinition.parse(found["text"].to_s, id: parent_id, source: found["source"], path: found["path"],
-          parent_lookup: @lookup, chain: @chain + [[parent_id, key]]), found]
+          parent_lookup: @lookup, chain: @chain + [[parent_id, key]], import_lookup: @import_lookup, confine_dir: found["confine_dir"]), found]
       rescue Workspace::Error => e
         @failure.concat((e.details["problems"] || [e.message]).map { |problem| "extends #{parent_id} (#{found["path"]}): #{problem}" })
         nil

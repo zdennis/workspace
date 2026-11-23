@@ -59,7 +59,8 @@ module Workspace
     SIBLING_REFUSALS = {
       "review" => "a fan_out sibling can't take review: yet (closing a review round's window closes every other review window of the run)",
       "uses" => "a fan_out sibling can't take uses: yet (a run holds one step's locks at a time, so a sibling's acquire would release the locks another sibling still needs)",
-      "fan_out" => "a fan_out sibling can't hold a fan_out of its own (groups don't nest)"
+      "fan_out" => "a fan_out sibling can't hold a fan_out of its own (groups don't nest)",
+      "import" => "a fan_out sibling can't import: a step yet; write the step in the group"
     }.freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
@@ -150,10 +151,15 @@ module Workspace
     # @param base_dir [String, nil] the directory `prompt_file:` resolves against, else the directory of `path`
     # @param parent_lookup [#call, nil] given a workflow id and `below:` (a source name or nil), answers the parent's "text", "path" and "source" (nil when there is none); needed only for `extends:`
     # @param chain [Array, nil] for {WorkflowExtends}: the id and file of each definition being read, outermost first
+    # @param import_lookup [#call, nil] the lookup {WorkflowImports} finds a bare-name `import:` with, given a name and
+    #   `layer:` (this definition's +source+); nil leaves each bare-name import not checked
+    # @param confine_dir [String, nil] for a source or builtin definition: its layer directory, which every
+    #   `PATH.yml#NAME` import must stay inside
     # @return [Workspace::WorkflowDefinition]
     # @raise [Workspace::Error] code `invalid_workflow`, with every problem in `details["problems"]`
-    def self.parse(text, id:, source:, path:, base_dir: nil, parent_lookup: nil, chain: nil)
-      new(text, id: id, source: source, path: path, base_dir: base_dir, parent_lookup: parent_lookup, chain: chain)
+    def self.parse(text, id:, source:, path:, base_dir: nil, parent_lookup: nil, chain: nil, import_lookup: nil, confine_dir: nil)
+      new(text, id: id, source: source, path: path, base_dir: base_dir, parent_lookup: parent_lookup, chain: chain,
+        import_lookup: import_lookup, confine_dir: confine_dir)
     end
 
     # Fills a text's placeholders. A placeholder with no value is left as written;
@@ -175,7 +181,9 @@ module Workspace
     # @param base_dir [String, nil]
     # @param parent_lookup [#call, nil]
     # @param chain [Array, nil]
-    def initialize(text, id:, source:, path:, base_dir: nil, parent_lookup: nil, chain: nil)
+    # @param import_lookup [#call, nil]
+    # @param confine_dir [String, nil]
+    def initialize(text, id:, source:, path:, base_dir: nil, parent_lookup: nil, chain: nil, import_lookup: nil, confine_dir: nil)
       @text = text
       @base_dir = base_dir || (path && File.dirname(path))
       @id = id
@@ -185,14 +193,19 @@ module Workspace
       @problems = []
       @notes = []
       @groups = {}
-      extension = WorkflowExtends.new(id: id, source: source, lookup: parent_lookup, chain: chain || [[id, path || id]])
-      @resolved_raw = extension.resolve(load_yaml(text))
+      @current_step = nil
+      # Each file expands its own imports before extends: merges, so a parent's steps arrive already resolved.
+      @step_imports = WorkflowImports.new(lookup: import_lookup, layer: source, base_dir: @base_dir, confine_dir: confine_dir)
+      expanded = @step_imports.expand(load_yaml(text))
+      extension = WorkflowExtends.new(id: id, source: source, lookup: parent_lookup, chain: chain || [[id, path || id]], import_lookup: import_lookup)
+      @resolved_raw = extension.resolve(expanded)
       @parents = extension.parents
       @origins = extension.origins
-      @notes = extension.notes
-      if extension.failure.any?
-        # The parent can't be used, so nothing else about this file can be judged.
-        @problems = extension.failure
+      @notes = extension.notes + @step_imports.notes
+      @unchecked = @step_imports.unchecked + extension.unchecked
+      if @step_imports.failure.any? || extension.failure.any?
+        # An import or the parent can't be used, so nothing else about this file can be judged.
+        @problems = @step_imports.failure + extension.failure
       else
         @problems.concat(extension.problems)
         @data = build(@resolved_raw)
@@ -219,13 +232,25 @@ module Workspace
     # @return [Hash{String=>String}]
     attr_reader :origins
 
-    # The digest a run records as `definition_sha256`: {#sha256} alone, or, for a definition that extends
-    # others, the digest of its own digest and each parent's, so a changed parent is a changed definition.
+    # The steps this file imports, one entry per importing step, as {WorkflowImports#imports} gives them. Empty
+    # without `import:`, and never part of {#to_h}.
+    #
+    # @return [Array<Hash{String=>Object}>]
+    def imports
+      @step_imports.imports
+    end
+
+    # The digest a run records as `definition_sha256`: {#sha256} alone, or, for a definition that imports steps
+    # or extends others, the digest of its own digest and its imports', then each parent's file digest and that
+    # parent's imports', so a changed library step or parent at any depth is a changed definition. With no import in
+    # the chain, the imports add nothing and the digest is the one recorded before imports existed.
     #
     # @return [String]
     def resolved_sha256
-      return @sha256 if @parents.empty?
-      Digest::SHA256.hexdigest(([@sha256] + @parents.map { |parent| parent["sha256"] }).join("\n"))
+      import_digests = imports.map { |entry| entry["sha256"] }
+      return @sha256 if @parents.empty? && import_digests.empty?
+      parent_digests = @parents.flat_map { |parent| [parent["sha256"]] + parent["import_sha256s"] }
+      Digest::SHA256.hexdigest(([@sha256] + import_digests + parent_digests).join("\n"))
     end
 
     # @return [Hash{String=>Object}] the checked definition with defaults filled in: "id",
@@ -252,7 +277,7 @@ module Workspace
     #
     # @return [Array<Hash{String=>String}>] each with "code" (`step_without_proof`), "step" (the step id) and "message"
     def warnings
-      missing = steps.reject { |step| proof?(step) }.map do |step|
+      missing = steps.reject { |step| proof?(step) || @unchecked.include?(step["id"]) }.map do |step|
         {"code" => "step_without_proof", "step" => step["id"],
          "message" => "step #{step["id"]} has no produces, status, require or gate, so it passes on any turn end, even one that did nothing. Add produces: (a file it must write), require: (proofs about the repository), status: (a command that must pass) or gate: approve (a person approves it)."}
       end
@@ -659,9 +684,21 @@ module Workspace
       {}
     end
 
+    # While a step is being built (+@current_step+), a problem of an imported step ends with where it came from,
+    # and one of a step whose import couldn't be checked here is dropped: that step was never read.
     def problem(message)
-      @problems << message
+      return nil if @current_step && @unchecked.include?(@current_step)
+      suffix = @current_step && @step_imports.provenance(@current_step)
+      @problems << (suffix ? "#{message} #{suffix}" : message)
       nil
+    end
+
+    def for_step(step_id)
+      outer = @current_step
+      @current_step = step_id
+      yield
+    ensure
+      @current_step = outer
     end
 
     # A top-level key's value as written in the file, so a version such as `0.10` is never read as the Float 0.1.
@@ -686,7 +723,8 @@ module Workspace
     end
 
     def build(raw)
-      unknown_keys(raw, TOP_KEYS, "the workflow")
+      problem "import: works on a step, not on a whole workflow; to build on another workflow, use extends: ID" if raw.key?("import")
+      unknown_keys(raw.except("import"), TOP_KEYS, "the workflow")
       schema_version_from(raw)
       problem "id must be #{id.inspect}, the name of its file, got #{raw["id"].inspect}" if raw.key?("id") && raw["id"] != id
       problem "the workflow id #{id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(id)
@@ -711,7 +749,7 @@ module Workspace
       problem "timeout_action must be #{TIMEOUT_ACTIONS.join(" or ")}, got #{timeout_action.inspect[0, 40]}" unless TIMEOUT_ACTIONS.include?(timeout_action)
       reviewers = review_spec.reviewers(raw["reviewers"], inputs)
       steps = steps_from(raw["steps"], inputs)
-      review_spec.check(steps, reviewers)
+      steps.each { |step| for_step(step["id"]) { review_spec.check([step], reviewers) } }
       WorkflowFanOutSpec.new(report: method(:problem)).check(steps, @groups)
       {
         "id" => id,
@@ -878,7 +916,8 @@ module Workspace
         if body.is_a?(Hash) && body.key?("fan_out")
           steps.concat(group_from(step_id, body, taken, inputs, steps.reject { |step| step["group"] }.map { |step| step["id"] }))
         else
-          steps << step_from(step_id, body, steps.map { |step| step["id"] }, inputs)
+          earlier = steps.map { |step| step["id"] }
+          steps << for_step(step_id) { step_from(step_id, body, earlier, inputs) }
         end
       end
       cross_group_gotos(steps)
@@ -890,7 +929,10 @@ module Workspace
     def group_from(group_id, raw, taken, inputs, earlier_ungrouped)
       where = "step #{group_id}"
       problem "step id #{group_id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(group_id)
-      extra = raw.keys.map(&:to_s) - GROUP_KEYS
+      if raw.key?("import")
+        problem "#{where} is a fan_out group, which can't import: (an import is one step); to build on another workflow's steps, use extends: ID"
+      end
+      extra = raw.keys.map(&:to_s) - GROUP_KEYS - ["import"]
       if extra.any?
         problem "#{where} is a fan_out group, which has no body of its own: it takes only #{GROUP_KEYS.join(", ")}, got #{extra.join(", ")}"
       end
@@ -941,7 +983,9 @@ module Workspace
         on_fail = step["on_fail"]
         next unless on_fail.is_a?(Hash) && step["group"].nil?
         target = group_of[on_fail["goto"]] or next
-        problem "step #{step["id"]}: on_fail goto #{on_fail["goto"]} goes into fan_out group #{target}, which a step outside the group can't do yet; name a step outside every group"
+        for_step(step["id"]) do
+          problem "step #{step["id"]}: on_fail goto #{on_fail["goto"]} goes into fan_out group #{target}, which a step outside the group can't do yet; name a step outside every group"
+        end
       end
     end
 
@@ -954,7 +998,8 @@ module Workspace
         problem "#{where} must be a mapping"
         raw = {}
       end
-      unknown_keys(raw, STEP_KEYS, where)
+      # A resolved import has had its `import:` merged away; only a step whose import wasn't checked still holds it.
+      unknown_keys(@unchecked.include?(step_id) ? raw.except("import") : raw, STEP_KEYS, where)
       problem "#{where}: after: only places a step added by a workflow that has extends:" if raw.key?("after")
       mode = raw["execution_mode"]
       unless mode.nil? || EXECUTION_MODES.include?(mode)
