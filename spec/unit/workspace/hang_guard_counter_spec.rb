@@ -112,6 +112,20 @@ RSpec.describe Workspace::HangGuardCounter do
       expect(counter.take("pane:%1:s1", max: 1)).to eq(:deny)
     end
 
+    it "takes no lock and writes nothing when the file holds no entry of the pane" do
+      counter.take("pane:%12:s1", max: 3)
+      counter.take("run:wr_1:fix:1", max: 3)
+      before = File.read(path)
+      patient = described_class.new(path: path, wait: 5, clock: clock)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600) do |held|
+        held.flock(File::LOCK_EX)
+        patient.clear_pane("%1")
+      end
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
+      expect(File.read(path)).to eq(before)
+    end
+
     it "does not make the file or its lock when there is none" do
       counter.clear_pane("%1")
       expect(Dir.children(dir)).to be_empty

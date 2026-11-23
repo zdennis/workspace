@@ -66,13 +66,14 @@ module Workspace
     end
 
     # Drops the unbound-pane entries of one pane, for a new prompt or session. Costs one stat
-    # when the file does not exist yet.
+    # when the file does not exist yet, and one read with no lock when it holds no entry of the pane.
     #
     # @param pane_id [String]
     # @return [void]
     def clear_pane(pane_id)
       return unless File.exist?(@path)
       prefix = "pane:#{pane_id}:"
+      return unless File.read(@path).include?(JSON.generate(prefix).delete_suffix("\""))
       update { |data| data.delete_if { |key, _| key.start_with?(prefix) } }
       nil
     rescue SystemCallError

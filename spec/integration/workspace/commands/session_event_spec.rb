@@ -961,6 +961,48 @@ RSpec.describe Workspace::Commands::SessionEvent do
           expect(event).not_to have_key("decision")
         end
 
+        %w[UserPromptSubmit SessionStart].each do |hook|
+          it "starts the unbound pane's count again on #{hook}, leaving a bound run's count alone" do
+            unbound
+            2.times { guard }
+            context[:binding] = binding
+            guard
+            context[:binding] = nil
+            output.truncate(0)
+            output.rewind
+            expect(guard.first).to include("decision" => "ask", "rule" => "hang_guard:cap")
+
+            deliver({"hook_event_name" => hook, "session_id" => "s1", "prompt" => "go", "source" => "startup"}, nil, hang_guard_counter: counter)
+            output.truncate(0)
+            output.rewind
+
+            expect(guard.first).to include("decision" => "deny", "rule" => "hang_guard")
+            expect(stored).to include("pane:%2:s1" => include("count" => 1), "run:wr_1:implement:1" => include("count" => 1))
+          end
+        end
+
+        it "exits 0 and still delivers the event when the count's reset raises" do
+          broken = instance_double(Workspace::HangGuardCounter)
+          allow(broken).to receive(:clear_pane).and_raise(RuntimeError, "boom")
+          File.unlink(socket_path) if File.exist?(socket_path)
+          server = UNIXServer.new(socket_path)
+          received = nil
+          listener = Thread.new do
+            client = server.accept
+            received = JSON.parse(client.gets)
+            client.puts(JSON.generate("ok" => true))
+            client.close
+          end
+
+          result = invoke({"hook_event_name" => "UserPromptSubmit", "session_id" => "s1", "prompt" => "go"}, hang_guard_counter: broken)
+          listener.join(2)
+
+          expect(result).to eq(exit_code: 0)
+          expect(received).to include("event" => "user_prompt", "pane_id" => "%2")
+        ensure
+          server&.close
+        end
+
         it "is skipped with no counter" do
           event, out = decide
 

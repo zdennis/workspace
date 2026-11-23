@@ -199,7 +199,8 @@ module Workspace
       # @param permission_policy_config [Workspace::PermissionPolicyConfig, nil] builds the permission policy a
       #   PermissionRequest is decided by; nil decides nothing
       # @param hang_guard_counter [Workspace::HangGuardCounter, nil] counts the hang guard's denies, which deny a
-      #   request the policy left undecided (see {PermissionPolicyConfig#hang_guard_context}); nil skips the guard
+      #   request the policy left undecided (see {PermissionPolicyConfig#hang_guard_context}), and cleared of the pane's
+      #   unbound count on UserPromptSubmit and SessionStart; nil skips the guard
       # @param command_pieces [Workspace::BashCommandPieces, nil] tells a compound Bash command for the hang guard's hint;
       #   nil gives every Bash call the hint for a call that can't be approved
       # @param session_ambiguous [#call] given the pane's tmux session name, whether more than one workspace
@@ -277,6 +278,8 @@ module Workspace
         return ok { "session-event: not inside tmux, dropped" } unless pane_id
 
         @reflection_write_guard&.release(pane_id: pane_id, hook: hook, reason: text_field(payload, "reason"))
+        # A new prompt or session starts a new turn, whose unbound-pane hang guard count starts again.
+        clear_hang_guard(pane_id) if hook == "UserPromptSubmit" || hook == "SessionStart"
 
         name = workspace
         ambiguous = false
@@ -565,6 +568,12 @@ module Workspace
       rescue => e
         @logger.debug { "session-event: permission decision failed (#{e.class}: #{e.message})" }
         nil
+      end
+
+      def clear_hang_guard(pane_id)
+        @hang_guard_counter&.clear_pane(pane_id)
+      rescue => e
+        @logger.debug { "session-event: hang guard reset failed (#{e.class}: #{e.message})" }
       end
 
       def fallback?(decision)
