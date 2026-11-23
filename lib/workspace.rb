@@ -742,7 +742,8 @@ module Workspace
       work_queue_desk = work_queue_desk_factory.call(workspace: workspace)
       escalation_desk = permission_policy_config && PermissionEscalationDesk.new(
         inbox_store: InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output),
-        policy_config: permission_policy_config, workspace: workspace, project: nil, monitor: monitor, clock: clock, logger: logger
+        policy_config: permission_policy_config, workspace: workspace, project: nil, monitor: monitor,
+        pane_bindings: pane_bindings, tmux: tmux, clock: clock, logger: logger
       )
       hook_fanout = nil
       workflow_nudge = WorkflowNudge.new(workspace: workspace, nudger: workflow_nudger, hook_log: hook_event_log,

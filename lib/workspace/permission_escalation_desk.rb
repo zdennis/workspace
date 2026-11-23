@@ -2,8 +2,9 @@ module Workspace
   # The daemon's inbox item for a permission request the policy left to the person. One per workspace, in
   # {HookFanout}'s desks.
   #
-  # An escalated request is one the policy answered `ask` for, or one with no decision while the person has
-  # configured a policy (a broken config included). Claude sends it as a `permission_request` event and Codex as
+  # An escalated request is one the policy answered `ask` for (the hang guard's cap included), or one with no decision
+  # while the person has configured a policy (a broken config included) or the pane is bound to a live run. A request
+  # the hang guard denied (`decision` `deny`) opens nothing, as the agent was told. Claude sends it as a `permission_request` event and Codex as
   # a `notification` with `notification_type` `permission_request`; a request the policy allowed or denied opens
   # nothing, and neither does any other notification. The item is an `alert` keyed
   # `permission:<workspace>:<pane>:<agent_id or main>`, so a pane's sub-agents each get one.
@@ -40,14 +41,18 @@ module Workspace
     # @param workspace [String]
     # @param project [String, nil] the parent project
     # @param monitor [#snapshot] the workspace's session monitor, for {#scan}
+    # @param pane_bindings [Workspace::PaneBindings, nil] says which run a pane is bound to; with `tmux:`, an undecided request from a pane bound to a live run escalates even when no policy is configured
+    # @param tmux [Workspace::Tmux, nil] looks up a pane's session and slot, to tell a stale binding
     # @param clock [#call] returns the current Time
     # @param logger [#debug]
-    def initialize(inbox_store:, policy_config:, workspace:, project:, monitor:, clock: -> { Time.now }, logger: Workspace::Logger.new)
+    def initialize(inbox_store:, policy_config:, workspace:, project:, monitor:, pane_bindings: nil, tmux: nil, clock: -> { Time.now }, logger: Workspace::Logger.new)
       @inbox_store = inbox_store
       @policy_config = policy_config
       @workspace = workspace
       @project = project
       @monitor = monitor
+      @pane_bindings = pane_bindings
+      @tmux = tmux
       @clock = clock
       @logger = logger
       @configured = nil
@@ -103,9 +108,21 @@ module Workspace
 
       case message["decision"]
       when "ask" then true
-      when nil then configured?
+      when nil then bound_to_run?(message["pane_id"]) || configured?
       else false
       end
+    end
+
+    # A pane bound to a live run has nobody to answer a dialog, so it escalates whatever the policy config says. A binding
+    # that can't be read or checked counts as unbound. The daemon's own TMUX_PANE is cleared, so this checks the event's pane.
+    def bound_to_run?(pane)
+      return false unless @pane_bindings && @tmux && pane.is_a?(String)
+      entry = @pane_bindings.binding_for(pane)
+      return false unless entry && entry["kind"] == "run"
+      !@pane_bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane),
+        server_pid: -> { @tmux.server_pid_for_pane(pane) })
+    rescue Workspace::Error, SystemCallError
+      false
     end
 
     def configured?

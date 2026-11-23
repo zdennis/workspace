@@ -41,6 +41,56 @@ RSpec.describe Workspace::PermissionEscalationDesk do
     expect(inbox.upserts).to be_empty
   end
 
+  context "with pane bindings" do
+    let(:binding) { {"kind" => "run", "id" => "r1", "session" => "ws", "pane_slot" => "ws:1.0"} }
+    let(:bindings) { double("pane_bindings", binding_for: binding, stale?: false) }
+    let(:tmux) { double("tmux", session_name_for_pane: "ws", pane_slot: "ws:1.0", server_pid_for_pane: "1") }
+    let(:desk) do
+      described_class.new(inbox_store: inbox, policy_config: config, workspace: "ws", project: nil, monitor: monitor,
+        pane_bindings: bindings, tmux: tmux, clock: -> { time.first }, logger: Workspace::Logger.new(output: log, enabled: true))
+    end
+
+    before { config.value = false }
+
+    it "opens an item for an undecided request on a pane bound to a live run, with no policy configured" do
+      desk.session_event(request(decision: nil))
+
+      expect(inbox.upserts.size).to eq(1)
+    end
+
+    it "opens nothing for an undecided request on an unbound pane with no policy configured" do
+      allow(bindings).to receive(:binding_for).and_return(nil)
+      desk.session_event(request(decision: nil))
+
+      expect(inbox.upserts).to be_empty
+    end
+
+    it "opens nothing when the binding is another kind or stale" do
+      allow(bindings).to receive(:binding_for).and_return(binding.merge("kind" => "review"))
+      desk.session_event(request(decision: nil))
+      allow(bindings).to receive(:binding_for).and_return(binding)
+      allow(bindings).to receive(:stale?).and_return(true)
+      desk.session_event(request(decision: nil))
+
+      expect(inbox.upserts).to be_empty
+    end
+
+    it "counts a binding that cannot be read as unbound" do
+      allow(bindings).to receive(:binding_for).and_raise(Workspace::Error.new("bad"))
+      desk.session_event(request(decision: nil))
+
+      expect(inbox.upserts).to be_empty
+    end
+
+    it "opens an item for the hang guard's cap (ask) and none for its deny" do
+      desk.session_event(request(:decision => "deny", "rule" => "hang_guard"))
+      expect(inbox.upserts).to be_empty
+
+      desk.session_event(request(:decision => "ask", "rule" => "hang_guard:cap"))
+      expect(inbox.upserts.first.first["body"]).to include("Escalated by rule: hang_guard:cap")
+    end
+  end
+
   it "opens nothing on allow or deny" do
     desk.session_event(request(decision: "allow"))
     desk.session_event(request(decision: "deny"))
