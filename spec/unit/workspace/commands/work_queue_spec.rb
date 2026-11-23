@@ -605,7 +605,7 @@ RSpec.describe Workspace::Commands::WorkQueue do
     let(:watched) do
       described_class.new(store_factory: ->(name) { stores[name] }, history_factory: ->(name) { histories[name] },
         advance: advance, decisions: decisions, run_store: run_store, checkout: checkout, go: go, status_scope: status_scope,
-        agent_ensurer: agent_ensurer, agent_running: agent_running, clock: clock, sleeper: sleeper, working_dir: "/repo/api-w",
+        agent_ensurer: agent_ensurer, agent_running: agent_running, clock: clock, watch_loop: Workspace::WatchLoop.new(output: output, sleeper: sleeper), working_dir: "/repo/api-w",
         output: output, error_output: error_output, input: input)
     end
 
@@ -618,7 +618,7 @@ RSpec.describe Workspace::Commands::WorkQueue do
       expect(sleeps).to eq([0.5, 0.5])
     end
 
-    it "keeps watching when a frame's renderer returns something truthy" do
+    it "keeps redrawing until interrupted" do
       store.set_enabled(true)
       daemons_up["api-w"] = true
 

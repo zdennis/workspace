@@ -248,7 +248,7 @@ module Workspace
           raise UsageError, "--watch needs --run RUN: it redraws where a run stands." if options[:watch] && !options[:graph_run]
           raise UsageError, "--watch redraws a screen and cannot be combined with --json. Drop one of them." if options[:watch] && (options[:json] || options[:format] == "json")
           raise UsageError, "--watch draws ascii: drop --format #{options[:format]}." if options[:watch] && options[:format] && options[:format] != "ascii"
-          raise UsageError, "--interval needs a number of seconds above 0, not #{options[:interval]}." if options[:interval] && options[:interval] <= 0
+          raise UsageError, "--interval needs a number of seconds above 0, not #{options[:interval]}." if options[:interval] && !(options[:interval].positive? && options[:interval].finite?)
         end
         raise UsageError, "--script is for `workflow simulate ID`." if options[:script] && subcommand != "simulate"
         raise UsageError, "workflow simulate needs --script FILE (what the fake agent does; see `workspace workflow simulate --help`)." if subcommand == "simulate" && options[:script].nil?

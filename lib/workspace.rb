@@ -1129,7 +1129,9 @@ module Workspace
     workflow_infra_retry = WorkflowInfraRetry.new(engine: workflow_engine, store: workflow_store, dispatch: pane_dispatch, lock_holder: lock_holder, agent_commands: agent_commands)
     workflow_reflect_command = Commands::WorkflowReflect.new(store: workflow_store, reflection: WorkflowReflection.new, panes: pane_dispatch, binder: binding_command,
       bindings: pane_bindings, main_agent: main_agent, evidence_dir: config.workflow_evidence_dir, output: output)
+    watch_loop = WatchLoop.new(output: output, sleeper: Kernel.method(:sleep))
     workflow_command = Commands::Workflow.new(
+      watch_loop: watch_loop,
       infra_retry: workflow_infra_retry,
       source_installer: workflow_source_installer,
       workflow_config: workflow_config,
@@ -1418,7 +1420,7 @@ module Workspace
       lock_holder: lock_holder, status: workflow_status)
     work_queue_command = Commands::WorkQueue.new(store_factory: work_queue_store_for, history_factory: work_queue_history_for, advance: work_queue_advance,
       decisions: workflow_engine, run_store: workflow_store, checkout: workspace_checkout, go: go_command, status_scope: status_scope,
-      agent_ensurer: ensure_agent_command, agent_running: config.method(:agent_running?), sleeper: Kernel.method(:sleep), working_dir: working_dir, output: output, error_output: error_output, input: input)
+      agent_ensurer: ensure_agent_command, agent_running: config.method(:agent_running?), watch_loop: watch_loop, working_dir: working_dir, output: output, error_output: error_output, input: input)
 
     work_queue_family = CLI::WorkQueue.new(work_queue_command: work_queue_command, common: common)
 

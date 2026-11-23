@@ -291,6 +291,7 @@ RSpec.describe Workspace::CLI::Workflow do
       %w[graph rpiv --run wr_1 --interval 3] => "--interval needs --watch. Add --watch, or drop --interval.",
       %w[graph rpiv --run wr_1 --watch --interval 0] => "--interval needs a number of seconds above 0, not 0.0.",
       %w[graph rpiv --run wr_1 --watch --interval -1] => "--interval needs a number of seconds above 0, not -1.0.",
+      %w[graph rpiv --run wr_1 --watch --interval 1e400] => "--interval needs a number of seconds above 0, not Infinity.",
       %w[show rpiv --watch] => "--watch is for `workflow graph ID --run RUN`.",
       %w[show rpiv --interval 2] => "--interval is for `workflow graph ID --run RUN --watch`."
     }.each do |argv, message|

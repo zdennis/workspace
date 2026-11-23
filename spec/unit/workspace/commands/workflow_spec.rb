@@ -391,7 +391,7 @@ RSpec.describe Workspace::Commands::Workflow do
         let(:completed_run) { Workspace::WorkflowRun.from_h(looped.merge("state" => "completed")) }
         let(:watching) do
           described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workflow_config: workflow_config, store: store, panes: panes, files: nil, run_files: nil,
-            process_tree: process_tree, lock_holder: lock_holder, pid: 4242, sleeper: ->(seconds) { sleeps << seconds }, output: output)
+            process_tree: process_tree, lock_holder: lock_holder, pid: 4242, watch_loop: Workspace::WatchLoop.new(output: output, sleeper: ->(seconds) { sleeps << seconds }), output: output)
         end
 
         it "draws a frame per change, stops after the finished one and sleeps once between" do
@@ -417,7 +417,7 @@ RSpec.describe Workspace::Commands::Workflow do
         it "returns exit 0 on Ctrl-C from the sleeper" do
           allow(store).to receive(:run).with("wr_simulated").and_return(looped_run)
           interrupting = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workflow_config: workflow_config, store: store, panes: panes, files: nil, run_files: nil,
-            process_tree: process_tree, lock_holder: lock_holder, pid: 4242, sleeper: ->(_) { raise Interrupt }, output: output)
+            process_tree: process_tree, lock_holder: lock_holder, pid: 4242, watch_loop: Workspace::WatchLoop.new(output: output, sleeper: ->(_) { raise Interrupt }), output: output)
 
           expect(interrupting.graph(id: "rpiv", run: "wr_simulated", watch: true)).to eq(exit_code: 0)
         end

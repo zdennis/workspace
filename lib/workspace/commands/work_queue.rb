@@ -30,13 +30,13 @@ module Workspace
       #   enabled queue) for `add` and `enable`
       # @param agent_running [#call] given a workspace, whether its agent daemon answers, for `list` and `status`
       # @param clock [#now] time source, for ages
-      # @param sleeper [#call] waits between frames of `watch_list` and `watch_active`, given the seconds
+      # @param watch_loop [Workspace::WatchLoop, nil] redraws the frames of `watch_list` and `watch_active`; nil builds one over +output+ and `sleep`
       # @param working_dir [String] where the current workspace is looked for
       # @param output [IO] stream for the human result
       # @param error_output [IO] stream for warnings
       # @param input [IO, Workspace::PromptInput] where `history clear` reads its answer
       def initialize(store_factory:, history_factory:, advance:, decisions:, run_store:, checkout:, go:, status_scope:,
-        agent_ensurer:, agent_running:, clock: Time, sleeper: Kernel.method(:sleep), working_dir: Dir.pwd, output: $stdout, error_output: $stderr, input: $stdin)
+        agent_ensurer:, agent_running:, clock: Time, watch_loop: nil, working_dir: Dir.pwd, output: $stdout, error_output: $stderr, input: $stdin)
         @store_factory = store_factory
         @history_factory = history_factory
         @advance = advance
@@ -48,7 +48,7 @@ module Workspace
         @agent_ensurer = agent_ensurer
         @agent_running = agent_running
         @clock = clock
-        @sleeper = sleeper
+        @watch_loop = watch_loop || WatchLoop.new(output: output, sleeper: Kernel.method(:sleep))
         @working_dir = working_dir
         @output = output
         @error_output = error_output
@@ -553,7 +553,7 @@ module Workspace
 
       # One frame of a watch: runs the block into the loop's buffer and never asks the loop to stop.
       def watch(interval)
-        WatchLoop.new(output: @output, sleeper: @sleeper).run(interval: interval) do |io|
+        @watch_loop.run(interval: interval) do |io|
           yield io
           false
         end

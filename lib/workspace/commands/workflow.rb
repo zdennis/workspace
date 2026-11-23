@@ -58,11 +58,12 @@ module Workspace
       # @param lint [Workspace::WorkflowLint] the checks `validate` makes against the library and the project's commands
       # @param pid [Integer] this process
       # @param clock [#call] returns the current Time
+      # @param watch_loop [Workspace::WatchLoop, nil] redraws the frames of `graph --watch`; nil builds one over +output+ and +sleeper+
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
       def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, trace: nil, downtime: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, insights: nil, step_check: nil, simulator: nil, expect_fail: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
-        clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, input: $stdin, error_output: $stderr)
+        clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, watch_loop: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
         @pid = pid
@@ -97,6 +98,7 @@ module Workspace
         @panes = panes
         @clock = clock
         @sleeper = sleeper
+        @watch_loop = watch_loop || WatchLoop.new(output: output, sleeper: sleeper)
         @output = output
         @input = input
         @error_output = error_output
@@ -1295,7 +1297,7 @@ module Workspace
         raise UsageError, "--watch needs --run RUN: it redraws where a run stands." unless run
         raise UsageError, "--watch redraws a screen and cannot be combined with --json. Drop one of them." if json || format == "json"
         raise UsageError, "--watch draws ascii: drop --format #{format}." if format && format != "ascii"
-        WatchLoop.new(output: @output, sleeper: @sleeper).run(interval: interval) do |io|
+        @watch_loop.run(interval: interval) do |io|
           stored = @store.run(run)
           io.puts @graph_renderers.fetch("ascii").render(run_graph(id, stored))
           WorkflowRunStore::TERMINAL_STATES.include?(stored.state)

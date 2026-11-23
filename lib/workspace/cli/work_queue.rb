@@ -106,7 +106,7 @@ module Workspace
         raise UsageError, "--interval needs --watch. Add --watch, or drop --interval." if options[:given].include?(:interval) && !options[:watch]
         raise UsageError, "--watch redraws a screen and cannot be combined with --json. Drop one of them." if options[:watch] && options[:json]
         interval = options[:interval]
-        raise UsageError, "--interval needs a number of seconds above 0, not #{interval}." if interval && interval <= 0
+        raise UsageError, "--interval needs a number of seconds above 0, not #{interval}." if interval && !(interval.positive? && interval.finite?)
       end
 
       def watching(invocation, options)

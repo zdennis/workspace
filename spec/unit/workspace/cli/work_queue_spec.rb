@@ -236,6 +236,7 @@ RSpec.describe Workspace::CLI::WorkQueue do
       expect(usage_error("active", "--interval", "1")).to include("--interval needs --watch")
       expect(usage_error("list", "--watch", "--interval", "0")).to include("above 0")
       expect(usage_error("list", "--watch", "--interval", "-1")).to include("above 0")
+      expect(usage_error("list", "--watch", "--interval", "1e400")).to include("above 0")
     end
 
     it "refuses --watch and --interval on other verbs" do
