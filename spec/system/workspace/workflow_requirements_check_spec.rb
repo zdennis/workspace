@@ -111,6 +111,14 @@ RSpec.describe "the plan step's requirements check in the shipped presets" do
         expect([status.exitstatus, err]).to eq([1, "In no task of ## Task details: R2\n"])
       end
 
+      it "passes a plan that names an R only to say no task covers it, since it reads numbers, not meaning" do
+        write_plan("### T1 First\n\nCovers R1, R3.\n\n### T2 Second\n\nR2 is not covered here.")
+
+        _out, err, status = run_check(id)
+
+        expect([status.exitstatus, err]).to eq([0, ""])
+      end
+
       it "passes when every R appears in Task details" do
         write_plan("### T1 First\n\nCovers R1, R3.\n\n### T2 Second\n\nCovers R2.")
 
