@@ -213,4 +213,53 @@ RSpec.describe Workspace::Commands::Launch, "headless" do
 
     expect(output.string).to eq("")
   end
+
+  describe "with claude_trust" do
+    let(:calls) { [] }
+    let(:claude_trust) { instance_double(Workspace::ClaudeTrust, config_path: "/home/.claude.json").tap { |d| allow(d).to receive(:trusted_note) { |root| "Note: marked #{root} as trusted in /home/.claude.json (agent.claude.trust_checkout)." } } }
+
+    subject(:command) do
+      described_class.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
+        project_config: project_config, window_layout: window_layout, config: config,
+        pipeline_config: pipeline_config, agent_readiness: agent_readiness, prompt_timeout: 60,
+        claude_trust: claude_trust, sleeper: ->(_seconds) {}, output: output, error_output: error_output)
+    end
+
+    before do
+      allow(project_config).to receive(:project_root_for).with("proj1").and_return("/src/proj/.worktrees/proj1")
+      allow(tmux).to receive(:sessions).and_return([], [], ["tmux-proj1"])
+      allow(tmux).to receive(:start_headless) { calls << :start_headless }
+    end
+
+    it "trusts the workspace own checkout before its session starts and says so" do
+      allow(claude_trust).to receive(:trust_checkout) do
+        calls << :trust
+        :trusted
+      end
+
+      command.call(["proj1"], headless: true)
+
+      expect(claude_trust).to have_received(:trust_checkout).with("proj1", "/src/proj/.worktrees/proj1")
+      expect(calls).to eq([:trust, :start_headless])
+      expect(output.string).to include("Note: marked /src/proj/.worktrees/proj1 as trusted in /home/.claude.json")
+    end
+
+    it "puts the note on the error stream in quiet mode" do
+      allow(claude_trust).to receive(:trust_checkout).and_return(:trusted)
+
+      command.call(["proj1"], headless: true, quiet: true)
+
+      expect(output.string).not_to include("trusted")
+      expect(error_output.string).to include("Note: marked /src/proj/.worktrees/proj1 as trusted")
+    end
+
+    it "prints nothing when the gate is closed or the flag was already set" do
+      [nil, :already].each do |result|
+        allow(claude_trust).to receive(:trust_checkout).and_return(result)
+        command.call(["proj1"], headless: true)
+      end
+
+      expect(output.string + error_output.string).not_to include("as trusted")
+    end
+  end
 end

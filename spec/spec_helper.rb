@@ -43,6 +43,10 @@ require "tmpdir"
 # spec file loads, and made fresh for each example so none sees another's.
 ENV["CODEX_HOME"] = Dir.mktmpdir("workspace-spec-codex-home")
 
+# Likewise Claude Code trust writes `.claude.json`, which holds the real
+# account's auth and history; CLAUDE_CONFIG_DIR moves it off the real home.
+ENV["CLAUDE_CONFIG_DIR"] = Dir.mktmpdir("workspace-spec-claude-config")
+
 Dir[File.join(__dir__, "support", "**", "*.rb")].each { |f| require f }
 
 RSpec.configure do |config|
@@ -61,6 +65,13 @@ RSpec.configure do |config|
   config.around do |example|
     Dir.mktmpdir("workspace-spec-codex-home") do |dir|
       ENV["CODEX_HOME"] = dir
+      example.run
+    end
+  end
+
+  config.around do |example|
+    Dir.mktmpdir("workspace-spec-claude-config") do |dir|
+      ENV["CLAUDE_CONFIG_DIR"] = dir
       example.run
     end
   end

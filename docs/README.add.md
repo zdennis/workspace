@@ -13,12 +13,13 @@ workspace add [--json] <path> [path2] ...
 ```json
 {"schema_version":1,"ok":true,"action":"add","status":"ok","results":[
   {"workspace":"my-project","outcome":"created","reason":null,"message":null,
-   "root":"/Users/me/Code/my-project","config_path":"/Users/me/.config/tmuxinator/workspace.my-project.yml","notes_dir":null}],
+   "root":"/Users/me/Code/my-project","config_path":"/Users/me/.config/tmuxinator/workspace.my-project.yml","notes_dir":null,"claude_trust":null}],
  "warnings":[]}
 ```
 
 - `outcome` is `created` (a config was written) or `exists` (one was already there, even under a mixed-case name; `workspace` is then its own name and nothing is changed).
 - `notes_dir` is the notes directory set up for a new `.worktrees/` config, else `null`; problems setting it up are `warnings`.
+- `claude_trust` is what marking the checkout trusted for Claude Code came to when [`agent.claude.trust_checkout`](README.config.md#trusting-a-checkout-for-claude-code) is on and the agent is `claude`: `trusted`, `already`, `missing` (no `.claude.json`), `skipped` (the path did not resolve), `unparseable` or `unwritten` (both also warned on stderr); `null` when the key is off or the agent is another. It never fails the row.
 - A path that cannot be added is a `failed` row, never a whole-document error; the other paths are still added. `reason` is `not_a_directory` (`details.path`) or `workspace_name_case_conflict` (`details` as in [JSON output](README.json.md)), and `message` says why.
 - The document is always printed. Exit status: 0 when no row failed (`status` `ok`), 3 when some rows failed (`partial`), 1 when every row failed (`failed`).
 

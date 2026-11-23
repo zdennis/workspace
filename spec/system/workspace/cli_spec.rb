@@ -108,6 +108,7 @@ RSpec.describe Workspace::CLI do
       handoff_command: overrides[:handoff_command],
       notes_command: overrides[:notes_command],
       notes_setup: overrides[:notes_setup],
+      claude_trust: overrides[:claude_trust],
       plan_command: overrides[:plan_command],
       plan_dispatch_command: overrides[:plan_dispatch_command],
       plan_task_command: overrides[:plan_task_command],
@@ -1073,7 +1074,7 @@ RSpec.describe Workspace::CLI do
         doc = JSON.parse(output.string)
         expect(doc).to include("action" => "add", "status" => "ok")
         expect(doc["results"]).to eq([{"workspace" => "plain", "outcome" => "created", "reason" => nil, "message" => nil,
-                                       "root" => root, "config_path" => "/cfg/plain.yml", "notes_dir" => nil}])
+                                       "root" => root, "config_path" => "/cfg/plain.yml", "notes_dir" => nil, "claude_trust" => nil}])
       end
 
       it "reports exists for a config already there, under the name create returns" do
@@ -1159,6 +1160,53 @@ RSpec.describe Workspace::CLI do
         expect(doc["results"].map { |r| [r["outcome"], r["reason"]] }).to eq([["failed", "workspace_name_case_conflict"], ["created", nil]])
       ensure
         FileUtils.remove_entry(other)
+      end
+    end
+
+    describe "with claude_trust" do
+      let(:claude_trust) { instance_double(Workspace::ClaudeTrust, config_path: "/home/.claude.json").tap { |d| allow(d).to receive(:trusted_note) { |root| "Note: marked #{root} as trusted in /home/.claude.json (agent.claude.trust_checkout)." } } }
+
+      it "trusts the added checkout under the name it was added as and says so" do
+        allow(claude_trust).to receive(:trust_checkout).and_return(:trusted)
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup, claude_trust: claude_trust)
+
+        cli.run(["add", root])
+
+        expect(claude_trust).to have_received(:trust_checkout).with("plain", root)
+        expect(output.string).to include("Note: marked #{root} as trusted in /home/.claude.json")
+      end
+
+      it "keeps --json stdout to the one document and puts the note on stderr" do
+        allow(claude_trust).to receive(:trust_checkout).and_return(:trusted)
+        cli, output, error_output = build_test_cli(project_config: project_config, notes_setup: notes_setup, claude_trust: claude_trust)
+
+        cli.run(["add", "--json", root])
+
+        expect(output.string.lines.size).to eq(1)
+        expect(JSON.parse(output.string)["results"].first).to include("outcome" => "created", "claude_trust" => "trusted")
+        expect(error_output.string).to include("as trusted")
+      end
+
+      it "reports a trust that was not written in the row, without failing the add" do
+        allow(claude_trust).to receive(:trust_checkout).and_return(:unwritten)
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup, claude_trust: claude_trust)
+
+        cli.run(["add", "--json", root])
+
+        doc = JSON.parse(output.string)
+        expect(doc["status"]).to eq("ok")
+        expect(doc["results"].first).to include("outcome" => "created", "claude_trust" => "unwritten")
+      end
+
+      it "prints nothing when the gate is closed or the flag was already set" do
+        [nil, :already].each do |result|
+          allow(claude_trust).to receive(:trust_checkout).and_return(result)
+          cli, output, error_output = build_test_cli(project_config: project_config, notes_setup: notes_setup, claude_trust: claude_trust)
+
+          cli.run(["add", root])
+
+          expect(output.string + error_output.string).not_to include("as trusted")
+        end
       end
     end
 

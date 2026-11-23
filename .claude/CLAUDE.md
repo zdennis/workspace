@@ -146,6 +146,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/recovery_entry.rb` — The entry-writing helpers more than one recovery part uses.
 - `lib/workspace/agent_recovery_store.rb` — Flock-guarded `agent-recovery.json` with one entry per pane.
 - `lib/workspace/agent_recovery_config.rb` — Reads `agent.recovery.enabled`.
+- `lib/workspace/claude_trust_config.rb` — Reads `agent.claude.trust_checkout`.
 - `lib/workspace/agent_daemon_stopper.rb` — Stops one workspace's `agentd` from its name alone: finds the socket's holder, checks it is that workspace's `agentd`, sends TERM and waits.
 - `lib/workspace/agent_stopper.rb` — Finds the Claude Code process in a pane and sends it SIGINT, nothing else.
 - `lib/workspace/agent_resume_command.rb` — The one builder of the shell line that resumes a Claude Code session.
@@ -430,6 +431,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/core/agent_provider.rb` — Registry of coding-agent CLIs workspace can monitor.
 - `lib/workspace/agent_readiness.rb` — Waits for an agent's pane to be quiet and ready before a prompt is sent.
 - `lib/workspace/hook_installer.rb` — Merges workspace's hooks into an agent's settings file.
+- `lib/workspace/claude_trust.rb` — Marks a checkout trusted in Claude Code's `.claude.json` when `agent.claude.trust_checkout` is on.
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it.
 - `lib/workspace/prompt_input.rb` — Wraps input and refuses prompts under `--no-input`.
 - `lib/workspace/core/duration.rb` — Parses duration strings like `5m` and `1h`.

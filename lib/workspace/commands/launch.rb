@@ -42,12 +42,14 @@ module Workspace
       # @param file_backup [Workspace::FileBackup, nil] copies a config aside before it is rewritten
       # @param writer [Workspace::TmuxinatorConfigWriter, nil] rewrites a config's agent pane and keeps its render record
       #   in step; nil builds one over +config+
+      # @param claude_trust [Workspace::ClaudeTrust, nil] marks each project's checkout trusted for Claude Code before
+      #   any session starts, when `agent.claude.trust_checkout` is on; nil trusts nothing
       # @param sleeper [#call] sleeps the given seconds, injected for fast tests
       # @param clock [#call] monotonic seconds, bounding the wait for sessions
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
-        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, agent_commands: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, sleeper: ->(seconds) { sleep(seconds) },
+        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, agent_commands: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, claude_trust: nil, sleeper: ->(seconds) { sleep(seconds) },
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
@@ -68,6 +70,7 @@ module Workspace
         @main_agent = main_agent
         @file_backup = file_backup
         @event_log = event_log
+        @claude_trust = claude_trust
         @sleeper = sleeper
         @clock = clock
         @output = output
@@ -122,6 +125,7 @@ module Workspace
         @positions = {}
         @position_warnings = []
         validate_configs(projects)
+        trust_checkouts(projects)
         return call_headless(projects, prompts: prompts, prompt_timeout: prompt_timeout) if headless
 
         @tmux.start_server
@@ -354,6 +358,17 @@ module Workspace
 
       def log(message)
         @output.puts message unless @quiet
+      end
+
+      # Marks each project's checkout trusted for Claude Code, before any agent starts, so a first
+      # launch in a new directory does not stop on the trust dialog (see {Workspace::ClaudeTrust#trust_checkout}).
+      def trust_checkouts(projects)
+        return unless @claude_trust
+        projects.each do |project|
+          root = @project_config.project_root_for(project)
+          next unless @claude_trust.trust_checkout(project, root) == :trusted
+          (@quiet ? @error_output : @output).puts @claude_trust.trusted_note(root)
+        end
       end
 
       def validate_configs(projects)

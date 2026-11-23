@@ -64,6 +64,8 @@ module Workspace
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param notes_command [Workspace::Commands::Notes, nil] pre-built notes command
     # @param notes_setup [Workspace::NotesSetup, nil] fixes the notes directory of a worktree config `add` creates; nil skips it
+    # @param claude_trust [Workspace::ClaudeTrust, nil] marks a checkout `add` registers trusted for Claude Code when
+    #   `agent.claude.trust_checkout` is on; nil trusts nothing
     # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
     # @param skills_command [Workspace::Commands::Skills, nil] pre-built `skills install`/`uninstall` command
     # @param pull_request_command [Workspace::Commands::PullRequest, nil] pre-built pr command
@@ -103,7 +105,7 @@ module Workspace
     # @param launcher [CLI::Launcher] what every launching verb shares
     # @param relauncher [CLI::Relauncher] stops and relaunches workspaces for `relaunch`
     # @param families [Hash{Symbol=>#call}] the family parser of each {ROUTES} key, called with the verb, its arguments and the {Invocation}
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, relauncher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, ticket_command: nil, skills_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, relauncher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, claude_trust: nil, ticket_command: nil, skills_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -151,6 +153,7 @@ module Workspace
       @pr_feedback_command = pr_feedback_command
       @promote_command = promote_command
       @notes_setup = notes_setup
+      @claude_trust = claude_trust
       @config_command = config_command
       @statusline_command = statusline_command
       @ask_command = ask_command
@@ -3839,11 +3842,12 @@ module Workspace
       @output.puts "Project name: #{name}" unless json
       worktree = created && File.basename(File.dirname(root)) == ".worktrees"
       notes = worktree ? setup_notes_for_added_worktree(name, json: json) : nil
+      trusted = trust_added_checkout(name, root, json: json)
       return unless json
 
       warnings.concat(notes["warnings"]) if notes
       action_row(name, created ? "created" : "exists", root: root,
-        config_path: @project_config.config_path_for(name), notes_dir: notes && notes["dir"])
+        config_path: @project_config.config_path_for(name), notes_dir: notes && notes["dir"], claude_trust: trusted&.to_s)
     rescue Workspace::Error => e
       raise unless e.code == "workspace_name_case_conflict"
 
@@ -3856,6 +3860,18 @@ module Workspace
       @error_output.puts "Error: #{error.message}"
 
       action_row(name, "failed", reason: error.code, message: error.message, root: root, details: error.details)
+    end
+
+    # `add` never starts an agent, but the checkout it registers is trusted for
+    # Claude Code now so the first `launch` does not stop on the trust dialog.
+    #
+    # @return [Symbol, nil] what {ClaudeTrust#trust_checkout} returned; nil when the gate is closed
+    def trust_added_checkout(name, root, json:)
+      result = @claude_trust&.trust_checkout(name, root)
+      if result == :trusted
+        (json ? @error_output : @output).puts @claude_trust.trusted_note(root)
+      end
+      result
     end
 
     # A worktree config `add` just made gets its notes directory fixed the way
