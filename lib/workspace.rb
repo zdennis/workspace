@@ -770,10 +770,9 @@ module Workspace
   # @param restart_registry [Workspace::RestartRegistry] the panes being restarted
   # @param signal_trapper [#trap] receives the SIGTERM/SIGINT handler registration
   # @param socket_poll_interval [Numeric] seconds between the socket watcher's passes
-  # @param workflow_tick_passes [Integer] the watcher ticks the workflow nudger every this many passes
+  # @param workflow_tick_passes [Integer] the watcher ticks the hook fanout's subscribers (the workflow nudge among them) every this many passes
   # @param current_name [String, nil] the workspace served before {Commands::Agent#call} starts ({Commands::Agent#prepare})
   # @param event_log [Workspace::EventLog, nil] records the daemon's start and stop
-  # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes the workspace's workflow runs on a timer
   # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace before the socket is claimed
   # @param logger [Workspace::Logger] debug logger
   # @param output [IO] output stream for user-facing messages
@@ -781,7 +780,7 @@ module Workspace
   # @return [Workspace::Commands::Agent]
   def self.build_agent_daemon(config:, tmux:, pipeline_config:, parts:, agent_labels: nil, agent_commands: nil,
     restart_registry: RestartRegistry.new, signal_trapper: Signal, socket_poll_interval: AgentdSocketServer::POLL_INTERVAL,
-    workflow_tick_passes: AgentdSocketServer::TICK_PASSES, current_name: nil, event_log: nil, workflow_nudger: nil,
+    workflow_tick_passes: AgentdSocketServer::TICK_PASSES, current_name: nil, event_log: nil,
     name_migration: nil, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
     socket_server = AgentdSocketServer.new(poll_interval: socket_poll_interval, tick_passes: workflow_tick_passes,
       signal_trapper: signal_trapper, logger: logger, output: output, error_output: error_output)
@@ -791,7 +790,7 @@ module Workspace
     end
     agent = Commands::Agent.new(config: config, tmux: tmux, pipeline_config: pipeline_config, parts: parts,
       socket_server: socket_server, router_for: router_for, claude_pane: claude_pane, restart_registry: restart_registry,
-      event_log: event_log, workflow_nudger: workflow_nudger, name_migration: name_migration, logger: logger,
+      event_log: event_log, name_migration: name_migration, logger: logger,
       output: output, error_output: error_output)
     agent.prepare(current_name) if current_name
     agent
@@ -1345,7 +1344,6 @@ module Workspace
       pipeline_config: pipeline_config,
       parts: agentd_parts,
       event_log: event_log,
-      workflow_nudger: workflow_nudger,
       name_migration: name_migration,
       restart_registry: RestartRegistry.new,
       logger: logger,

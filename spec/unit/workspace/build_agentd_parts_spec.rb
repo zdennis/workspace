@@ -124,6 +124,17 @@ RSpec.describe "Workspace.build_agentd_parts" do
     expect(nudger.calls.first.last[:hook_log]).to equal(parts.hook_event_log)
   end
 
+  it "ticks the workflow nudger through the fan-out with the workspace and the one hook log the parts hold" do
+    nudger = RecordingNudger.new
+    parts = build(workflow_nudger: nudger, hook_event_log_factory: ->(_workspace) { RecordingHookLog.new })
+
+    parts.hook_fanout.tick
+
+    expect(nudger.calls.map(&:first)).to eq([:tick])
+    expect(nudger.calls.first[1]).to eq("ws")
+    expect(nudger.calls.first.last[:hook_log]).to equal(parts.hook_event_log)
+  end
+
   it "puts the work queue desk its factory builds in its member, and asks it for a pass once the Stop's advance exits and on each scan" do
     desk = RecordingWorkQueueDesk.new
     seen = nil

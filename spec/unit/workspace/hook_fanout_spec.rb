@@ -92,6 +92,20 @@ RSpec.describe Workspace::HookFanout do
       expect(ticker.ticks).to eq(1)
       expect(queue_desk.calls).to be_empty
     end
+
+    it "a tick that raises in one subscriber still reaches the next" do
+      stub_const("WedgedTicker", Class.new { def tick = raise("wedged") })
+      failing = WedgedTicker.new
+      ticker = Class.new do
+        attr_reader :ticks
+
+        def tick = (@ticks = @ticks.to_i + 1)
+      end.new
+      fanout(subscribers: [failing, ticker]).tick
+
+      expect(ticker.ticks).to eq(1)
+      expect(log_output.string).to include("agent: WedgedTicker tick failed (RuntimeError: wedged)")
+    end
   end
 
   describe "#turn_ended" do
