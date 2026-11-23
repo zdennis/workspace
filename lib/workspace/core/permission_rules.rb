@@ -11,6 +11,9 @@ module Workspace
     # Actions from least to most restrictive: when layers disagree on a default, the later one wins.
     RESTRICTIVENESS = %w[allow ask deny].freeze
 
+    # Values `agent.permissions.hang_guard` (and a workflow's `hang_guard:`) accepts.
+    HANG_GUARD_MODES = %w[off deny_with_hint].freeze
+
     # The keys a rule may hold.
     KEYS = %w[tool pattern action].freeze
 

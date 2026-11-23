@@ -338,6 +338,13 @@ module Workspace
     end
     private_constant :PERMISSION_DEFAULT
 
+    HANG_GUARD = lambda do |value|
+      value = "off" if value == false
+      raise ArgumentError, "must be one of #{PermissionRules::HANG_GUARD_MODES.join(", ")}" unless PermissionRules::HANG_GUARD_MODES.include?(value)
+      value
+    end
+    private_constant :HANG_GUARD
+
     PERMISSION_RULES = lambda do |value|
       PermissionRules.parse(value, label: "agent.permissions.rules")
     end
@@ -639,6 +646,10 @@ module Workspace
         doc: "`true` or `false`: whether `launch`, `start` and `add` mark the checkout's real path as trusted in Claude Code's `.claude.json` (`hasTrustDialogAccepted`), so a first launch does not stop on the trust dialog. Off by default because trust lets the folder's `.claude/settings.json`, hooks and MCP servers run (default `false`; ignored when `agent.kind` isn't `claude`)"),
       Key.new(name: "agent.permissions.default", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :enum, combine: :most_restrictive, settable: true, default: "ask", choices: PERMISSION_ACTIONS, parser: PERMISSION_DEFAULT,
         doc: "What the permission policy does with a coding agent's tool call that no `agent.permissions.rules` entry matches: `ask` (default, the agent's own dialog), `allow` or `deny`. Of the layers that set it, the most restrictive value wins"),
+      Key.new(name: "agent.permissions.hang_guard", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :enum, settable: true, default: "deny_with_hint", choices: PermissionRules::HANG_GUARD_MODES, parser: HANG_GUARD,
+        doc: "What the hook does when a coding agent's tool call raises a permission dialog and no rule decided it, in every pane: `deny_with_hint` (default) denies the call with a hint to run simpler commands, so the agent tries again instead of waiting at a dialog nobody answers; the cost is that in an interactive pane the agent loses a turn on a call you would have approved, at most `agent.permissions.hang_guard_max_denies` times per turn. `off` leaves every such call to the agent's own dialog; turn it off with `workspace config set agent.permissions.hang_guard off`. The most specific layer that sets it wins"),
+      Key.new(name: "agent.permissions.hang_guard_max_denies", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :integer, settable: true, examples: ["1", "3"], default: 2, min: 1, parser: POSITIVE_INTEGER,
+        doc: "How many undecided tool calls `agent.permissions.hang_guard` denies with a hint in one turn of a pane (one attempt of a workflow step) before it lets the agent's own dialog through (default `2`, at least `1`)"),
       Key.new(name: "agent.permissions.rules", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :rules, combine: :concat, settable: false, parser: PERMISSION_RULES,
         doc: "Edited in the file by hand: a list of `{tool, pattern, action}` rules (`tool` a glob over the tool name, optional `pattern`, `action` one of `allow`, `ask`, `deny`) the permission policy matches a tool call against. Unlike other keys, the lists of the global, project and worktree files are joined, not replaced; `deny` beats `ask` beats `allow`"),
       *AgentProvider.all.map do |provider|

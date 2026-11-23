@@ -150,4 +150,45 @@ RSpec.describe Workspace::PermissionPolicyConfig do
       expect(configured?).to be(true)
     end
   end
+
+  describe "#hang_guard" do
+    def hang_guard = config.hang_guard(workspace: "app.worktree-x", project: "app")
+
+    it "reads the defaults with no files" do
+      expect(hang_guard).to eq(mode: "deny_with_hint", max_denies: 2)
+    end
+
+    it "lets the most specific layer win" do
+      write_config(:global, agent(hang_guard: "off", hang_guard_max_denies: 5))
+      write_config("app", agent(hang_guard: "deny_with_hint", hang_guard_max_denies: 3))
+      expect(hang_guard).to eq(mode: "deny_with_hint", max_denies: 3)
+
+      write_config("app.worktree-x", agent(hang_guard: "off"))
+      expect(hang_guard).to eq(mode: "off", max_denies: 3)
+    end
+
+    it "reads a hand-written unquoted off, which YAML loads as false, as off" do
+      write_config("app", nil, raw: "agent:\n  permissions:\n    hang_guard: off\n")
+      expect(hang_guard[:mode]).to eq("off")
+    end
+
+    it "reads a bad value as the default of that key only" do
+      write_config("app", agent(hang_guard: "bogus", hang_guard_max_denies: 4))
+      expect(hang_guard).to eq(mode: "deny_with_hint", max_denies: 4)
+    end
+
+    it "reads the defaults when a file can't be parsed" do
+      write_config("app", nil, raw: "agent: [")
+      expect(hang_guard).to eq(mode: "deny_with_hint", max_denies: 2)
+    end
+
+    it "keeps the rules working and the policy unconfigured when a layer holds only these keys" do
+      write_config("app", agent(hang_guard: "off", hang_guard_max_denies: 1))
+      expect(policy).to be_nil
+      expect(configured?).to be(false)
+
+      write_config("app", agent(hang_guard: "off", rules: [{"tool" => "Bash", "pattern" => "rm *", "action" => "deny"}]))
+      expect(decide("rm x")).to eq(action: "deny", rule: "project:rules[0]")
+    end
+  end
 end

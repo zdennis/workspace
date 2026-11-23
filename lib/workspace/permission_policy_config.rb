@@ -13,8 +13,12 @@ module Workspace
     DEFAULT_KEY = "agent.permissions.default"
     RULES_KEY = "agent.permissions.rules"
     FINISHED = %w[completed failed cancelled].freeze
-    MALFORMED_NODE = "agent.permissions must be a mapping holding only rules and default, not a dotted key or another key".freeze
-    private_constant :DEFAULT_KEY, :RULES_KEY, :FINISHED, :MALFORMED_NODE
+    HANG_GUARD_KEY = "agent.permissions.hang_guard"
+    MAX_DENIES_KEY = "agent.permissions.hang_guard_max_denies"
+    POLICY_KEYS = %w[rules default].freeze
+    PERMISSION_KEYS = (POLICY_KEYS + %w[hang_guard hang_guard_max_denies]).freeze
+    MALFORMED_NODE = "agent.permissions must be a mapping holding only rules, default, hang_guard and hang_guard_max_denies, not a dotted key or another key".freeze
+    private_constant :DEFAULT_KEY, :RULES_KEY, :FINISHED, :MALFORMED_NODE, :HANG_GUARD_KEY, :MAX_DENIES_KEY, :POLICY_KEYS, :PERMISSION_KEYS
 
     # @param config_resolver [Workspace::ConfigResolver] reads each layer's file
     # @param bound_run [Workspace::BoundRun] names the run the calling pane is bound to
@@ -84,6 +88,20 @@ module Workspace
       {configured: configured, error: nil, allow_without_deny: default == "allow" && rules.none? { |rule| rule["action"] == "deny" }}
     end
 
+    # The hang guard's settings: the most specific config layer that sets each key wins. A value
+    # that does not parse, or any read error, gives the default for that setting.
+    #
+    # @param workspace [String]
+    # @param project [String, nil]
+    # @return [Hash] `{mode:, max_denies:}`: mode one of {PermissionRules::HANG_GUARD_MODES}, max_denies an Integer of 1 or more
+    def hang_guard(workspace:, project:)
+      data = @config_resolver.view(workspace: workspace, project: project, strict_global: true).data_by_layer(RULES_KEY)
+      {mode: layered_setting(data, HANG_GUARD_KEY), max_denies: layered_setting(data, MAX_DENIES_KEY)}
+    rescue => e
+      @logger.debug { "hang guard: reading the defaults (#{e.class}: #{e.message})" }
+      {mode: ConfigSchema.default(HANG_GUARD_KEY), max_denies: ConfigSchema.default(MAX_DENIES_KEY)}
+    end
+
     private
 
     # Each layer's own file, highest first, read raw and strictly (the global file too).
@@ -96,6 +114,22 @@ module Workspace
       view = @config_resolver.view(workspace: workspace, project: project, strict_global: true)
       data = view.data_by_layer(RULES_KEY)
       data.map { |layer, content| scan_layer(layer, content) }
+    end
+
+    def layered_setting(data, name)
+      key = ConfigSchema.key(name)
+      leaf = name.split(".").last
+      data.each_value do |content|
+        next unless content.is_a?(Hash)
+        permissions = content.dig("agent", "permissions")
+        next unless permissions.is_a?(Hash) && !permissions[leaf].nil?
+        begin
+          return key.parse(permissions[leaf])
+        rescue ArgumentError
+          return key.default
+        end
+      end
+      key.default
     end
 
     def scan_layer(layer, content)
@@ -123,7 +157,7 @@ module Workspace
       return true if agent.keys.any? { |key| key.to_s.start_with?("permissions.") }
       permissions = agent["permissions"]
       return false if permissions.nil?
-      !permissions.is_a?(Hash) || (permissions.keys - %w[rules default]).any?
+      !permissions.is_a?(Hash) || (permissions.keys - PERMISSION_KEYS).any?
     end
 
     # @return [Array<Hash>] the bound live run's `permissions:` rules; empty for no run or a finished one

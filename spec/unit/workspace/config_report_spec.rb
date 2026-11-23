@@ -87,6 +87,11 @@ RSpec.describe Workspace::ConfigReport do
       expect(problems.first["severity"]).to eq("warning")
     end
 
+    it "does not warn on the hang guard keys under agent.permissions" do
+      write("api", "agent:\n  permissions:\n    hang_guard: off\n    hang_guard_max_denies: 3\n")
+      expect(report.validate("api")["problems"].select { |p| p["code"] == "unknown_key" }).to be_empty
+    end
+
     it "warns on a pattern for a tool glob that matches no tool with a subject" do
       write("api", "agent:\n  permissions:\n    rules:\n      - {tool: Bash, pattern: \"ls*\", action: allow}\n      - {tool: \"mcp__*\", pattern: \"x\", action: deny}\n      - {tool: \"*\", pattern: \"y\", action: ask}\n")
       problems = report.validate("api")["problems"].select { |p| p["code"] == "pattern_without_subject" }

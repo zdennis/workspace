@@ -1497,6 +1497,69 @@
       ]
     },
     {
+      "key": "agent.permissions.hang_guard",
+      "scope": "project",
+      "type": "enum",
+      "value": null,
+      "masked": false,
+      "default": "deny_with_hint",
+      "effective": "deny_with_hint",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "What the hook does when a coding agent's tool call raises a permission dialog and no rule decided it, in every pane: `deny_with_hint` (default) denies the call with a hint to run simpler commands, so the agent tries again instead of waiting at a dialog nobody answers; the cost is that in an interactive pane the agent loses a turn on a call you would have approved, at most `agent.permissions.hang_guard_max_denies` times per turn. `off` leaves every such call to the agent's own dialog; turn it off with `workspace config set agent.permissions.hang_guard off`. The most specific layer that sets it wins",
+      "problems": [],
+      "choices": [
+        "off",
+        "deny_with_hint"
+      ]
+    },
+    {
+      "key": "agent.permissions.hang_guard_max_denies",
+      "scope": "project",
+      "type": "integer",
+      "value": null,
+      "masked": false,
+      "default": 2,
+      "effective": 2,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "How many undecided tool calls `agent.permissions.hang_guard` denies with a hint in one turn of a pane (one attempt of a workflow step) before it lets the agent's own dialog through (default `2`, at least `1`)",
+      "problems": [],
+      "min": 1
+    },
+    {
       "key": "agent.permissions.rules",
       "scope": "project",
       "type": "rules",

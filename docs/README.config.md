@@ -94,6 +94,8 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `agent.recovery.enabled` | global, project, worktree | `true` or `false`: whether the agent daemon recovers a Claude Code agent whose turn ended on an API error (`server_error`, `overloaded`, `rate_limit` or `unknown`): it types a message to continue at the live prompt first, then restarts and resumes the conversation if that fails, on a schedule of up to 12 attempts; any other error kind gets one inbox item (default `true`; ignored when `agent.kind` isn't `claude`) | `true`, `false` |
 | `agent.claude.trust_checkout` | global, project, worktree | `true` or `false`: whether `launch`, `start` and `add` mark the checkout's real path as trusted in Claude Code's `.claude.json` (`hasTrustDialogAccepted`), so a first launch does not stop on the trust dialog. Off by default because trust lets the folder's `.claude/settings.json`, hooks and MCP servers run (default `false`; ignored when `agent.kind` isn't `claude`) | `true`, `false` |
 | `agent.permissions.default` | global, project, worktree | What the permission policy does with a coding agent's tool call that no `agent.permissions.rules` entry matches: `ask` (default, the agent's own dialog), `allow` or `deny`. Of the layers that set it, the most restrictive value wins | `ask`, `allow`, `deny` |
+| `agent.permissions.hang_guard` | global, project, worktree | What the hook does when a coding agent's tool call raises a permission dialog and no rule decided it, in every pane: `deny_with_hint` (default) denies the call with a hint to run simpler commands, so the agent tries again instead of waiting at a dialog nobody answers; the cost is that in an interactive pane the agent loses a turn on a call you would have approved, at most `agent.permissions.hang_guard_max_denies` times per turn. `off` leaves every such call to the agent's own dialog; turn it off with `workspace config set agent.permissions.hang_guard off`. The most specific layer that sets it wins | `off`, `deny_with_hint` |
+| `agent.permissions.hang_guard_max_denies` | global, project, worktree | How many undecided tool calls `agent.permissions.hang_guard` denies with a hint in one turn of a pane (one attempt of a workflow step) before it lets the agent's own dialog through (default `2`, at least `1`) | `1`, `3` |
 | `agent.commands.claude` | global, project, worktree | Command to run for Claude Code; a wrapper must pass its arguments through (e.g. `claude-dev`, default `claude`). See [Agent commands](README.config.md#agent-commands) | `claude-dev` |
 | `agent.commands.codex` | global, project, worktree | Command to run for Codex; a wrapper must pass its arguments through (e.g. `codex-dev`, default `codex`). See [Agent commands](README.config.md#agent-commands) | `codex-dev` |
 | `agent.commands.opencode` | global, project, worktree | Command to run for OpenCode; a wrapper must pass its arguments through (e.g. `opencode-dev`, default `opencode`). See [Agent commands](README.config.md#agent-commands) | `opencode-dev` |
@@ -237,7 +239,7 @@ When the key is `true` and the workspace's main agent is `claude`, `launch`, `st
 
 ### Permission policy
 
-`agent.permissions` lets configuration answer a coding agent's permission dialogs, so a request you have already decided on never waits for you. It has two keys, edited by hand in the config file of the layer you want (`config set` doesn't write a list): `~/.config/workspace/config.yml` (global), `~/.config/workspace/projects/<project>.yml` (project) or `~/.config/workspace/projects/<project>.worktree-<name>.yml` (one worktree); see [Layers](#layers) for which file a workspace reads.
+`agent.permissions` lets configuration answer a coding agent's permission dialogs, so a request you have already decided on never waits for you. Its `rules` and `default` keys are edited by hand in the config file of the layer you want (`config set` doesn't write a list): `~/.config/workspace/config.yml` (global), `~/.config/workspace/projects/<project>.yml` (project) or `~/.config/workspace/projects/<project>.worktree-<name>.yml` (one worktree); see [Layers](#layers) for which file a workspace reads.
 
 ```yaml
 agent:
@@ -252,7 +254,7 @@ agent:
       - {tool: Read, action: allow}
 ```
 
-A rule is `{tool, pattern, action}`. `tool` is a glob over the tool name (`Bash`, `Edit`, `mcp__*`). `pattern` is optional; a rule without one matches every call of the tool. `action` is `allow`, `ask` or `deny`. A pattern is at most 200 characters with at most 8 `*` or `?`. A bad value, an unknown key, or a `permissions` node holding anything but `rules` and `default` makes the policy decide nothing, so the agent's own dialog shows; [`config validate` and `doctor`](#config-validate) name the problem.
+A rule is `{tool, pattern, action}`. `tool` is a glob over the tool name (`Bash`, `Edit`, `mcp__*`). `pattern` is optional; a rule without one matches every call of the tool. `action` is `allow`, `ask` or `deny`. A pattern is at most 200 characters with at most 8 `*` or `?`. A bad value, an unknown key, or a `permissions` node holding anything but `rules`, `default`, `hang_guard` and `hang_guard_max_denies` makes the policy decide nothing, so the agent's own dialog shows; [`config validate` and `doctor`](#config-validate) name the problem.
 
 **When it runs.** The policy is consulted from the agent's `PermissionRequest` hook, so only for a call Claude Code or Codex was about to ask a person about. A call the agent's own settings already allow or deny never reaches it, so Claude's own deny rules still win. An agent started with `--dangerously-skip-permissions` (the stock worktree template does) never asks, so the policy never runs for it. It needs the hooks installed (`workspace init --install-hooks`); see [`session-event`](README.session-event.md#permissionrequest-replies).
 
@@ -274,6 +276,15 @@ A rule is `{tool, pattern, action}`. `tool` is a glob over the tool name (`Bash`
 - `rm *` doesn't match a bare `rm`; deny both `rm` and `rm *`.
 
 For a boundary you rely on, set `default: ask` and list what is safe with `allow` rules. Allow by pattern isn't affected by those gaps, since every piece must match an allow.
+
+**Permission hang guard.** A tool call that raises a permission dialog no rule decided would otherwise wait for a person, and in an unattended pane (a workflow step or review round) nobody comes. With `agent.permissions.hang_guard: deny_with_hint`, the default, in every pane the hook denies such a call with a hint to run simpler commands, one step at a time, so the agent retries instead of waiting. It denies at most `agent.permissions.hang_guard_max_denies` calls (default 2) in one turn of a pane; past that the dialog shows as usual. The cost is that in an interactive pane the agent loses a turn on a call you would have approved. To turn it off, run `workspace config set agent.permissions.hang_guard off`. Set it in the global, project or worktree layer; the most specific layer that sets it wins, and a value that does not parse reads as the default.
+
+```yaml
+agent:
+  permissions:
+    hang_guard: deny_with_hint   # or off
+    hang_guard_max_denies: 2
+```
 
 **Answers.** `allow` and `deny` are answered to the agent at once, with no dialog, for Claude Code and Codex alike; a denied call carries `Denied by workspace permission policy (<rule>)`, the rule being `project:rules[2]`, `global:default` or `run:permissions[0]`. `ask`, no decision and any error leave the dialog to you. When some layer sets an `agent.permissions` key, that request also goes into the [inbox](README.inbox.md#permission-requests) until it is answered. Each decision is written as a [`permission_resolved`](README.events.md#permission-waits) line with `by: "policy"` and the `rule`. The policy runs in review, reflection and sub-agent panes too; an escalated request in a review pane gets the inbox item but never runs `alerts.notify`, as for any review pane (see [Alerts](README.sessions.md#alerts)).
 
