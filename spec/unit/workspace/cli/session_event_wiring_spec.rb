@@ -53,6 +53,29 @@ RSpec.describe Workspace::CLI::SessionEventWiring do
     expect(built[:delivery_log]).to be_a(Workspace::DeliveryLog)
     expect(built[:workspace_for_session]).to be_a(Workspace::SessionWorkspace)
     expect(built[:dev_session_release]).to be_a(Workspace::DevSessionRelease)
+    expect(built[:hang_guard_counter]).to be_a(Workspace::HangGuardCounter)
+    expect(built[:command_pieces]).to be_a(Workspace::BashCommandPieces)
+  end
+
+  it "builds the hang guard counter at state_dir/hang-guard.json, and shares one command cutter with the deny tripwire" do
+    capture_session_event
+    counter = stub_new(Workspace::HangGuardCounter, "counter")
+    deny = stub_new(Workspace::WorkflowDeny, "deny")
+
+    described_class.build(**base, lineage: double("lineage"), process_tree: double("process_tree"), config_names: double("config_names"))
+
+    expect(counter).to eq(path: File.join(tmpdir, "hang-guard.json"))
+    expect(built[:command_pieces]).to be(deny[:command_pieces])
+  end
+
+  it "passes a given hang guard counter through to the command" do
+    capture_session_event
+    counter = double("hang_guard_counter")
+
+    described_class.build(**base, lineage: double("lineage"), process_tree: double("process_tree"), config_names: double("config_names"),
+      hang_guard_counter: counter)
+
+    expect(built[:hang_guard_counter]).to be(counter)
   end
 
   it "gives one built pane_bindings and the given tmux to the bound run and both write guards" do

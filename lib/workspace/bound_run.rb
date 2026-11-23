@@ -35,6 +35,15 @@ module Workspace
       entry && entry["id"]
     end
 
+    # The whole binding entry {#run_id_strict} reads the id from, for a reader that keys on its step,
+    # attempt, role, round or group.
+    #
+    # @return [Hash, nil] the pane's live `kind: run` binding, or nil when the pane is not bound to a run
+    # @raise [Workspace::Error, SystemCallError] when the binding can't be read or checked
+    def binding_strict
+      read_entry
+    end
+
     # The run only if the pane is the step's own agent's, not a review pane: a review
     # pane holds no locks and runs no dev environment, so `dev up`, `lock acquire` and
     # `promote` must not treat it as the run's author.

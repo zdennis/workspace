@@ -88,19 +88,30 @@ module Workspace
       {configured: configured, error: nil, allow_without_deny: default == "allow" && rules.none? { |rule| rule["action"] == "deny" }}
     end
 
-    # The hang guard's settings: the bound live run's definition `hang_guard` wins for the mode, then
-    # the most specific config layer that sets each key. The cap is config only. A value that does not
-    # parse, or any read error, gives the default for that setting.
+    # What the hang guard needs for one request, from one read of the pane's binding, its run and the config.
+    # The bound live run's definition `hang_guard` wins for the mode, then the most specific config layer that sets
+    # each key; the cap is config only, and a value that does not parse gives that key's default. In a pane with no
+    # live run binding, a config file that can't be parsed or a malformed `agent.permissions` node reads as mode
+    # `off`, so the dialog shows as it did before the guard; a bound pane then reads the run's mode over the
+    # defaults, since nobody would answer the dialog.
     #
     # @param workspace [String]
     # @param project [String, nil]
-    # @return [Hash] `{mode:, max_denies:}`: mode one of {PermissionRules::HANG_GUARD_MODES}, max_denies an Integer of 1 or more
-    def hang_guard(workspace:, project:)
-      data = @config_resolver.view(workspace: workspace, project: project, strict_global: true).data_by_layer(RULES_KEY)
-      {mode: run_hang_guard || layered_setting(data, HANG_GUARD_KEY), max_denies: layered_setting(data, MAX_DENIES_KEY)}
-    rescue => e
-      @logger.debug { "hang guard: reading the defaults (#{e.class}: #{e.message})" }
-      {mode: ConfigSchema.default(HANG_GUARD_KEY), max_denies: ConfigSchema.default(MAX_DENIES_KEY)}
+    # @return [Hash] `{mode:, max_denies:, binding:}`: mode one of {PermissionRules::HANG_GUARD_MODES}, max_denies an
+    #   Integer of 1 or more, binding the binding entry while its run has not finished,
+    #   nil for an unbound pane, a finished run, or a binding or run that can't be read
+    def hang_guard_context(workspace:, project:)
+      binding, run = live_binding_and_run
+      begin
+        data = @config_resolver.view(workspace: workspace, project: project, strict_global: true).data_by_layer(RULES_KEY)
+        broken = data.any? { |layer, content| scan_layer(layer, content)[:malformed] }
+      rescue => e
+        @logger.debug { "hang guard: the config can't be read (#{e.class}: #{e.message})" }
+        return defaults.merge(mode: "off", binding: nil) unless binding
+        return defaults.merge({mode: run_hang_guard(run)}.compact, binding: binding)
+      end
+      return defaults.merge(mode: "off", binding: nil) if broken && !binding
+      settings_from(data, run_hang_guard(run)).merge(binding: binding)
     end
 
     private
@@ -117,8 +128,27 @@ module Workspace
       data.map { |layer, content| scan_layer(layer, content) }
     end
 
-    def run_hang_guard
-      value = live_run&.definition&.then { |definition| definition.is_a?(Hash) ? definition["hang_guard"] : nil }
+    def settings_from(data, from_run)
+      {mode: from_run || layered_setting(data, HANG_GUARD_KEY), max_denies: layered_setting(data, MAX_DENIES_KEY)}
+    end
+
+    def defaults
+      {mode: ConfigSchema.default(HANG_GUARD_KEY), max_denies: ConfigSchema.default(MAX_DENIES_KEY)}
+    end
+
+    # @return [Array(Hash, WorkflowRun), Array(nil, nil)] the pane's binding and its run while the run has not finished
+    def live_binding_and_run
+      entry = @bound_run.binding_strict
+      return [nil, nil] unless entry
+      run = @run_store.run(entry["id"])
+      FINISHED.include?(run.state) ? [nil, nil] : [entry, run]
+    rescue => e
+      @logger.debug { "hang guard: could not read the pane's run binding (#{e.class}: #{e.message})" }
+      [nil, nil]
+    end
+
+    def run_hang_guard(run)
+      value = run&.definition&.then { |definition| definition.is_a?(Hash) ? definition["hang_guard"] : nil }
       value = "off" if value == false
       PermissionRules::HANG_GUARD_MODES.include?(value) ? value : nil
     rescue => e

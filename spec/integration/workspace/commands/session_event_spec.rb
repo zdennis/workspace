@@ -770,6 +770,214 @@ RSpec.describe Workspace::Commands::SessionEvent do
         deliver({"hook_event_name" => "PreToolUse", "tool_name" => "Bash"}, nil, output: output, permission_policy_config: policy_config)
       end
 
+      describe "the hang guard" do
+        let(:counter_path) { File.join(tmpdir, "hang-guard.json") }
+        let(:counter) { Workspace::HangGuardCounter.new(path: counter_path, wait: 0.05) }
+        let(:binding) { {"kind" => "run", "id" => "wr_1", "step" => "implement", "attempt" => 1} }
+        let(:context) { {mode: "deny_with_hint", max_denies: 2, binding: binding} }
+        let(:hints) { described_class::HANG_GUARD_HINTS }
+        let(:explicit_ask_policy) { Workspace::PermissionPolicy.new(layers: [{source: "project", rules: [{"tool" => "Bash", "action" => "ask"}], default: nil}]) }
+
+        before do
+          allow(policy_config).to receive(:policy).and_return(nil)
+          allow(policy_config).to receive(:hang_guard_context).with(workspace: "proj", project: nil) { context }
+        end
+
+        def unbound = context.merge!(binding: nil)
+
+        def guard(payload = request, agent: nil)
+          event = deliver(payload.merge("session_id" => "s1"), agent, output: output, error_output: error_output,
+            permission_policy_config: policy_config, hang_guard_counter: counter, command_pieces: Workspace::BashCommandPieces.new)
+          [event, output.string]
+        end
+
+        def bash(command) = request.merge("tool_input" => {"command" => command})
+
+        def message = reply["hookSpecificOutput"]["decision"]["message"]
+
+        def stored
+          JSON.parse(File.read(counter_path))
+        end
+
+        it "denies an undecided plain Bash call in a bound pane with the unattended hint and counts it under the attempt" do
+          event, out = guard
+
+          expect(out.lines.size).to eq(1)
+          expect(reply).to eq("hookSpecificOutput" => {"hookEventName" => "PermissionRequest",
+                                                       "decision" => {"behavior" => "deny", "message" => hints.fetch([:bound, :other])}})
+          expect(out).not_to match(/updatedInput|updatedPermissions|interrupt/)
+          expect(event).to include("event" => "permission_request", "decision" => "deny", "rule" => "hang_guard")
+          expect(stored["run:wr_1:implement:1"]).to include("count" => 1)
+        end
+
+        {
+          "a substitution" => "for f in $(ls); do echo $f; done",
+          "a pipe into a loop" => "ls | while read f; do echo \"$f\"; done",
+          "backticks" => "echo `date`",
+          "an array" => "files=(a b); echo ok"
+        }.each do |shape, command|
+          it "gives a compound Bash command with #{shape} the compound hint in a bound pane" do
+            guard(bash(command))
+
+            expect(message).to eq(hints.fetch([:bound, :compound]))
+          end
+        end
+
+        it "gives any other tool the unattended hint, AskUserQuestion included, in a bound pane" do
+          guard({"hook_event_name" => "PermissionRequest", "tool_name" => "AskUserQuestion", "tool_input" => {}})
+
+          expect(message).to eq(hints.fetch([:bound, :other]))
+        end
+
+        it "words its hints by binding, names the status line only in a bound pane and the script only for a bound pane" do
+          expect(hints.values).to all(include("workspace config set agent.permissions.hang_guard off"))
+          expect(hints.fetch([:bound, :other])).to include("WORKFLOW_STATUS: needs_input — <question>", "workspace ask")
+          expect(hints.fetch([:bound, :compound])).to include("bash <path>", "$(...)")
+          expect(hints.fetch([:unbound, :compound])).to include("$(...)", "ask the person in chat")
+          expect(hints.fetch([:unbound, :other])).to include("Ask the person in chat to approve it", "do without it")
+          expect(hints.select { |(where, _), _| where == :unbound }.values.join).not_to match(/WORKFLOW_STATUS|bash <path>|unattended|nobody|workflow definition/)
+          expect(hints.select { |(where, _), _| where == :bound }.values).to all(include("`hang_guard: off` in the workflow definition"))
+        end
+
+        it "denies an undecided Bash call in an unbound pane with the unbound hint, counted under the pane and session" do
+          unbound
+
+          event, = guard(bash("a=$(pwd); echo $a"))
+
+          expect(event).to include("decision" => "deny", "rule" => "hang_guard")
+          expect(message).to eq(hints.fetch([:unbound, :compound]))
+          expect(stored.keys).to eq(["pane:%2:s1"])
+        end
+
+        it "gives a plain Bash call in an unbound pane the ask-the-person hint" do
+          unbound
+
+          guard
+
+          expect(message).to eq(hints.fetch([:unbound, :other]))
+        end
+
+        %w[AskUserQuestion ExitPlanMode].each do |tool|
+          it "never denies #{tool} in an unbound pane" do
+            unbound
+
+            event, out = guard({"hook_event_name" => "PermissionRequest", "tool_name" => tool, "tool_input" => {}})
+
+            expect(out).to eq("")
+            expect(event).not_to have_key("decision")
+            expect(File.exist?(counter_path)).to be(false)
+          end
+        end
+
+        it "denies a request a person's own ask rule left to the dialog in a bound pane" do
+          allow(policy_config).to receive(:policy).and_return(explicit_ask_policy)
+
+          expect(guard.first).to include("decision" => "deny", "rule" => "hang_guard")
+        end
+
+        it "shows the dialog for a person's own ask rule in an unbound pane" do
+          allow(policy_config).to receive(:policy).and_return(explicit_ask_policy)
+          unbound
+
+          event, out = guard
+
+          expect(out).to eq("")
+          expect(event).to include("decision" => "ask", "rule" => "project:rules[0]")
+          expect(File.exist?(counter_path)).to be(false)
+        end
+
+        it "denies a request the policy's default left to ask, bound or not" do
+          allow(policy_config).to receive(:policy).and_return(ask_policy)
+          expect(guard.first).to include("decision" => "deny", "rule" => "hang_guard")
+
+          unbound
+          output.truncate(0)
+          output.rewind
+          expect(guard.first).to include("decision" => "deny", "rule" => "hang_guard")
+        end
+
+        it "prints nothing past the cap and forwards ask with hang_guard:cap" do
+          2.times { guard }
+          output.truncate(0)
+          output.rewind
+
+          event, out = guard
+
+          expect(out).to eq("")
+          expect(event).to include("decision" => "ask", "rule" => "hang_guard:cap")
+          expect(stored["run:wr_1:implement:1"]["count"]).to eq(2)
+        end
+
+        it "prints nothing and counts nothing when the mode is off" do
+          context[:mode] = "off"
+
+          event, out = guard
+
+          expect(out).to eq("")
+          expect(event).not_to have_key("decision")
+          expect(File.exist?(counter_path)).to be(false)
+        end
+
+        it "leaves an explicit allow and deny to the policy and reads no hang guard context" do
+          expect(policy_config).not_to receive(:hang_guard_context)
+          allow(policy_config).to receive(:policy).and_return(allow_policy)
+          expect(guard.first).to include("decision" => "allow", "rule" => "project:rules[0]")
+          output.truncate(0)
+          output.rewind
+
+          allow(policy_config).to receive(:policy).and_return(deny_policy)
+          event, = guard
+
+          expect(event).to include("decision" => "deny", "rule" => "project:rules[1]")
+          expect(message).to eq("Denied by workspace permission policy (project:rules[1])")
+          expect(File.exist?(counter_path)).to be(false)
+        end
+
+        it "prints nothing and keeps the policy's ask when the count's lock is held" do
+          allow(policy_config).to receive(:policy).and_return(ask_policy)
+          event, out = File.open("#{counter_path}.lock", File::RDWR | File::CREAT, 0o600) do |held|
+            held.flock(File::LOCK_EX)
+            guard
+          end
+
+          expect(out).to eq("")
+          expect(event).to include("decision" => "ask", "rule" => "project:default")
+        end
+
+        it "prints nothing when reading its context raises" do
+          allow(policy_config).to receive(:hang_guard_context).and_raise(RuntimeError, "boom")
+
+          event, out = guard
+
+          expect(out).to eq("")
+          expect(event).not_to have_key("decision")
+        end
+
+        it "makes no decision for an ambiguous session" do
+          event = deliver(request, nil, output: output, permission_policy_config: policy_config, hang_guard_counter: counter,
+            session_ambiguous: ->(_session) { true })
+
+          expect(output.string).to eq("")
+          expect(event).not_to have_key("decision")
+        end
+
+        it "is skipped with no counter" do
+          event, out = decide
+
+          expect(out).to eq("")
+          expect(event).not_to have_key("decision")
+        end
+
+        it "replies to Codex with the same shape and forwards the deny as a decided permission_request" do
+          event, out = guard(request, agent: "codex")
+
+          expect(out).not_to match(/updatedInput|updatedPermissions|interrupt/)
+          expect(reply["hookSpecificOutput"]["decision"]).to eq("behavior" => "deny", "message" => hints.fetch([:bound, :other]))
+          expect(event).to include("event" => "permission_request", "decision" => "deny", "rule" => "hang_guard", "agent_kind" => "codex")
+          expect(event).not_to have_key("notification_type")
+        end
+      end
+
       describe "for Codex" do
         it "replies without reserved fields and forwards a decided request as permission_request" do
           allow(policy_config).to receive(:policy).and_return(deny_policy)

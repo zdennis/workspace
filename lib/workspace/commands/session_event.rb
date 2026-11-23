@@ -134,6 +134,39 @@ module Workspace
       CONNECT_TIMEOUT = 0.2
       REPLY_TIMEOUT = 0.3
 
+      # Whether a person's own `ask` rule (`<layer>:rules[i]`, `run:permissions[i]`) is guarded in a pane bound to a
+      # live run, like a request no rule decided. In an unbound pane such a rule always shows the dialog; false shows
+      # it in a bound pane too, leaving the guard to the fallbacks (`default`, `<layer>:default`) and no policy at all.
+      GUARD_EXPLICIT_ASK = true
+
+      # Tools that put a question to the person. The hang guard never denies them in a pane bound to no run.
+      QUESTION_TOOLS = %w[AskUserQuestion ExitPlanMode].freeze
+
+      # A Bash array assignment, `name=(...)`, which {BashCommandPieces} does not tell apart.
+      ARRAY_ASSIGNMENT = /(?:\A|[\s;&|(])[A-Za-z_][A-Za-z0-9_]*=\(/
+
+      # How to turn the hang guard off, which ends every hint: config in any pane, and also the workflow definition in a run's.
+      HANG_GUARD_OFF = "To turn this guard off: `workspace config set agent.permissions.hang_guard off`."
+      HANG_GUARD_RUN_OFF = "To turn this guard off: `workspace config set agent.permissions.hang_guard off`, or `hang_guard: off` in the workflow definition."
+
+      # The shapes a compound Bash command should be rewritten without.
+      SIMPLE_BASH = "run each command as its own Bash call, with no `$(...)`, backticks, arrays, `for`/`while` loops or pipes into loops"
+
+      # The reply messages of a call the hang guard denied, by whether the pane is bound to a live run (nobody is
+      # watching it) and whether the call is a compound Bash command (one a simpler form can get past the dialog).
+      HANG_GUARD_HINTS = {
+        [:bound, :compound] => "Denied by workspace's hang guard: this workflow step runs unattended, and this command would wait at a " \
+          "permission dialog nobody answers. Instead, #{SIMPLE_BASH}; or write the steps to a script outside the checkout (the run's " \
+          "artifacts or a temp dir) and run it with one `bash <path>` call. #{HANG_GUARD_RUN_OFF}",
+        [:bound, :other] => "Denied by workspace's hang guard: this workflow step runs unattended, so this call can't be approved. " \
+          "Record the question with `workspace ask \"<question>\" --default \"<choice>\"` and carry on with the default, or end your " \
+          "turn with the line `WORKFLOW_STATUS: needs_input — <question>`. #{HANG_GUARD_RUN_OFF}",
+        [:unbound, :compound] => "Held back by workspace's hang guard so you don't wait at a permission dialog: #{SIMPLE_BASH}, " \
+          "or ask the person in chat. #{HANG_GUARD_OFF}",
+        [:unbound, :other] => "Held back by workspace's hang guard so you don't wait at a permission dialog. Ask the person in chat to approve it, " \
+          "or do without it. #{HANG_GUARD_OFF}"
+      }.freeze
+
       # @param config [Workspace::Config] socket path lookups
       # @param tmux [Workspace::Tmux] resolves the pane's session name
       # @param input [IO] stream the hook payload arrives on
@@ -165,6 +198,10 @@ module Workspace
       #   for a session that is no workspace's, whose events are then dropped
       # @param permission_policy_config [Workspace::PermissionPolicyConfig, nil] builds the permission policy a
       #   PermissionRequest is decided by; nil decides nothing
+      # @param hang_guard_counter [Workspace::HangGuardCounter, nil] counts the hang guard's denies, which deny a
+      #   request the policy left undecided (see {PermissionPolicyConfig#hang_guard_context}); nil skips the guard
+      # @param command_pieces [Workspace::BashCommandPieces, nil] tells a compound Bash command for the hang guard's hint;
+      #   nil gives every Bash call the hint for a call that can't be approved
       # @param session_ambiguous [#call] given the pane's tmux session name, whether more than one workspace
       #   claims it; no permission decision is made for such a session
       # @param delivery_log [Workspace::DeliveryLog, nil] records an event the daemon of a resolved workspace
@@ -173,12 +210,14 @@ module Workspace
       # @param reply_timeout [Numeric] seconds to wait for the daemon's reply
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
         lock_idle_tracker: nil, lock_enforcer: nil, workflow_deny: nil, review_write_guard: nil, reflection_write_guard: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
-        workspace_for_session: ->(session) { session }, delivery_log: nil, permission_policy_config: nil, session_ambiguous: ->(_session) { false },
+        workspace_for_session: ->(session) { session }, delivery_log: nil, permission_policy_config: nil, hang_guard_counter: nil, command_pieces: nil, session_ambiguous: ->(_session) { false },
         connect_timeout: CONNECT_TIMEOUT, reply_timeout: REPLY_TIMEOUT)
         @workspace_for_session = workspace_for_session
         @delivery_log = delivery_log
         @session_ambiguous = session_ambiguous
         @permission_policy_config = permission_policy_config
+        @hang_guard_counter = hang_guard_counter
+        @command_pieces = command_pieces
         @connect_timeout = connect_timeout
         @reply_timeout = reply_timeout
         @dev_session_release = dev_session_release
@@ -502,28 +541,79 @@ module Workspace
       # Asks the permission policy about one PermissionRequest and, for an allow or deny, prints the one-line reply
       # the agent reads from stdout. Nothing else is written to stdout on this path (the logger writes to stderr),
       # and the reply never carries `updatedInput`, `updatedPermissions` or `interrupt`, which Codex reserves.
-      # An ask, no policy and any error print nothing and give nil, so the agent's own dialog shows; this never exits 2.
+      # A request the policy left undecided (an ask, no policy, an error) goes to the hang guard ({#hang_guard}),
+      # which may deny it with a hint; otherwise nothing is printed, so the agent's own dialog shows. This never exits 2.
       #
-      # @return [Hash, nil] `{action:, rule:}` of the policy's decision, nil when none was made
+      # @return [Hash, nil] `{action:, rule:}` of the decision, nil when none was made
       def decide_permission(payload, workspace)
         return nil unless @permission_policy_config
 
+        decision = policy_decision(payload, workspace)
+        return reply(decision, "Denied by workspace permission policy (#{decision[:rule]})") if decided?(decision)
+
+        hang_guard(payload, workspace, decision) || decision
+      end
+
+      def policy_decision(payload, workspace)
         policy = @permission_policy_config.policy(workspace: workspace, project: nil)
         return nil unless policy
 
         input = payload["tool_input"]
         result = policy.decide(tool_name: payload["tool_name"], tool_input: input.is_a?(Hash) ? input : {}, cwd: text_field(payload, "cwd"))
         decision = {action: result.fetch(:action).to_s, rule: result.fetch(:rule).to_s}
-        return nil unless %w[allow ask deny].include?(decision[:action])
-        return decision unless decided?(decision)
+        %w[allow ask deny].include?(decision[:action]) ? decision : nil
+      rescue => e
+        @logger.debug { "session-event: permission decision failed (#{e.class}: #{e.message})" }
+        nil
+      end
 
+      def fallback?(decision)
+        decision.nil? || decision[:rule] == "default" || decision[:rule].end_with?(":default")
+      end
+
+      # Denies an undecided request with a hint, so the agent tries again instead of waiting at a dialog, up to the
+      # cap a turn ({HangGuardCounter}); past the cap it gives `ask` with `hang_guard:cap`, so the dialog shows and the
+      # escalation desk raises it. Nil (the dialog shows) when the guard is off, for a person's own `ask` rule or a
+      # question tool in a pane bound to no live run, when the count can't be taken, and on any error.
+      def hang_guard(payload, workspace, decision)
+        return nil unless @hang_guard_counter
+
+        context = @permission_policy_config.hang_guard_context(workspace: workspace, project: nil)
+        return nil if context[:mode] == "off"
+
+        binding = context[:binding]
+        tool = payload["tool_name"]
+        return nil if !fallback?(decision) && !(binding && GUARD_EXPLICIT_ASK)
+        return nil if binding.nil? && QUESTION_TOOLS.include?(tool)
+
+        key = HangGuardCounter.key_for(binding: binding, pane_id: @env["TMUX_PANE"], session_id: text_field(payload, "session_id"))
+        case @hang_guard_counter.take(key, max: context[:max_denies])
+        when :deny then reply({action: "deny", rule: "hang_guard"}, HANG_GUARD_HINTS.fetch([binding ? :bound : :unbound, compound_bash?(payload) ? :compound : :other]))
+        when :capped then {action: "ask", rule: "hang_guard:cap"}
+        end
+      rescue => e
+        @logger.debug { "session-event: hang guard failed (#{e.class}: #{e.message})" }
+        nil
+      end
+
+      # Whether a Bash call holds a shape a simpler form avoids: a substitution, a compound keyword such as a loop
+      # (a pipe into a loop included), a command word that can't be read from its text, or an array.
+      def compound_bash?(payload)
+        input = payload["tool_input"]
+        command = input.is_a?(Hash) ? input["command"] : nil
+        return false unless @command_pieces && payload["tool_name"] == "Bash" && command.is_a?(String)
+
+        @command_pieces.substitution?(command) || @command_pieces.opaque?(command) || command.match?(ARRAY_ASSIGNMENT)
+      end
+
+      def reply(decision, message)
         reply = {"behavior" => decision[:action]}
-        reply["message"] = "Denied by workspace permission policy (#{decision[:rule]})" if decision[:action] == "deny"
+        reply["message"] = message if decision[:action] == "deny"
         @output.puts JSON.generate("hookSpecificOutput" => {"hookEventName" => "PermissionRequest", "decision" => reply})
         @output.flush if @output.respond_to?(:flush)
         decision
       rescue => e
-        @logger.debug { "session-event: permission decision failed (#{e.class}: #{e.message})" }
+        @logger.debug { "session-event: permission reply failed (#{e.class}: #{e.message})" }
         nil
       end
 

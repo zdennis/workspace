@@ -107,6 +107,22 @@ RSpec.describe Workspace::BoundRun do
     end
   end
 
+  describe "#binding_strict" do
+    it "gives the whole live entry" do
+      bind("%4", "step" => "lint", "attempt" => 2)
+
+      expect(bound_run.binding_strict).to include("id" => "wr_1", "step" => "lint", "attempt" => 2)
+    end
+
+    it "is nil for an unbound pane, and raises when tmux can't be asked" do
+      expect(bound_run.binding_strict).to be_nil
+
+      bind("%4")
+      allow(tmux).to receive(:session_name_for_pane).and_raise(Errno::ENOENT, "tmux")
+      expect { bound_run.binding_strict }.to raise_error(Errno::ENOENT)
+    end
+  end
+
   it "is nil for a pane tmux no longer knows" do
     bind("%4")
     allow(tmux).to receive(:session_name_for_pane).with("%4").and_return(nil)

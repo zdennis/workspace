@@ -41,11 +41,28 @@ For a `PermissionRequest`, it first asks the [permission policy](README.config.m
 {"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied by workspace permission policy (project:rules[2])"}}}
 ```
 
-An `allow` reply has `"behavior":"allow"` and no message. The reply never carries `updatedInput`, `updatedPermissions` or `interrupt`. An `ask`, no policy and any error print nothing, so the agent shows its own dialog, and the exit code stays 0: a `PermissionRequest` never exits 2 and never fails, even when delivery to the daemon does (the failure goes to the debug log and, for a resolved workspace, the [delivery log](#delivery)). That is the safety floor: whatever goes wrong, the person still gets the dialog.
+An `allow` reply has `"behavior":"allow"` and no message. The reply never carries `updatedInput`, `updatedPermissions` or `interrupt`. A request the policy left undecided (an `ask`, no policy, or an error) goes to the hang guard next (below). When the guard does not deny it, nothing is printed, so the agent shows its own dialog, and the exit code stays 0: a `PermissionRequest` never exits 2 and never fails, even when delivery to the daemon does (the failure goes to the debug log and, for a resolved workspace, the [delivery log](#delivery)). That is the safety floor: whatever goes wrong, the person still gets the dialog.
 
-The decision is forwarded with the event, as `decision` and `rule`. The daemon logs an allowed or denied request as a `permission_requested` followed at once by a `permission_resolved` with `by: "policy"` (see [`events`](README.events.md#permission-waits)), and opens no wait for it: the pane does not show `waiting`. For a request left to the person, the daemon [puts it in the inbox](README.inbox.md#permission-requests). The daemon also keeps a marker for a request the policy decided, so a `permission_prompt` notification that arrived after the decision wouldn't open a wait; whether Claude Code sends one has not been confirmed, and the marker is only a defensive guard.
+**Hang guard.** Unless [`agent.permissions.hang_guard`](README.config.md#permission-policy) is `off` (a bound live run's definition `hang_guard:` wins over config), an undecided request is denied with a hint, so the agent tries again instead of waiting at the dialog:
 
-Codex supports the same replies, `allow` and `deny`, and needs its hooks installed and trusted (see [`sessions`](README.sessions.md#hook-mode)); until then Codex shows its own approval prompt and the policy is never consulted.
+```json
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied by workspace's hang guard: ..."}}}
+```
+
+- The hint depends on the pane and the call. A Bash command with a substitution, backticks, an array, a loop (a pipe into one included) or a command word that can't be read from its text is compound; any other call is not.
+  - In a pane bound to a live workflow run (unattended): a compound command's hint says to run each command as its own Bash call (no `$(...)`, backticks, arrays, `for`/`while` loops or pipes into loops), or to write the steps to a script outside the checkout and run it with one `bash <path>` call. Any other call's hint says it can't be approved unattended: record the question with `workspace ask "<question>" --default "<choice>"` and carry on, or end the turn with `WORKFLOW_STATUS: needs_input — <question>`.
+  - In any other pane: the call was held back so the agent doesn't wait at a dialog. A compound command's hint gives the same simpler shapes (no script) or says to ask the person in chat; any other call's hint says to ask the person in chat or retry in a simpler form.
+  - Every hint ends with the off switch. The texts are `SessionEvent::HANG_GUARD_HINTS`.
+- A person's own `ask` rule (`project:rules[2]`, `run:permissions[0]`) is guarded only in a pane bound to a live run; elsewhere it shows the dialog.
+- A config file that can't be parsed, or a malformed `agent.permissions` node, guards at the defaults in a pane bound to a live run, and turns the guard off in any other pane, so the dialog shows there as before.
+- It denies at most `agent.permissions.hang_guard_max_denies` (default 2) requests a turn, counted in `hang-guard.json` in the state directory: per step attempt (per review round for a reviewer, per binding for a fan_out group pane) in a pane bound to a live run, per pane and session otherwise (the count is not yet reset on a new prompt). Past the cap it prints nothing and forwards `decision: "ask"`, `rule: "hang_guard:cap"`, so the dialog shows and the daemon [puts it in the inbox](README.inbox.md#permission-requests).
+- In a pane bound to no live run, `AskUserQuestion` and `ExitPlanMode` are never denied. A pane bound to a run gets the other tools' hint for them.
+- A count that can't be taken in a quarter second (the file is locked) or any error denies nothing: the dialog shows.
+- A deny is forwarded as `decision: "deny"`, `rule: "hang_guard"`, and logged with `by: "hang_guard"`.
+
+The decision is forwarded with the event, as `decision` and `rule`. The daemon logs an allowed or denied request as a `permission_requested` followed at once by a `permission_resolved` with `by: "policy"` (`by: "hang_guard"` for a hang guard deny; see [`events`](README.events.md#permission-waits)), and opens no wait for it: the pane does not show `waiting`. For a request left to the person, the daemon [puts it in the inbox](README.inbox.md#permission-requests). The daemon also keeps a marker for a request the policy decided, so a `permission_prompt` notification that arrived after the decision wouldn't open a wait; whether Claude Code sends one has not been confirmed, and the marker is only a defensive guard.
+
+Codex supports the same replies, `allow` and `deny` (the hang guard's deny included), and needs its hooks installed and trusted (see [`sessions`](README.sessions.md#hook-mode)); until then Codex shows its own approval prompt and the policy is never consulted.
 
 ### Codex
 
