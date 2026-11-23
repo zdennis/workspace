@@ -62,11 +62,16 @@ module S4
     abort "refusing to write inside the vault: #{path}" if File.expand_path(path).start_with?(VAULT)
   end
 
-  # The as-reviewed form: status active, every box open, no owner_pane. Nothing else changes.
+  # The as-reviewed form: status active, every box open, no owner_pane, and a `## State` that implement rewrote to
+  # claim the work done reads "Nothing started." again. Nothing else changes.
   def restore(text)
     head, body = text.split(/^---\n/, 3).then { |parts| (parts[0] == "") ? ["---\n#{parts[1]}---\n", parts[2]] : ["", text] }
     head = head.sub(/^status:.*$/, "status: active").gsub(/^owner_pane:.*\n/, "")
-    head + body.gsub(/^- \[[x~!-]\] /, "- [ ] ").gsub(/^(- \[ \] .*?) -- .*$/, '\1')
+    head + restore_state(body.gsub(/^- \[[x~!-]\] /, "- [ ] ").gsub(/^(- \[ \] .*?) -- .*$/, '\1'))
+  end
+
+  def restore_state(body)
+    body.sub(/^## State\n(.*?)(?=^## )/m) { |section| $1.match?(/\bdone\b/i) ? "## State\n\nNothing started.\n\n" : section }
   end
 
   def prepare(manifest, out)
