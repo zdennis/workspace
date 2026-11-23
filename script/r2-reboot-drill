@@ -609,14 +609,15 @@ module R2RebootDrill
   # typed fails the dispatch (agent_stopped), which holds the run for a person and is not the case R2 measures.
   def self.in_turn?(current) = current["state"] == "running" && !Array(current["flags"]).include?("delivering")
 
-  # :hit, :missed or :wait for a status row of the goal-01 run against a kill point.
+  # :hit, :missed or :wait for a status row of the goal-01 run against a kill point. A step held for a person is missed;
+  # an open `workspace ask` makes the run read waiting while its step still runs, so the step's own state decides.
   def self.point_state(run, step)
     return :missed if TERMINAL.include?(run["state"])
     current = run["current"] || {}
     at = STEP_ORDER.index(current["step"])
     want = STEP_ORDER.index(step)
     return :wait if at.nil? || at < want
-    return :missed if at > want || run["state"] == "waiting"
+    return :missed if at > want || current["state"] == "waiting"
     case step
     when "plan" then (current["state"] == "reviewing" && current.dig("review", "window")) ? :hit : :wait
     when "verify"

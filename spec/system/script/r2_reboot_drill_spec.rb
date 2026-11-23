@@ -167,12 +167,13 @@ RSpec.describe "script/r2-reboot-drill" do
     expect(R2RebootDrill.claude_settings["env"]).to eq("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY" => "1")
   end
 
-  it "hits a point only once the agent has its prompt, and counts a run held for a person as missed" do
+  it "hits a point only once the agent has its prompt, counts a step held for a person as missed, and still hits a running step whose run reads waiting on an open ask" do
     load script
     run = ->(state, flags, run_state = "running") { {"state" => run_state, "current" => {"step" => "research", "state" => state, "flags" => flags}} }
     expect(R2RebootDrill.point_state(run.call("running", ["delivering"]), "research")).to eq(:wait)
     expect(R2RebootDrill.point_state(run.call("running", []), "research")).to eq(:hit)
     expect(R2RebootDrill.point_state(run.call("waiting", [], "waiting"), "research")).to eq(:missed)
+    expect(R2RebootDrill.point_state(run.call("running", [], "waiting"), "research")).to eq(:hit)
   end
 
   it "counts a doctor warn as bad only for workflow runs, review window orphans and agentd orphans" do
