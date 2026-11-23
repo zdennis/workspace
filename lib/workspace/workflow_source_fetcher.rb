@@ -117,6 +117,9 @@ module Workspace
       unless doc.is_a?(Array)
         raise failed(entry, "#{parsed.path} is not a directory in #{parsed.owner}/#{parsed.repo}", nil)
       end
+      if doc.any? { |item| item.is_a?(Hash) && item["type"] == "dir" && item["name"] == "steps" }
+        raise failed(entry, "GitHub sources cannot carry step libraries yet; #{parsed.path} has a steps/ directory", nil)
+      end
       doc.select { |item| usable_file?(item) }.sort_by { |item| item["name"] }
     rescue JSON::ParserError
       raise failed(entry, "gh returned an unreadable directory listing", nil)
