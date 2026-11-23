@@ -1,0 +1,7 @@
+All three sub-agents have finished.
+
+- tests: 12 examples added
+- usage: the help page is updated
+- docs: one entry rewritten
+
+Each sibling reported on its own step.

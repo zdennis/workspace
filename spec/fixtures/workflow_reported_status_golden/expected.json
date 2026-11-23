@@ -1,0 +1,19 @@
+{
+  "fan_out_parent_no_line.txt": null,
+  "line_then_sign_off.txt": {
+    "state": "needs_input",
+    "detail": "which database should the migration use?"
+  },
+  "long_last_line.txt": {
+    "state": "done",
+    "detail": "T1 to T4 done; commits a1b2c3d and e4f5a6b add the window change with specs, the note's Results section is written, the branch is pushed, and the reader spec, evaluation spec and prompt spec all pass with lint clean"
+  },
+  "short_last_line.txt": {
+    "state": "running",
+    "detail": "waiting on two sub-agents"
+  },
+  "tag_in_code_fence.txt": {
+    "state": "stuck",
+    "detail": "no access to the staging host"
+  }
+}

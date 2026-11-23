@@ -27,27 +27,34 @@ module Workspace
       (report.is_a?(Hash) && report["state"].is_a?(String)) ? report.slice(*REPORT_KEYS) : nil
     end
 
-    # How many characters from the end of a message the reader looks in.
+    # How many characters from the end of a message the reader looks in; the window then reaches back to the start of
+    # the line this cut lands in, so a long last line is read whole.
     TAIL_CHARS = 200
 
-    LINE = /^[ \t]*WORKFLOW_STATUS:[ \t]*([A-Za-z_]+)(.*)/mi
-    SEPARATOR = /\A[ \t]*(?:—|--|\||-)?[ \t]*/
-    private_constant :LINE, :SEPARATOR
+    # How far before the {TAIL_CHARS} cut the reader looks for the start of the line the cut lands in.
+    MAX_LINE_BACK = 2000
 
-    # Reads the status line from the tail of an agent's last message.
+    LINE = /^[ \t]*WORKFLOW_STATUS:[ \t]*([A-Za-z_]+)(.*)/mi
+    TAG_START = /^[ \t]*WORKFLOW_STATUS:/i
+    SEPARATOR = /\A[ \t]*(?:—|--|\||-)?[ \t]*/
+    private_constant :LINE, :TAG_START, :SEPARATOR
+
+    # Reads the status line from the tail of an agent's last message: the last {TAIL_CHARS} characters, widened back
+    # to the start of the line the cut lands in, but by at most {MAX_LINE_BACK} characters.
     #
-    # The line is one that starts its own line (leading whitespace allowed), so a sentence mentioning the tag, or a
-    # word that merely contains it, is not read as a report. State is matched without regard to case. The detail runs
-    # to the end of its line and on through following lines, up to a blank line or a code fence; its lines are joined
-    # with one space.
+    # The line is the last in that window that starts its own line with the tag (leading whitespace allowed), so a
+    # sentence mentioning the tag, or a word that merely contains it, is not read as a report. State is matched
+    # without regard to case. The detail runs to the end of its line and on through following lines, up to a blank
+    # line or a code fence; its lines are joined with one space.
     #
     # @param message [String, nil] the agent's last message
     # @return [Hash{Symbol=>String}, nil] `{state:, detail:}` (detail "" when absent), or nil when no line with a
     #   known state is found
     def self.parse(message)
       return nil unless message.is_a?(String)
-      tail = message.scrub[-TAIL_CHARS..] || message.scrub
-      match = tail.to_enum(:scan, LINE).map { Regexp.last_match }.last
+      text = message.scrub
+      start = last_tag_start(text, window_start(text))
+      match = start && LINE.match(text, start)
       return nil unless match
       state = match[1].downcase
       return nil unless STATES.include?(state)
@@ -55,6 +62,32 @@ module Workspace
     rescue
       nil
     end
+
+    # @param text [String] the whole message
+    # @return [Integer] where the reader's window starts: the start of the line the {TAIL_CHARS} cut lands in, or
+    #   {MAX_LINE_BACK} characters before the cut when that line starts further back. That start can fall mid-line;
+    #   matching `TAG_START` from it still needs a real line start for `^`.
+    def self.window_start(text)
+      cut = text.length - TAIL_CHARS
+      return 0 if cut <= 0
+      newline = text.rindex("\n", cut - 1)
+      line_start = newline ? newline + 1 : 0
+      [line_start, cut - MAX_LINE_BACK].max
+    end
+    private_class_method :window_start
+
+    # @param text [String] the whole message
+    # @param from [Integer] where the window starts
+    # @return [Integer, nil] where the last line that starts with the tag at or after `from` begins, or nil
+    def self.last_tag_start(text, from)
+      last = nil
+      while (tag = TAG_START.match(text, from))
+        last = tag.begin(0)
+        from = tag.end(0)
+      end
+      last
+    end
+    private_class_method :last_tag_start
 
     # @param rest [String] the text after the state word
     # @return [String] the detail, separator removed, wrapped lines joined

@@ -65,8 +65,69 @@ RSpec.describe Workspace::WorkflowReportedStatus do
     expect(parse("WORKFLOW_STATUS: done — ok\n" + ("x" * 500))).to be_nil
   end
 
+  it "reads a last line longer than the tail whole" do
+    detail = "verified " + ("y" * 240)
+    text = ("prose line\n" * 400) + "WORKFLOW_STATUS: done — #{detail}\n"
+    expect(parse(text)).to eq(state: "done", detail: detail)
+  end
+
+  it "reads a line that starts exactly at the tail's cut" do
+    line = "WORKFLOW_STATUS: done — " + ("w" * (described_class::TAIL_CHARS - 24))
+    text = ("p" * 50) + "\n" + line
+    expect(text.length - described_class::TAIL_CHARS).to eq(51)
+    expect(parse(text)).to eq(state: "done", detail: "w" * (described_class::TAIL_CHARS - 24))
+  end
+
+  it "reads a long line that starts the message" do
+    detail = "z" * 300
+    expect(parse("WORKFLOW_STATUS: stuck — #{detail}")).to eq(state: "stuck", detail: detail)
+  end
+
+  it "ignores a tag that starts more than MAX_LINE_BACK before the tail" do
+    text = "intro\nWORKFLOW_STATUS: done — " + ("x" * (described_class::TAIL_CHARS + described_class::MAX_LINE_BACK + 10))
+    expect(parse(text)).to be_nil
+  end
+
+  it "does not read a tag in the middle of a line where the window begins" do
+    head = "a" * 100
+    text = head + "WORKFLOW_STATUS: done — " + ("x" * (described_class::TAIL_CHARS + described_class::MAX_LINE_BACK - 24))
+    expect(text.length - described_class::TAIL_CHARS - described_class::MAX_LINE_BACK).to eq(head.length)
+    expect(parse(text)).to be_nil
+  end
+
+  it "reads the last of two consecutive tagged lines" do
+    expect(parse("WORKFLOW_STATUS: running — a\nWORKFLOW_STATUS: done — b")).to eq(state: "done", detail: "b")
+  end
+
+  it "reads the last tagged line when a blank line separates two" do
+    expect(parse("x\nWORKFLOW_STATUS: running — a\nmore\n\nWORKFLOW_STATUS: done — b")).to eq(state: "done", detail: "b")
+  end
+
+  it "reads the final line over an interim one the tail's cut lands in" do
+    interim = "WORKFLOW_STATUS: running — " + ("i" * 250)
+    text = ("prose line\n" * 50) + interim + "\nWORKFLOW_STATUS: done — final"
+    expect(parse(text)).to eq(state: "done", detail: "final")
+  end
+
   it "does not raise on invalid bytes" do
     expect(parse("\xFF\xFE\nWORKFLOW_STATUS: done".b.force_encoding("UTF-8"))).to eq(state: "done", detail: "")
+  end
+
+  # Synthetic final messages in the shapes S2 measured; the prose before each line puts it past the 200-char tail.
+  describe "golden final-message shapes" do
+    golden = File.join(PROJECT_ROOT, "spec", "fixtures", "workflow_reported_status_golden")
+    expected = JSON.parse(File.read(File.join(golden, "expected.json")))
+
+    it "has an expected parse for every fixture and a fixture for every expected parse" do
+      expect(Dir.children(golden).grep(/\.txt\z/).sort).to eq(expected.keys.sort)
+    end
+
+    expected.each do |name, want|
+      it "parses #{name} as expected" do
+        got = parse(File.read(File.join(golden, name)))
+        expect(got&.transform_keys(&:to_s)).to eq(want)
+      end
+    end
   end
 
   describe ".words and .shown" do
