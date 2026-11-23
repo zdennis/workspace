@@ -157,6 +157,16 @@ RSpec.describe "script/r2-reboot-drill" do
     expect(File.exist?(File.join(@lab, "keep-me"))).to be(true)
   end
 
+  it "seeds Claude Code with the feedback survey marked shown and turned off, so no dialog covers the input prompt" do
+    load script
+    now = Time.at(1_800_000_000)
+    doc = R2RebootDrill.claude_json(["/tmp/r2-x/repo"], now)
+
+    expect(doc).to include("hasCompletedOnboarding" => true, "feedbackSurveyState" => {"lastShownTime" => 1_800_000_000_000})
+    expect(doc["projects"]).to eq("/tmp/r2-x/repo" => {"hasTrustDialogAccepted" => true})
+    expect(R2RebootDrill.claude_settings["env"]).to eq("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY" => "1")
+  end
+
   it "hits a point only once the agent has its prompt, and counts a run held for a person as missed" do
     load script
     run = ->(state, flags, run_state = "running") { {"state" => run_state, "current" => {"step" => "research", "state" => state, "flags" => flags}} }

@@ -389,14 +389,12 @@ module R2RebootDrill
       end
     end
 
-    # Onboarding and trust done for the lab checkout, and bypass mode's first-run prompt skipped; nothing copied.
     def seed_claude
       trusted = [@lab.worktree, @lab.repo].flat_map { |p| [p, p.sub(%r{\A/private/tmp/}, "/tmp/")] }.uniq
-      File.write(File.join(@lab.home, ".claude.json"), JSON.pretty_generate("hasCompletedOnboarding" => true,
-        "projects" => trusted.to_h { |p| [p, {"hasTrustDialogAccepted" => true}] }))
+      File.write(File.join(@lab.home, ".claude.json"), JSON.pretty_generate(R2RebootDrill.claude_json(trusted, Time.now)))
       FileUtils.mkdir_p(File.join(@lab.home, ".claude"))
       settings = File.join(@lab.home, ".claude", "settings.json")
-      File.write(settings, JSON.pretty_generate("skipDangerousModePermissionPrompt" => true)) unless File.exist?(settings)
+      File.write(settings, JSON.pretty_generate(R2RebootDrill.claude_settings)) unless File.exist?(settings)
       link_keychains
     end
 
@@ -596,11 +594,22 @@ module R2RebootDrill
     end
   end
 
-  # :hit, :missed or :wait for a status row of the goal-01 run against a kill point.
+  # The lab's ~/.claude.json: onboarding and trust done for the lab checkout, and the session feedback survey marked
+  # as just shown. A fresh file has no survey state, and the survey dialog then covers the input prompt, so a step's
+  # line can't be typed (pane_busy) and the run waits for a person. Nothing is copied from the person's file.
+  def self.claude_json(trusted, now)
+    {"hasCompletedOnboarding" => true, "feedbackSurveyState" => {"lastShownTime" => (now.to_f * 1000).to_i},
+     "projects" => trusted.to_h { |p| [p, {"hasTrustDialogAccepted" => true}] }}
+  end
+
+  # The lab's ~/.claude/settings.json: bypass mode's first-run prompt skipped and the feedback survey off.
+  def self.claude_settings = {"skipDangerousModePermissionPrompt" => true, "env" => {"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY" => "1"}}
+
   # The agent has its prompt: the step is running and no longer delivering it. A kill while the prompt is still being
   # typed fails the dispatch (agent_stopped), which holds the run for a person and is not the case R2 measures.
   def self.in_turn?(current) = current["state"] == "running" && !Array(current["flags"]).include?("delivering")
 
+  # :hit, :missed or :wait for a status row of the goal-01 run against a kill point.
   def self.point_state(run, step)
     return :missed if TERMINAL.include?(run["state"])
     current = run["current"] || {}
