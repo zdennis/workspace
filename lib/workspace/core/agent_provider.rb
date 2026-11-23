@@ -133,11 +133,26 @@ module Workspace
         /^[ \t]*(?:Would you like to (?:run the following command|make the following edits)\?|Do you want to approve network access to .+\?)[ \t]*$[\s\S]*?^[ ›>]*1\. Yes, proceed/
     }.freeze
 
-    # The short reason (`details.waiting` of a refused spawn) for each {CODEX_WAITING_SCREENS} message.
-    CODEX_WAITING_REASONS = {
+    # Screens Claude Code stops on where no hook can say so: folder trust and MCP server trust, as drawn
+    # by Claude Code 2.x and captured live (`spec/fixtures/claude_screens/folder_trust.txt`,
+    # `mcp_trust.txt`). Each pairs the screen's text with an option line only it draws, so a normal
+    # permission dialog or output quoting the text does not match. The login screen did not appear in
+    # a logged-in session and is not matched.
+    CLAUDE_WAITING_SCREENS = {
+      "Claude Code is asking you to trust this folder" =>
+        /^[ \t]*Quick safety check: Is this a project you created or one you trust\?[\s\S]*?^[ ❯]*(?:No, exit|Yes, I trust this folder)[ \t]*$/,
+      "Claude Code is asking you to trust an MCP server" =>
+        /^[ \t]*New MCP servers? found in [^\n]*$[\s\S]*?^[ ❯]*(?:Use this MCP server|Use this and all future MCP servers[^\n]*)[ \t]*$/
+    }.freeze
+
+    # The short reason (`details.waiting` of a refused spawn) for each message of {CODEX_WAITING_SCREENS}
+    # and {CLAUDE_WAITING_SCREENS}.
+    WAITING_REASONS = {
       "Codex is asking you to sign in" => "sign_in",
       "Codex is asking you to trust this folder" => "trust",
-      "Codex is asking you to approve a command, patch or network access" => "approval"
+      "Codex is asking you to approve a command, patch or network access" => "approval",
+      "Claude Code is asking you to trust this folder" => "trust",
+      "Claude Code is asking you to trust an MCP server" => "mcp_trust"
     }.freeze
 
     # Lines from the end of a screen that {#waiting_screen} looks in; a prompt sits at the bottom, and
@@ -160,6 +175,7 @@ module Workspace
           background_markers: CLAUDE_BACKGROUND,
           ready_pattern: CLAUDE_READY_PATTERN,
           restartable: true,
+          waiting_screens: CLAUDE_WAITING_SCREENS,
           interrupt_keys: INTERRUPT_KEYS,
           hook_events: HOOK_EVENT_TYPES
         ),
@@ -251,11 +267,11 @@ module Workspace
 
     # @param screen [String, nil] what a pane of this agent shows
     # @return [Hash, nil] `{message:, reason:}` for the waiting screen the end of +screen+ shows
-    #   (`reason` is `sign_in`, `trust` or `approval`; nil when the provider has none for it)
+    #   (`reason` is `sign_in`, `trust`, `mcp_trust` or `approval`; nil when the provider has none for it)
     def waiting_screen(screen)
-      tail = screen.to_s.lines.last(SCREEN_WAIT_LINES).join
+      tail = screen.to_s.scrub.rstrip.lines.last(SCREEN_WAIT_LINES).join
       message, = @waiting_screens&.find { |_, pattern| pattern.match?(tail) }
-      message && {message: message, reason: CODEX_WAITING_REASONS[message]}
+      message && {message: message, reason: WAITING_REASONS[message]}
     end
 
     # @return [Boolean] whether handoff may clear this agent and type a resume prompt into it
