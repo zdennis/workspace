@@ -80,6 +80,7 @@ RSpec.describe Workspace::WorkflowAlerts do
     expect(sent.first.keys).to eq(sent.last.keys)
     expect(sent.first["WORKSPACE_ALERT_TEXT"]).to eq("app: workflow run wr_1 is waiting for you at lint")
   end
+
   describe "#unreadable" do
     let(:path) { "/state/.workflows/wr_bad.json" }
 
@@ -105,6 +106,14 @@ RSpec.describe Workspace::WorkflowAlerts do
       alerts.unreadable(path)
 
       expect(sent).to be_empty
+    end
+
+    it "reports and returns false when the alert can't be sent" do
+      errors = StringIO.new
+      failing = described_class.new(alert_config: alert_config, spawner: ->(*) { raise "spawn failed" }, error_output: errors)
+
+      expect(failing.unreadable(path)).to be(false)
+      expect(errors.string).to include("could not send alerts for #{path}", "spawn failed")
     end
 
     it "sends nothing without a notify command" do

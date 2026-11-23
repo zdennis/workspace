@@ -42,4 +42,12 @@ RSpec.describe "script/r4-damaged-run" do
     expect(File.read(sentinel)).to eq("untouched\n")
     expect(tree).to eq(before)
   end
+
+  it "exits 2 with a one-line message on an unknown option" do
+    out, err, status = Open3.capture3(RbConfig.ruby, script, "--bogus")
+
+    expect(status.exitstatus).to eq(2)
+    expect(out).to be_empty
+    expect(err).to eq("r4-damaged-run: invalid option: --bogus\n")
+  end
 end

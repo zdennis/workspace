@@ -406,7 +406,7 @@ module R4DamagedRun
     lines.join("\n") + "\n"
   end
 
-  def self.main(argv, out: $stdout)
+  def self.main(argv, out: $stdout, err: $stderr)
     options = {json: false, alert_events: %w[gate failed stalled finished], alert_wait: 2.0, timeout: 60.0, keep: false}
     OptionParser.new do |opts|
       opts.banner = "Usage: script/r4-damaged-run [--json] [--alert-events LIST] [--alert-wait SECONDS] [--timeout SECONDS] [--keep]"
@@ -416,8 +416,13 @@ module R4DamagedRun
       opts.on("--timeout SECONDS", Float, "Time limit for each command (default 60)") { |v| options[:timeout] = v }
       opts.on("--keep", "Keep the throwaway directory and print its path") { options[:keep] = true }
     end.parse!(argv)
+  rescue OptionParser::ParseError => e
+    err.puts "r4-damaged-run: #{e.message}"
+    2
+  else
     result = Experiment.new(alert_events: options[:alert_events], alert_wait: options[:alert_wait], timeout: options[:timeout], keep: options[:keep]).call
     out.write(options[:json] ? JSON.pretty_generate(result) + "\n" : markdown(result))
+    err.puts "r4-damaged-run: kept #{result["tmpdir"]}" if result["tmpdir"]
     0
   end
 end
