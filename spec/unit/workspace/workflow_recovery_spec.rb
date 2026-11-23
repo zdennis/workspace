@@ -812,6 +812,30 @@ RSpec.describe Workspace::WorkflowRecovery do
     end
   end
 
+  describe "#permission_wait_out" do
+    let(:data) { {"pane" => "%3", "since" => "2026-10-04T11:00:00Z", "waited" => 3700, "limit" => 3600} }
+
+    it "fails the running step with permission_wait_timeout and records a stall that opens no clock-cutting span" do
+      stored(run_hash)
+
+      expect(recovery.permission_wait_out("wr_1", actor: "sweep", step: "build", attempt: 1, data: data)).to eq(:timed_out)
+
+      expect(progress.calls).to eq([[:fail_step, "build", {"cause" => "permission_wait"}.merge(data).merge("code" => "permission_wait_timeout", "code_source" => "engine")]])
+      expect(event_types).to eq([
+        ["step_stalled", {"step" => "build", "attempt" => 1, "cause" => "permission_wait"}.merge(data)],
+        ["step_recovered", {"step" => "build", "attempt" => 1, "action" => "failed", "cause" => "permission_wait"}]
+      ])
+      expect(store.runs["wr_1"]["steps"]["build"]["attempts"].last).not_to have_key("stalls")
+    end
+
+    it "does nothing to a step that is held" do
+      stored(run_hash(reason: {"code" => "turn_ended_incomplete", "details" => {}}))
+
+      expect(recovery.permission_wait_out("wr_1", actor: "sweep", step: "build", attempt: 1, data: data)).to eq(:moved_on)
+      expect(progress.calls).to be_empty
+    end
+  end
+
   describe "#tick on a step's undelivered line" do
     let(:dispatch) { RecordingDispatch.new(appends: true) }
 

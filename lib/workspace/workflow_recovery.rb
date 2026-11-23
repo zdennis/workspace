@@ -367,6 +367,31 @@ module Workspace
       end
     end
 
+    # Fails a step whose pane waited at a permission dialog past `workflows.permission_wait_limit` (or past the step's
+    # `timeout:` with `on_timeout: fail`), with `details.code` `permission_wait_timeout`, which stops the run for a
+    # person whatever the step's `on_fail` says ({WorkflowTransitions.after_failure}): a loop would type the next line
+    # into the pane that still shows the dialog. Records the stall cause `permission_wait` once for the attempt; it cuts
+    # no clock. Presses nothing. Does nothing unless the run is still on that step and attempt, `running`, with no
+    # reason and no park, so an answer that ended the turn, a resume or a cancel that got there first stands. Waits
+    # for the run's lock.
+    #
+    # @param run_id [String]
+    # @param step [String]
+    # @param attempt [Integer, nil]
+    # @param data [Hash{String=>Object}] for the `step_stalled` event and the failure: "pane", "since", "waited",
+    #   "limit", and "elapsed" and "timeout" when the step's own timeout ran out
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Symbol] :timed_out or :moved_on
+    def permission_wait_out(run_id, actor:, step:, attempt:, data: {})
+      sweep_change(run_id, actor: actor, cause: "permission_wait", step: step, attempt: attempt, running: true, blocking: true) do |stored, ctx|
+        mark_stall(stored, "permission_wait", data)
+        mark_recovery(stored, "permission_wait", "failed")
+        failure = {"cause" => "permission_wait"}.merge(data).merge(WorkflowTransitions.code_for("permission_wait_timeout", nil))
+        adopt(stored, @progress.fail_step(stored, failure, ctx: ctx))
+        :timed_out
+      end
+    end
+
     # Types a step's line again after a delivery that failed, as the sweep's retry. Does nothing unless the run is
     # still on that step and attempt and {WorkflowTransitions.redelivery} says a retry is due, so a resume, a park
     # or a cancel that got there first stands. The failed attempt is marked `redelivered` (it no longer counts

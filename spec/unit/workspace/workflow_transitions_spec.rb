@@ -752,6 +752,20 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 2, "except" => ["check_failed"]}), failure)).to eq(kind: :stop)
       expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 2, "except" => ["check"]}), failure)).to eq(kind: :stop)
     end
+
+    it "stops a permission_wait_timeout under a goto that would loop and that does not except it" do
+      dialog = {"cause" => "permission_wait", "code" => "permission_wait_timeout"}
+
+      expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 5}), dialog)).to eq(kind: :stop)
+    end
+
+    it "stops a permission_wait_timeout ahead of a fan_out group's goto" do
+      run = failed_run(nil)
+      run["definition"]["steps"].first["group"] = "checks"
+      run["definition"]["groups"] = {"checks" => {"on_fail" => {"goto" => "verify", "max" => 5}}}
+
+      expect(described_class.after_failure(run, {"cause" => "permission_wait", "code" => "permission_wait_timeout"})).to eq(kind: :stop)
+    end
   end
 
   describe ".after_failure with no on_fail (the implicit loop)" do
@@ -798,6 +812,7 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.after_failure(implicit_run, {"cause" => "require", "unproven" => true, "code" => "require_commits"})).to eq(kind: :stop)
       expect(described_class.after_failure(implicit_run, {"cause" => "check", "code" => "check_error"})).to eq(kind: :stop)
       expect(described_class.after_failure(implicit_run, {"cause" => "timeout", "code" => "step_timed_out"})).to eq(kind: :stop)
+      expect(described_class.after_failure(implicit_run, {"cause" => "permission_wait", "code" => "permission_wait_timeout"})).to eq(kind: :stop)
     end
 
     it "retries an agent-reported failure and a check that timed out" do
@@ -1026,6 +1041,8 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.failure_text({"cause" => "timeout", "timeout" => 60, "elapsed" => 61})).to eq("the step ran past its 60 second time limit (61 seconds in)")
       expect(described_class.failure_text({"cause" => "guard", "guard" => "head_moved", "base_sha" => "a" * 40, "head" => "b" * 40})).to eq("HEAD moved from #{"a" * 12} to #{"b" * 12} since the run started")
       expect(described_class.failure_text({"cause" => "reported", "summary" => "no"})).to eq("its agent reported failure: no")
+      expect(described_class.failure_text({"cause" => "permission_wait", "pane" => "%5", "waited" => 3700})).to eq("its pane %5 waited at a permission dialog nobody answered for 3700 seconds")
+      expect(described_class.failure_text({"cause" => "permission_wait", "pane" => "%5", "screen" => true})).to eq("its pane %5 waited at a waiting screen nobody answered")
       expect(described_class.failure_text({"exit_code" => 2, "log" => "l"})).to eq("its check exited 2 (log: l)")
     end
   end

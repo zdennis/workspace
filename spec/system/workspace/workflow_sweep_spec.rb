@@ -267,11 +267,16 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "prompt")
     end
 
-    it "says waiting_permission for a pane that waits on a permission dialog, however long it waits" do
+    it "says waiting_permission for a pane that waits on a permission dialog, however long it waits, when no limit is set" do
       pane_shows("waiting", idle_seconds: 2000)
       panes.rows["%5"]["waiting_reason"] = "waiting_permission"
+      panes.rows["%5"]["waiting_since"] = (now.first - 90_000).utc.iso8601
+      panes.rows["%5"]["waits"] = [{"agent_id" => nil, "permission" => true, "since" => panes.rows["%5"]["waiting_since"]}]
 
-      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "waiting_permission")
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "nothing", "reason" => "waiting_permission")
+      expect(row["message"]).to include("has waited 25h 0m", "no limit is set (workflows.permission_wait_limit)")
     end
 
     it "reports and does not change anything with dry_run" do

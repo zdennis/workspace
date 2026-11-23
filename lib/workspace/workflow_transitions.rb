@@ -512,6 +512,10 @@ module Workspace
     # Causes of a stall that stop the clocks while they last: nothing works on the step then.
     STALL_CAUSES = %w[pane_gone agent_gone turn_failed].freeze
 
+    # Failure codes that stop the run for a person whatever the step's or its group's `on_fail` says:
+    # `permission_wait_timeout` leaves a dialog up in the pane, which the next line a loop types would land in.
+    STOP_CODES = %w[permission_wait_timeout].freeze
+
     # The spans a step stood stalled ({STALL_CAUSES}): every attempt's `stalls` entries, plus the current attempt's
     # raw `stalled` sweep marks ({.sweep_marks}) when +step+ is the current one, each ended by its `recovered` mark.
     # A span ends at the earliest of its `until`, its attempt's `ended_at` and the first attempt `started_at` after
@@ -1195,7 +1199,8 @@ module Workspace
     # person also when the loops or the run's attempts are used up, the goto step's own cap is spent (`limit: :step`,
     # `step:` the goto; only that step is checked, though a loop re-runs every step from it to the failing one), the
     # failure's code or cause is one of its `except:`, or the step says `on_fail: stop`
-    # (so a run is never sent into a step that cannot pass against the same facts).
+    # (so a run is never sent into a step that cannot pass against the same facts). A failure whose code is one of
+    # {STOP_CODES} stops ahead of all of it, a group's `on_fail` included.
     #
     # @param run [Hash{String=>Object}] a stored run at the failed step
     # @param failure [Hash{String=>Object}] its "cause" and "code"
@@ -1205,6 +1210,7 @@ module Workspace
     # @return [Hash{Symbol=>Object}] `{kind: :loop, edge:, to:, count:, wait:}`, a group move ({.group_failure_move})
     #   or `{kind: :stop}`
     def self.after_failure(run, failure, step: run["current"])
+      return {kind: :stop} if STOP_CODES.include?(failure["code"])
       step_id = step
       step = run["definition"]["steps"].find { |each| each["id"] == step_id }
       on_fail = step["on_fail"]
@@ -1644,6 +1650,8 @@ module Workspace
     def self.failure_text(failure)
       if failure["cause"] == "timeout"
         "the step ran past its #{failure["timeout"]} second time limit (#{failure["elapsed"]} seconds in)"
+      elsif failure["cause"] == "permission_wait"
+        "its pane #{failure["pane"]} waited at #{failure["screen"] ? "a waiting screen" : "a permission dialog"} nobody answered#{" for #{failure["waited"]} seconds" if failure["waited"]}"
       elsif failure["cause"] == "guard"
         case failure["guard"]
         when "head_moved" then "HEAD moved from #{failure["base_sha"].to_s[0, 12]} to #{failure["head"].to_s[0, 12]} since the run started"

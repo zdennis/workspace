@@ -250,6 +250,11 @@ module Workspace
     # @return [Symbol] :timed_out or :moved_on
     def time_out(run_id, actor:, step:, attempt:, elapsed:, timeout:) = @recovery.time_out(run_id, actor: actor, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout)
 
+    # Fails a step whose pane waited at a permission dialog past its limit and stops the run. See
+    # {WorkflowRecovery#permission_wait_out}.
+    # @return [Symbol] :timed_out or :moved_on
+    def permission_wait_out(run_id, actor:, step:, attempt:, data: {}) = @recovery.permission_wait_out(run_id, actor: actor, step: step, attempt: attempt, data: data)
+
     # Types a step's line again after a failed delivery. See {WorkflowRecovery#redeliver}.
     # @return [Symbol] :redelivered, :waiting_lock, :not_delivered, :moved_on or :busy
     def redeliver(run_id, actor:, step:, attempt:) = @recovery.redeliver(run_id, actor: actor, step: step, attempt: attempt)
