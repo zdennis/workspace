@@ -197,11 +197,12 @@ module Workspace
       # Each file expands its own imports before extends: merges, so a parent's steps arrive already resolved.
       @step_imports = WorkflowImports.new(lookup: import_lookup, layer: source, base_dir: @base_dir, confine_dir: confine_dir)
       expanded = @step_imports.expand(load_yaml(text))
-      extension = WorkflowExtends.new(id: id, source: source, lookup: parent_lookup, chain: chain || [[id, path || id]])
+      extension = WorkflowExtends.new(id: id, source: source, lookup: parent_lookup, chain: chain || [[id, path || id]], import_lookup: import_lookup)
       @resolved_raw = extension.resolve(expanded)
       @parents = extension.parents
       @origins = extension.origins
       @notes = extension.notes + @step_imports.notes
+      @unchecked = @step_imports.unchecked + extension.unchecked
       if @step_imports.failure.any? || extension.failure.any?
         # An import or the parent can't be used, so nothing else about this file can be judged.
         @problems = @step_imports.failure + extension.failure
@@ -240,14 +241,16 @@ module Workspace
     end
 
     # The digest a run records as `definition_sha256`: {#sha256} alone, or, for a definition that imports steps
-    # or extends others, the digest of its own digest, each import's and each parent's, so a changed library step
-    # or parent is a changed definition.
+    # or extends others, the digest of its own digest and its imports', then each parent's file digest and that
+    # parent's imports', so a changed library step or parent at any depth is a changed definition. With no import in
+    # the chain, the imports add nothing and the digest is the one recorded before imports existed.
     #
     # @return [String]
     def resolved_sha256
       import_digests = imports.map { |entry| entry["sha256"] }
       return @sha256 if @parents.empty? && import_digests.empty?
-      Digest::SHA256.hexdigest(([@sha256] + import_digests + @parents.map { |parent| parent["sha256"] }).join("\n"))
+      parent_digests = @parents.flat_map { |parent| [parent["sha256"]] + parent["import_sha256s"] }
+      Digest::SHA256.hexdigest(([@sha256] + import_digests + parent_digests).join("\n"))
     end
 
     # @return [Hash{String=>Object}] the checked definition with defaults filled in: "id",
@@ -274,7 +277,7 @@ module Workspace
     #
     # @return [Array<Hash{String=>String}>] each with "code" (`step_without_proof`), "step" (the step id) and "message"
     def warnings
-      missing = steps.reject { |step| proof?(step) || @step_imports.unchecked.include?(step["id"]) }.map do |step|
+      missing = steps.reject { |step| proof?(step) || @unchecked.include?(step["id"]) }.map do |step|
         {"code" => "step_without_proof", "step" => step["id"],
          "message" => "step #{step["id"]} has no produces, status, require or gate, so it passes on any turn end, even one that did nothing. Add produces: (a file it must write), require: (proofs about the repository), status: (a command that must pass) or gate: approve (a person approves it)."}
       end
@@ -684,7 +687,7 @@ module Workspace
     # While a step is being built (+@current_step+), a problem of an imported step ends with where it came from,
     # and one of a step whose import couldn't be checked here is dropped: that step was never read.
     def problem(message)
-      return nil if @current_step && @step_imports.unchecked.include?(@current_step)
+      return nil if @current_step && @unchecked.include?(@current_step)
       suffix = @current_step && @step_imports.provenance(@current_step)
       @problems << (suffix ? "#{message} #{suffix}" : message)
       nil
@@ -996,7 +999,7 @@ module Workspace
         raw = {}
       end
       # A resolved import has had its `import:` merged away; only a step whose import wasn't checked still holds it.
-      unknown_keys(@step_imports.unchecked.include?(step_id) ? raw.except("import") : raw, STEP_KEYS, where)
+      unknown_keys(@unchecked.include?(step_id) ? raw.except("import") : raw, STEP_KEYS, where)
       problem "#{where}: after: only places a step added by a workflow that has extends:" if raw.key?("after")
       mode = raw["execution_mode"]
       unless mode.nil? || EXECUTION_MODES.include?(mode)

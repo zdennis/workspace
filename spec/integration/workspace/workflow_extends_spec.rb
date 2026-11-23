@@ -583,4 +583,174 @@ RSpec.describe "workflow extends" do
       expect(problems_of("swapped")).to eq(["step two is a fan_out group, which workflow swapped can't declare while it has extends: yet"])
     end
   end
+
+  describe "imports in the chain" do
+    let(:layers) { {"global" => global_dir, "builtin" => builtin_dir} }
+    let(:confine) { {} }
+    let(:import_calls) { [] }
+    let(:import_lookup) do
+      ->(name, layer:) {
+        import_calls << [name, layer]
+        names = layers.keys
+        searched = names.drop(names.index(layer) || 0).map { |each| {"layer" => each, "path" => File.join(layers[each], "steps", "#{name}.yml")} }
+        hit = searched.find { |each| File.file?(each["path"]) }
+        {"path" => hit && hit["path"], "layer" => hit && hit["layer"], "searched" => searched, "shadows" => []}
+      }
+    end
+    let(:parent_lookup) do
+      lookup = ->(id, below: nil) {
+        names = layers.keys
+        names = names.drop(names.index(below) + 1) if below
+        names.each do |layer|
+          path = File.join(layers[layer], "#{id}.yml")
+          next unless File.file?(path)
+          return {"text" => File.read(path), "path" => path, "source" => layer, "confine_dir" => confine[layer]}
+        end
+        nil
+      }
+      lookup
+    end
+    let(:verify_library) do
+      <<~YAML
+        description: Checks the work.
+        steps:
+          verify:
+            prompt: Verify {{inputs.task}}
+            produces: [verify.md]
+          other:
+            prompt: Something else
+            produces: [other.md]
+      YAML
+    end
+
+    def library(dir, text = verify_library, name: "verify")
+      FileUtils.mkdir_p(File.join(dir, "steps"))
+      File.write(File.join(dir, "steps", "#{name}.yml"), text)
+    end
+
+    def parse(id, import_lookup: self.import_lookup)
+      path = File.join(global_dir, "#{id}.yml")
+      Workspace::WorkflowDefinition.parse(File.read(path), id: id, source: "global", path: path,
+        parent_lookup: parent_lookup, import_lookup: import_lookup)
+    end
+
+    def problems_of_parse(id)
+      parse(id)
+      nil
+    rescue Workspace::Error => e
+      e.details["problems"]
+    end
+
+    def step_of(definition, id)
+      definition.steps.find { |each| each["id"] == id }
+    end
+
+    let(:importing_parent) { "#{parent_yaml}  verify:\n    import: verify\n" }
+
+    it "resolves a parent's bare-name import from the parent's layer, not the child's" do
+      write(builtin_dir, "base", importing_parent)
+      library(builtin_dir)
+      library(global_dir, verify_library.sub("Verify {{inputs.task}}", "Global verify"))
+      write(global_dir, "child", "extends: base\n")
+
+      definition = parse("child")
+
+      expect(step_of(definition, "verify")["prompt"]).to eq("Verify {{inputs.task}}")
+      expect(import_calls).to eq([["verify", "builtin"]])
+      expect(definition.origins["verify"]).to eq("base")
+      expect(definition.imports).to eq([])
+      expect(definition.parents.first["import_sha256s"].size).to eq(1)
+    end
+
+    it "reads a parent's PATH#NAME import against the parent's file, inside the confine_dir its lookup gives" do
+      write(builtin_dir, "base", "#{parent_yaml}  verify:\n    import: lib/checks.yml#verify\n")
+      FileUtils.mkdir_p(File.join(builtin_dir, "lib"))
+      File.write(File.join(builtin_dir, "lib", "checks.yml"), verify_library)
+      confine["builtin"] = builtin_dir
+      write(global_dir, "child", "extends: base\n")
+
+      expect(step_of(parse("child"), "verify")["produces"]).to eq(["verify.md"])
+
+      write(builtin_dir, "base", "#{parent_yaml}  verify:\n    import: #{File.join(builtin_dir, "lib", "checks.yml")}#verify\n")
+      expect(problems_of_parse("child").join).to include("must be paths inside its own directory #{builtin_dir}")
+    end
+
+    it "expands a child's replace: import in place and places its steps: import by after:" do
+      library(global_dir)
+      write(global_dir, "child", <<~YAML)
+        extends: base
+        replace:
+          two:
+            import: verify
+            gate: approve
+        steps:
+          check:
+            import: verify
+            after: one
+            prompt: Check {{inputs.task}}
+      YAML
+
+      definition = parse("child")
+
+      expect(definition.steps.map { |each| each["id"] }).to eq(%w[one check two three])
+      expect(step_of(definition, "two")).to include("prompt" => "Verify {{inputs.task}}", "produces" => ["verify.md"], "gate" => "approve")
+      expect(step_of(definition, "check")).to include("prompt" => "Check {{inputs.task}}", "produces" => ["verify.md"])
+      expect(definition.origins).to include("two" => "own", "check" => "own")
+      expect(definition.imports.map { |each| each["step"] }).to contain_exactly("two", "check")
+    end
+
+    it "keeps refusing after: on a replaced step that imports" do
+      library(global_dir)
+      write(global_dir, "child", "extends: base\nreplace:\n  two:\n    import: verify\n    after: one\n")
+
+      expect(problems_of_parse("child")).to include("replace step two: after: is for added steps; a replaced step keeps its place")
+    end
+
+    it "never lets an import bring a fan_out group past the extends: refusal" do
+      library(global_dir)
+      write(global_dir, "child", "extends: base\nsteps:\n  checks:\n    import: verify\n    fan_out:\n      lint:\n        prompt: L\n        produces: [lint.md]\n")
+
+      expect(problems_of_parse("child")).to include("step checks is a fan_out group, which workflow child can't declare while it has extends: yet")
+    end
+
+    it "leaves an inherited import not checked, with a note, when no import lookup is given" do
+      write(builtin_dir, "base", importing_parent)
+      write(global_dir, "child", "extends: base\n")
+
+      definition = parse("child", import_lookup: nil)
+
+      expect(definition.warnings.select { |each| each["step"] == "verify" }.map { |each| each["code"] }).to eq(["import_not_checked"])
+    end
+
+    describe "resolved_sha256 (R15)" do
+      before do
+        write(builtin_dir, "base", importing_parent)
+        write(global_dir, "mid", "extends: base\ntitle: Mid\n")
+        write(global_dir, "top", "extends: mid\ntitle: Top\n")
+        library(builtin_dir)
+      end
+
+      it "changes for a grandchild when the library step its grandparent imports changes" do
+        before = parse("top").resolved_sha256
+        library(builtin_dir, verify_library.sub("Verify {{inputs.task}}", "Verify again"))
+
+        expect(parse("top").resolved_sha256).not_to eq(before)
+      end
+
+      it "stays when another step of the library or its description changes" do
+        before = parse("top").resolved_sha256
+        library(builtin_dir, verify_library.sub("Something else", "Another thing").sub("Checks the work.", "Checks it all."))
+
+        expect(parse("top").resolved_sha256).to eq(before)
+      end
+
+      it "is the digest of the file digests alone when nothing in the chain imports" do
+        write(builtin_dir, "base", parent_yaml)
+        definition = parse("top")
+        files = [File.join(global_dir, "top.yml"), File.join(global_dir, "mid.yml"), File.join(builtin_dir, "base.yml")]
+
+        expect(definition.resolved_sha256).to eq(Digest::SHA256.hexdigest(files.map { |each| Digest::SHA256.hexdigest(File.read(each)) }.join("\n")))
+      end
+    end
+  end
 end
