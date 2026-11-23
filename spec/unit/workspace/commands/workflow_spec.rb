@@ -12,7 +12,7 @@ RSpec.describe Workspace::Commands::Workflow do
     ENV["TZ"] = zone
   end
 
-  let(:catalog) { instance_double(Workspace::WorkflowCatalog) }
+  let(:catalog) { instance_double(Workspace::WorkflowCatalog, import_lookup: nil, confine_dir: nil) }
   let(:engine) { instance_double(Workspace::WorkflowEngine) }
   let(:status) { instance_double(Workspace::WorkflowStatus) }
   let(:store) { instance_double(Workspace::WorkflowRunStore) }
@@ -5377,6 +5377,71 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { command.workflow_of_run("wr_gone") }.to raise_error(Workspace::Error) { |error|
         expect(error.code).to eq("unknown_run")
       }
+    end
+  end
+
+  describe "a workflow that imports a library step" do
+    let(:input) { StringIO.new }
+    let(:error_output) { StringIO.new }
+    let(:dir) { Dir.mktmpdir }
+    let(:global_dir) { File.join(dir, "home", ".config", "workspace", "workflows") }
+    let(:builtin_dir) { File.join(dir, "lib", "workflows") }
+    let(:config) { instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(File.dirname(global_dir), "no-projects"), project_workflows_dir: nil) }
+    let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
+    let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
+    let(:lint) { instance_double(Workspace::WorkflowLint, call: {"warnings" => [], "not_checked" => []}) }
+    let(:draft) { "title: Flow\nsteps:\n  look:\n    import: research\n" }
+    let(:target) { File.join(global_dir, "flow.yml") }
+    subject(:command) do
+      described_class.new(lint: lint, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input, error_output: error_output)
+    end
+
+    before do
+      FileUtils.mkdir_p([File.join(global_dir, "steps"), builtin_dir])
+      File.write(File.join(global_dir, "steps", "research.yml"), "steps:\n  research:\n    prompt: Research it.\n    gate: approve\n")
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    def draft_file
+      File.join(dir, "draft.yml").tap { |path| File.write(path, draft) }
+    end
+
+    it "validates from stdin, resolving the import through the catalog" do
+      input.string = draft
+
+      command.validate(path: "-", json: true)
+
+      expect(json["workflow"]["steps"].map { |step| [step["id"], step["prompt"]] }).to eq([["look", "Research it."]])
+    end
+
+    it "validates a file by path" do
+      command.validate(path: draft_file, json: true)
+
+      expect(json["workflow"]["steps"].map { |step| [step["id"], step["prompt"]] }).to eq([["look", "Research it."]])
+    end
+
+    it "is refused by add when the library has no such step" do
+      File.write(File.join(dir, "draft.yml"), draft.sub("research", "missing"))
+
+      expect { command.add(id: "flow", path: File.join(dir, "draft.yml")) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+
+    it "is refused by update when the library has no such step" do
+      old = "title: Old\nsteps:\n  plan:\n    prompt: Old.\n"
+      File.write(target, old)
+      File.write(File.join(dir, "draft.yml"), draft.sub("research", "missing"))
+
+      expect { command.update(id: "flow", path: File.join(dir, "draft.yml"), if_sha256: Digest::SHA256.hexdigest(old)) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+
+    it "is shown with its source" do
+      File.write(target, draft)
+
+      command.show(id: "flow", json: true, source: true)
+
+      expect(json["workflow"]).to include("problems" => [])
+      expect(json["workflow"]["steps"].map { |step| [step["id"], step["prompt"]] }).to eq([["look", "Research it."]])
     end
   end
 end

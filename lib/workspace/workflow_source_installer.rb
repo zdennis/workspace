@@ -147,7 +147,8 @@ module Workspace
       text = File.read(path, encoding: Encoding::UTF_8)
       return [problem(file, "invalid_workflow", "is not valid UTF-8 text")] unless text.valid_encoding?
       return [problem(file, PROMPT_FILE_CODE, "sets prompt_file:, which a workflow source may not (use prompt:)")] if prompt_file?(text)
-      WorkflowDefinition.parse(text, id: id, source: "source:#{index}", path: path, parent_lookup: catalog.parent_lookup)
+      WorkflowDefinition.parse(text, id: id, source: "source:#{index}", path: path, parent_lookup: catalog.parent_lookup,
+        import_lookup: catalog.import_lookup, confine_dir: catalog.confine_dir("source:#{index}"))
       []
     rescue Workspace::Error => e
       (e.details["problems"] || [e.message]).map { |message| problem(file, (e.code == "error") ? "invalid_workflow" : e.code, message) }

@@ -221,10 +221,12 @@ module Workspace
         text = read_text(path, stdin)
         id ||= IdPatterns.claimed_id(text) || (stdin ? STDIN_ID : IdPatterns.file_id(path))
         lookup, chain = draft_lookup(id, text, project)
+        layer = stdin ? nil : @catalog.scope_of(path, project: project)
         definition = WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file",
-          path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain)
+          path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain,
+          import_lookup: @catalog.import_lookup(project, file_layer: layer), confine_dir: layer && @catalog.confine_dir(layer, project))
         found = @lint.call(definition, cwd: Dir.pwd)
-        scope = stdin ? nil : @catalog.scope_of(path, project: project)
+        scope = layer
         warnings = definition.warnings + found["warnings"] + shadow_warnings(definition.id, scope, project)
         if json
           document("workflow" => definition.to_h.merge("source" => definition.source, "scope" => scope, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge(extends_field(definition)),
@@ -349,7 +351,8 @@ module Workspace
         stdin = path == "-"
         text = read_text(path, stdin)
         lookup, chain = draft_lookup(id, text, project)
-        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain)
+        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain,
+          import_lookup: @catalog.import_lookup(project, file_layer: "global"))
         found = @catalog.locate(id, project: project)
         written = @files.add(id, text, dry_run: dry_run)
         note = if found&.first == "project"
@@ -381,7 +384,8 @@ module Workspace
         stdin = path == "-"
         text = read_text(path, stdin)
         lookup, chain = draft_lookup(id, text, project)
-        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain)
+        WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file", path: stdin ? nil : File.expand_path(path), base_dir: @files.dir, parent_lookup: lookup, chain: chain,
+          import_lookup: @catalog.import_lookup(project, file_layer: "global"))
         written = @files.update(id, text, if_sha256: if_sha256, dry_run: dry_run, project: project)
         hidden = @catalog.locate(id, project: project)
         note = "; the project definition at #{hidden.last} hides it in #{project}" if hidden&.first == "project"
@@ -1978,7 +1982,11 @@ module Workspace
       def show_source(id, json, project)
         found = @catalog.source(id, project: project)
         data = {"id" => id}.merge(found)
-        data = WorkflowDefinition.parse(found["text"], id: id, source: found["source"], path: found["path"], parent_lookup: parent_lookup).to_h.merge(data) if found["problems"].empty?
+        if found["problems"].empty?
+          definition = WorkflowDefinition.parse(found["text"], id: id, source: found["source"], path: found["path"], parent_lookup: parent_lookup,
+            import_lookup: @catalog.import_lookup(project), confine_dir: @catalog.confine_dir(found["source"], project))
+          data = definition.to_h.merge(data)
+        end
         return document("workflow" => data) if json
         @output.print found["text"] if found["text"]
         found["problems"].each { |problem| @error_output.puts TerminalText.escape("#{id}: #{problem}") }

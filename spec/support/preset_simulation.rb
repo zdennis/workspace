@@ -11,7 +11,14 @@ module PresetSimulation
       file = File.join(WORKFLOWS, "#{id}.yml")
       {"text" => File.read(file), "path" => file, "source" => "builtin"} if File.file?(file) && below.nil?
     end
-    Workspace::WorkflowDefinition.parse(File.read(path), id: preset, source: "builtin", path: path, parent_lookup: lookup)
+    Workspace::WorkflowDefinition.parse(File.read(path), id: preset, source: "builtin", path: path, parent_lookup: lookup, import_lookup: import_lookup, confine_dir: File.realpath(WORKFLOWS))
+  end
+
+  def self.import_lookup
+    lambda do |name, layer:|
+      path = File.join(WORKFLOWS, "steps", "#{name}.yml")
+      {"path" => File.file?(path) ? path : nil, "layer" => "builtin", "searched" => [{"layer" => "builtin", "path" => path}], "shadows" => []}
+    end
   end
 
   def self.inputs(definition)
