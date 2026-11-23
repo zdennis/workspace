@@ -833,7 +833,9 @@ module Workspace
     workflow_config = WorkflowConfig.new(config_resolver: config_resolver)
     workflow_downtime = WorkflowDowntime.new(heartbeat_path: config.workflow_heartbeat_path, downtime_path: config.workflow_downtime_path,
       downtime_after: -> { workflow_config.downtime_after })
-    event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
+    events_config = EventsConfig.new(config_resolver: config_resolver, error_output: error_output)
+    event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger,
+      compact_threshold: -> { events_config.compact_threshold })
     state = State.new(config: config, event_log: event_log, logger: logger)
     osascript ||= OsascriptRunner.new
     iterm = ITerm.new(config: config, output: output, logger: logger, osascript: osascript)
@@ -962,7 +964,6 @@ module Workspace
       nil
     end
     ps_timeout = cwd_project_name ? lock_config.ps_timeout_for(cwd_project_name) : ProcessTree::DEFAULT_TIMEOUT
-    events_config = EventsConfig.new(config_resolver: config_resolver, error_output: error_output)
     events_rotate_size = nil
     reap_interval = cwd_project_name ? lock_config.reap_interval_for(cwd_project_name) : LockReaper::DEFAULT_INTERVAL
     process_tree = ProcessTree.new(logger: logger, timeout: ps_timeout)

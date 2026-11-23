@@ -19,17 +19,18 @@ module Workspace
   # exclusively, so no append lands in the old file while compact is
   # rewriting it.
   #
-  # An append that leaves the log over {DEFAULT_ROTATE_THRESHOLD} rotates it:
+  # An append that leaves the log over its compact threshold compacts it:
   # under the same exclusive lock the log is renamed to `<log>.1` (older
   # rotated files shift to `.2`, `.3`, and the one past {KEEP_ROTATED} is
   # deleted) and a new file, seeded with the compacted state, is renamed into
   # place. A reader that tails the log sees a new inode, as it does after
-  # {#compact}, and starts over on the new file.
+  # {#compact}, and starts over on the new file. The threshold is set by
+  # `event_log.compact_threshold`; nil turns the automatic compaction off.
   class EventLog
     DEFAULT_COMPACT_THRESHOLD = 1_048_576 # 1MB
 
-    # The log size (bytes) past which an append rotates it.
-    DEFAULT_ROTATE_THRESHOLD = 10 * 1_048_576
+    # The log size (bytes) past which an append compacts it, when none is given.
+    DEFAULT_AUTO_COMPACT_THRESHOLD = 100 * 1024
 
     # How many rotated files (`<log>.1` .. `<log>.N`) are kept.
     KEEP_ROTATED = 3
@@ -106,18 +107,19 @@ module Workspace
     # @param error_output [IO] error output stream for warnings (stderr)
     # @param logger [Workspace::Logger] debug logger
     # @param clock [#now] time source, injected for deterministic tests
-    # @param rotate_threshold [Integer] log size in bytes past which an append rotates it
+    # @param compact_threshold [Integer, nil, #call] log size in bytes past which an append compacts it, nil for
+    #   never, or a callable returning either; a callable is called once, on the first append
     # @param keep_rotated [Integer] how many rotated files to keep
     # @param lock_wait [Numeric] seconds an append or a compact waits for the log's lock
     # @param rotate_lock_wait [Numeric] seconds a rotation waits for the log's lock
     # @param renamer [#call] renames a file, given the old and new path
     # @param linker [#call] hard-links a file, given the existing and new path
     def initialize(config:, project_settings: nil, error_output: $stderr, logger: Workspace::Logger.new, clock: Time,
-      rotate_threshold: DEFAULT_ROTATE_THRESHOLD, keep_rotated: KEEP_ROTATED, lock_wait: LOCK_WAIT, rotate_lock_wait: ROTATE_LOCK_WAIT,
+      compact_threshold: DEFAULT_AUTO_COMPACT_THRESHOLD, keep_rotated: KEEP_ROTATED, lock_wait: LOCK_WAIT, rotate_lock_wait: ROTATE_LOCK_WAIT,
       renamer: File.method(:rename), linker: File.method(:link))
       @renamer = renamer
       @linker = linker
-      @rotate_threshold = rotate_threshold
+      @compact_threshold_source = compact_threshold
       @keep_rotated = keep_rotated
       @lock_wait = lock_wait
       @rotate_lock_wait = rotate_lock_wait
@@ -497,14 +499,23 @@ module Workspace
     # the exclusive lock, so of several processes that notice at once only the
     # first rotates, and one that can't get the lock leaves it to the others.
     def rotate_if_large
-      return unless size > @rotate_threshold
+      threshold = auto_compact_threshold
+      return unless threshold && size > threshold
       with_lock(File::LOCK_EX, wait: @rotate_lock_wait) do |locked|
-        next unless locked && size > @rotate_threshold
+        next unless locked && size > threshold
         @logger.debug { "event_log: rotating #{size} bytes" }
         rewrite(rotate: true)
       end
     rescue => e
       @logger.debug { "event_log: could not rotate (#{e.class}: #{e.message})" }
+    end
+
+    # The size past which an append compacts the log, nil for never. A callable
+    # is called once per instance, so config is not read on every append.
+    def auto_compact_threshold
+      return @auto_compact_threshold if defined?(@auto_compact_threshold)
+      source = @compact_threshold_source
+      @auto_compact_threshold = source.respond_to?(:call) ? source.call : source
     end
 
     # Moves each rotated file up one number, dropping the oldest, then links

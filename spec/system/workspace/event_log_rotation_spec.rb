@@ -15,7 +15,7 @@ RSpec.describe Workspace::EventLog, "rotation" do
   let(:keep) { 3 }
 
   subject(:event_log) do
-    described_class.new(config: config, error_output: errors, rotate_threshold: threshold, keep_rotated: keep)
+    described_class.new(config: config, error_output: errors, compact_threshold: threshold, keep_rotated: keep)
   end
 
   after { FileUtils.remove_entry(tmpdir) }
@@ -100,7 +100,7 @@ RSpec.describe Workspace::EventLog, "rotation" do
       seen << File.exist?(event_log_file)
       File.link(*args)
     end
-    event_log = described_class.new(config: config, error_output: errors, rotate_threshold: threshold, keep_rotated: keep,
+    event_log = described_class.new(config: config, error_output: errors, compact_threshold: threshold, keep_rotated: keep,
       renamer: renamer, linker: linker)
 
     event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "u1"})
@@ -112,7 +112,7 @@ RSpec.describe Workspace::EventLog, "rotation" do
   end
 
   it "writes the event even when rotation fails, and does not raise" do
-    event_log = described_class.new(config: config, error_output: errors, rotate_threshold: threshold, keep_rotated: keep,
+    event_log = described_class.new(config: config, error_output: errors, compact_threshold: threshold, keep_rotated: keep,
       linker: ->(*) { raise Errno::EACCES })
 
     expect { fill(event_log, count: 20) }.not_to raise_error
@@ -122,7 +122,7 @@ RSpec.describe Workspace::EventLog, "rotation" do
   it "drops no rotated file when the log can't be linked" do
     fill(event_log, count: 20)
     before = Dir["#{event_log_file}.*"].reject { |f| f.end_with?(".lock") }.to_h { |f| [f, File.stat(f).ino] }
-    refusing = described_class.new(config: config, error_output: errors, rotate_threshold: threshold, keep_rotated: keep,
+    refusing = described_class.new(config: config, error_output: errors, compact_threshold: threshold, keep_rotated: keep,
       linker: ->(*) { raise Errno::EPERM })
 
     fill(refusing, count: 40)
@@ -131,7 +131,7 @@ RSpec.describe Workspace::EventLog, "rotation" do
   end
 
   it "skips rotation when another process holds the log's lock, and still appends" do
-    event_log = described_class.new(config: config, error_output: errors, rotate_threshold: threshold, keep_rotated: keep, rotate_lock_wait: 0.05)
+    event_log = described_class.new(config: config, error_output: errors, compact_threshold: threshold, keep_rotated: keep, rotate_lock_wait: 0.05)
     fill(event_log, count: 5)
     holder = File.open("#{event_log_file}.lock", File::RDWR | File::CREAT, 0o600)
     holder.flock(File::LOCK_SH)
@@ -154,7 +154,7 @@ RSpec.describe Workspace::EventLog, "rotation" do
     script = <<~RUBY
       require "workspace"
       config = Workspace::Config.new(workspace_dir: ENV["HOME"])
-      log = Workspace::EventLog.new(config: config, rotate_threshold: 1500, keep_rotated: 10_000)
+      log = Workspace::EventLog.new(config: config, compact_threshold: 1500, keep_rotated: 10_000)
       50.times { |i| log.append(type: "dispatched", project: "w" + ENV["WORKER"], data: {"i" => i, "pad" => "y" * 40}) }
     RUBY
     env = {"HOME" => tmpdir, "XDG_CONFIG_HOME" => File.join(tmpdir, "config"),
@@ -172,5 +172,88 @@ RSpec.describe Workspace::EventLog, "rotation" do
     sent = events.select { |e| e["type"] == "dispatched" }.map { |e| [e["project"], e["data"]["i"]] }
     expect(sent.sort).to eq((1..4).flat_map { |w| (0...50).map { |i| ["w#{w}", i] } }.sort)
     expect(sent.uniq.size).to eq(sent.size)
+  end
+
+  describe "automatic compaction by the configured threshold" do
+    def log_with(threshold, **opts)
+      described_class.new(config: config, error_output: errors, compact_threshold: threshold, keep_rotated: keep, **opts)
+    end
+
+    it "compacts on the append that passes the threshold, keeps .1 and leaves a seeded log" do
+      log = log_with(threshold)
+      log.append(type: "launched", project: "proj1", data: {"unique_id" => "u1"})
+      log.append(type: "dispatched", project: "proj1", data: {"pad" => "x" * 2_000})
+
+      expect(File.exist?("#{event_log_file}.1")).to be(true)
+      expect(lines_of("#{event_log_file}.1").map { |e| e["type"] }).to eq(["launched", "dispatched"])
+      expect(lines_of(event_log_file).map { |e| e["type"] }).to eq(["compacted"])
+    end
+
+    it "never compacts when the threshold is nil" do
+      log = log_with(nil)
+      fill(log, count: 200)
+
+      expect(File.exist?("#{event_log_file}.1")).to be(false)
+      expect(lines_of(event_log_file).size).to eq(200)
+    end
+
+    it "never compacts when the callable answers nil" do
+      log = log_with(-> {})
+      fill(log, count: 100)
+
+      expect(File.exist?("#{event_log_file}.1")).to be(false)
+    end
+
+    it "calls a threshold callable once over many appends" do
+      calls = 0
+      log = log_with(-> {
+        calls += 1
+        threshold
+      })
+      fill(log, count: 60)
+
+      expect(calls).to eq(1)
+      expect(File.exist?("#{event_log_file}.1")).to be(true)
+    end
+
+    it "compacts once when two processes race past the threshold" do
+      lib = File.join(PROJECT_ROOT, "lib")
+      File.write(event_log_file, JSON.generate({"timestamp" => "2026-01-01T00:00:00.000Z", "type" => "dispatched", "project" => "seed", "data" => {"pad" => "s" * 1_600}}) + "\n")
+      script = <<~RUBY
+        require "workspace"
+        config = Workspace::Config.new(workspace_dir: ENV["HOME"])
+        log = Workspace::EventLog.new(config: config, compact_threshold: 1500, keep_rotated: 10)
+        log.append(type: "dispatched", project: "w" + ENV["WORKER"], data: {"pad" => "y" * 300})
+      RUBY
+      env = {"HOME" => tmpdir, "XDG_CONFIG_HOME" => File.join(tmpdir, "config"),
+             "XDG_STATE_HOME" => File.join(tmpdir, "state"), "SKIP_SIMPLECOV" => "1"}
+      pids = (1..2).map do |worker|
+        Process.spawn(env.merge("WORKER" => worker.to_s), RbConfig.ruby, "-I", lib, "-e", script, err: File::NULL, out: File::NULL)
+      end
+      statuses = pids.map { |pid| Timeout.timeout(60) { Process.wait2(pid).last } }
+
+      expect(statuses.map(&:success?)).to all(be(true))
+      expect(File.exist?("#{event_log_file}.1")).to be(true)
+      expect(File.exist?("#{event_log_file}.2")).to be(false)
+    end
+
+    it "replays the same state after an automatic compaction as before it" do
+      log = log_with(threshold)
+      log.append(type: "launched", project: "proj1", data: {"unique_id" => "u1", "iterm_window_id" => 7})
+      log.append(type: "launched", project: "gone", data: {"unique_id" => "u2"})
+      log.append(type: "killed", project: "gone")
+      before = log.reconstruct
+      fill(log, count: 30)
+
+      expect(File.exist?("#{event_log_file}.1")).to be(true)
+      expect(log.reconstruct).to eq(before)
+    end
+
+    it "writes the event and does not raise when the compaction fails" do
+      log = log_with(threshold, renamer: ->(*) { raise Errno::EACCES })
+
+      expect { log.append(type: "dispatched", project: "proj1", data: {"pad" => "x" * 2_000}) }.not_to raise_error
+      expect(lines_of(event_log_file).map { |e| e["type"] }).to eq(["dispatched"])
+    end
   end
 end

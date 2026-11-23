@@ -28,7 +28,7 @@ module Workspace
       ].freeze
 
       # Loaded on a guard's deny, for the {EventLog} it records.
-      EVENT_LOG_FILES = %w[warn project_settings event_log].freeze
+      EVENT_LOG_FILES = %w[warn project_settings core/config_layering core/config_resolver events_config event_log].freeze
 
       # Loaded on a Bash call in a bound pane, for the run {WorkflowDeny} reads.
       RUN_STORE_FILES = %w[workflow_log_tail workflow_definition workflow_run workflow_run_store].freeze
@@ -118,7 +118,10 @@ module Workspace
 
       def self.event_log(config, stderr, logger)
         require_files(EVENT_LOG_FILES)
-        EventLog.new(config: config, project_settings: ProjectSettings.new(config: config), error_output: stderr, logger: logger)
+        project_settings = ProjectSettings.new(config: config)
+        events_config = EventsConfig.new(config_resolver: ConfigResolver.new(project_settings: project_settings), error_output: stderr)
+        EventLog.new(config: config, project_settings: project_settings, error_output: stderr, logger: logger,
+          compact_threshold: -> { events_config.compact_threshold })
       end
 
       def self.run_store(config)

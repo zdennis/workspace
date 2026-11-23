@@ -233,7 +233,7 @@ RSpec.describe Workspace::EventLog do
       payload = "x" * 6_000
       pids = 4.times.map do |n|
         fork do
-          log = described_class.new(config: config, error_output: StringIO.new)
+          log = described_class.new(config: config, error_output: StringIO.new, compact_threshold: nil)
           50.times { |i| log.record(type: "dispatched", project: "p#{n}", data: {"i" => i, "pad" => payload}) }
           exit!(0)
         end
