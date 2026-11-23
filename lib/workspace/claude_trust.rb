@@ -34,6 +34,12 @@ module Workspace
       trust(root)
     end
 
+    # @param root [String] a checkout #trust_checkout just trusted
+    # @return [String] the line `launch`, `start` and `add` print for it
+    def trusted_note(root)
+      "Note: marked #{root} as trusted in #{config_path} (agent.claude.trust_checkout)."
+    end
+
     # @return [String] path of the `.claude.json` Claude Code reads
     def config_path
       dir = @env["CLAUDE_CONFIG_DIR"].to_s
@@ -57,28 +63,28 @@ module Workspace
       return :missing unless File.file?(path)
 
       path = File.realpath(path)
-      doc = read(path)
+      doc = read(path, real)
       return :unparseable unless doc
       return :already if trusted?(doc, real)
 
       2.times do
         write(path, doc, real)
-        doc = read(path)
+        doc = read(path, real)
         return :unparseable unless doc
         return :trusted if trusted?(doc, real)
       end
       unwritten(path, "another program kept replacing it")
-    rescue SystemCallError, JSON::GeneratorError => e
+    rescue => e
       unwritten(path, e.message)
     end
 
     private
 
-    def read(path)
+    def read(path, real)
       doc = JSON.parse(File.read(path))
       projects = doc.is_a?(Hash) ? doc["projects"] : nil
       valid = doc.is_a?(Hash) &&
-        (!doc.key?("projects") || (projects.is_a?(Hash) && projects.values.all?(Hash)))
+        (!doc.key?("projects") || (projects.is_a?(Hash) && (!projects.key?(real) || projects[real].is_a?(Hash))))
       return doc if valid
       warn_unchanged(path)
       nil
@@ -110,7 +116,9 @@ module Workspace
       doc["projects"] ||= {}
       doc["projects"][real] ||= {}
       doc["projects"][real]["hasTrustDialogAccepted"] = true
-      AtomicFile.write(path, JSON.pretty_generate(doc) + "\n", perm: File.stat(path).mode & 0o777)
+      mode = File.stat(path).mode & 0o777
+      AtomicFile.write(path, JSON.pretty_generate(doc) + "\n", perm: mode)
+      File.chmod(mode, path)
     end
   end
 end

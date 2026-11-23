@@ -216,7 +216,7 @@ RSpec.describe Workspace::Commands::Launch, "headless" do
 
   describe "with claude_trust" do
     let(:calls) { [] }
-    let(:claude_trust) { instance_double(Workspace::ClaudeTrust, config_path: "/home/.claude.json") }
+    let(:claude_trust) { instance_double(Workspace::ClaudeTrust, config_path: "/home/.claude.json").tap { |d| allow(d).to receive(:trusted_note) { |root| "Note: marked #{root} as trusted in /home/.claude.json (agent.claude.trust_checkout)." } } }
 
     subject(:command) do
       described_class.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,

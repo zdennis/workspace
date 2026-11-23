@@ -871,7 +871,8 @@ module Workspace
     main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
     lineage = WorkspaceLineage.new(rev_parse: git.method(:path_of))
     claude_trust_config = ClaudeTrustConfig.new(config_resolver: config_resolver, project_config: project_config, lineage: lineage, error_output: error_output)
-    claude_trust = ClaudeTrust.new(env: env, home: env["HOME"].to_s.empty? ? Dir.home : env["HOME"], trust_config: claude_trust_config, main_agent: main_agent, error_output: error_output)
+    home_dir = env["HOME"].to_s.empty? ? Dir.home : env["HOME"]
+    claude_trust = ClaudeTrust.new(env: env, home: home_dir, trust_config: claude_trust_config, main_agent: main_agent, error_output: error_output)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, claude_trust: claude_trust, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
     library = Library.new(config: config, lineage: lineage, project_config: project_config,
       template_config: TmuxinatorTemplateConfig.new(config_resolver: config_resolver))
@@ -899,8 +900,7 @@ module Workspace
       main_agent: main_agent)
     start_ref = StartRef.new(git: git, lineage: lineage)
     ticket_source = TicketSource.new
-    skills_home = env["HOME"].to_s.empty? ? Dir.home : env["HOME"]
-    skills_command = Commands::Skills.new(harnesses: SkillHarnesses.new(home: skills_home, env: env), source: skill_source,
+    skills_command = Commands::Skills.new(harnesses: SkillHarnesses.new(home: home_dir, env: env), source: skill_source,
       links: SkillLinks.new(state_dir: config.state_dir), state: SkillsState.new(dir: config.state_dir), input: input, output: output, error_output: error_output)
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: ticket_source, output: output, error_output: error_output)
     agent_snapshot_client = AgentSnapshotClient.new(config: config)
@@ -1104,7 +1104,7 @@ module Workspace
       turn_failed_after: -> { workflow_config.turn_failed_after }, infra_retry_max: -> { workflow_config.infra_retry_max },
       recovery_entry: workflow_recovery_entry, downtime: workflow_downtime, live_usage: workflow_live_usage,
       log_path: config.sweep_log_path, last_path: config.workflow_sweep_last_path, alerts: workflow_alerts)
-    sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
+    sweep_schedule = SweepSchedule.new(agents_dir: File.join(home_dir, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do
         out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)
         [out + err, ok ? 0 : 1]

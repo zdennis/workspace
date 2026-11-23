@@ -43,7 +43,7 @@ RSpec.describe Workspace::ClaudeTrust do
     expect(File.read(config)).to eq(before)
   end
 
-  it "returns :unparseable when an entry is not a hash" do
+  it "returns :unparseable when the checkout's entry is not a hash" do
     write_config("projects" => {checkout => "x"})
 
     expect(trust.trust(checkout)).to eq(:unparseable)
@@ -123,6 +123,52 @@ RSpec.describe Workspace::ClaudeTrust do
       t = described_class.new(env: {"CLAUDE_CONFIG_DIR" => value}, home: home, error_output: error_output)
       expect(t.config_path).to eq(config)
     end
+  end
+
+  it "keeps an unrelated null project entry as it is and trusts the checkout" do
+    write_config("projects" => {"/other" => nil, checkout => {}})
+
+    expect(trust.trust(checkout)).to eq(:trusted)
+    expect(projects).to include("/other" => nil)
+    expect(projects[checkout]["hasTrustDialogAccepted"]).to be(true)
+  end
+
+  it "keeps a mode the umask would clear" do
+    old = File.umask(0o022)
+    write_config("projects" => {})
+    File.chmod(0o664, config)
+
+    trust.trust(checkout)
+
+    expect(File.stat(config).mode & 0o777).to eq(0o664)
+  ensure
+    File.umask(old)
+  end
+
+  it "keeps a 0600 mode under a loose umask" do
+    old = File.umask(0)
+    write_config("projects" => {})
+    File.chmod(0o600, config)
+
+    trust.trust(checkout)
+
+    expect(File.stat(config).mode & 0o777).to eq(0o600)
+  ensure
+    File.umask(old)
+  end
+
+  it "does not raise on invalid bytes and leaves the file alone" do
+    File.binwrite(config, "{\"a\": \"\xFF\xFE\"}")
+    before = File.binread(config)
+
+    result = nil
+    expect { result = trust.trust(checkout) }.not_to raise_error
+    expect(result).to eq(:unwritten)
+    expect(File.binread(config)).to eq(before)
+  end
+
+  it "words the note with the root and the config path" do
+    expect(trust.trusted_note("/x")).to eq("Note: marked /x as trusted in #{config} (agent.claude.trust_checkout).")
   end
 
   it "keeps the file mode" do

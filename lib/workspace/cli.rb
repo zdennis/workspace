@@ -3869,8 +3869,7 @@ module Workspace
     def trust_added_checkout(name, root, json:)
       result = @claude_trust&.trust_checkout(name, root)
       if result == :trusted
-        message = "Note: marked #{root} as trusted in #{@claude_trust.config_path} (agent.claude.trust_checkout)."
-        (json ? @error_output : @output).puts message
+        (json ? @error_output : @output).puts @claude_trust.trusted_note(root)
       end
       result
     end

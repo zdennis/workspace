@@ -367,8 +367,7 @@ module Workspace
         projects.each do |project|
           root = @project_config.project_root_for(project)
           next unless @claude_trust.trust_checkout(project, root) == :trusted
-          message = "Note: marked #{root} as trusted in #{@claude_trust.config_path} (agent.claude.trust_checkout)."
-          (@quiet ? @error_output : @output).puts message
+          (@quiet ? @error_output : @output).puts @claude_trust.trusted_note(root)
         end
       end
 

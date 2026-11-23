@@ -1164,7 +1164,7 @@ RSpec.describe Workspace::CLI do
     end
 
     describe "with claude_trust" do
-      let(:claude_trust) { instance_double(Workspace::ClaudeTrust, config_path: "/home/.claude.json") }
+      let(:claude_trust) { instance_double(Workspace::ClaudeTrust, config_path: "/home/.claude.json").tap { |d| allow(d).to receive(:trusted_note) { |root| "Note: marked #{root} as trusted in /home/.claude.json (agent.claude.trust_checkout)." } } }
 
       it "trusts the added checkout under the name it was added as and says so" do
         allow(claude_trust).to receive(:trust_checkout).and_return(:trusted)
