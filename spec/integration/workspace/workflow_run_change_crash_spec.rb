@@ -11,11 +11,17 @@ module RunChangeCrash
   # Not a StandardError, so no bare `rescue` in the engine can swallow it, as a killed process is not swallowed.
   STALL = 600
 
+  # Why a step line never typed is a failing crash point.
+  NEVER_TYPED = "no tick types again the line of a `delivering` attempt that was never typed: WorkflowTransitions.redelivery " \
+    "needs the attempt's outcome `not_delivered` (lib/workspace/workflow_transitions.rb:816-835), so the sweep's " \
+    "idle_turn_over at the stall (lib/workspace/workflow_sweep.rb:565) ends the plan step `turn_ended_incomplete`"
+
   class Crash < Exception # standard:disable Lint/InheritException
   end
 
   # One armed crash point at a time; it fires once, on the nth call whose info the match accepts, then disarms.
-  # Points: :before_kick and :after_kick (info: the typed text), :record_event (the event type), :event_log (the
+  # Points: :before_kick and :after_kick (info: the typed text), :record_event (the event type), :recorded (the
+  # event type and data, once written), :stored (the run, once a change has written it), :event_log (the
   # `workflow_changed` data), :alerts_marks and :alerts_fire (the run), :inbox (the item's dedupe key).
   class Points
     attr_reader :fired
@@ -36,12 +42,14 @@ module RunChangeCrash
     end
   end
 
-  # The shared SimPanes with a crash point either side of a kick, and, once `idle!`, a pane row that shows the
-  # agent's turn long over, so a sweep acts on a running step.
+  # The shared SimPanes with a crash point either side of a kick, refusals the daemon gives once each (+refusals+,
+  # shared between engines: {code:, match:} on the typed text), and, once `idle!`, a pane row that shows the agent's
+  # turn long over, so a sweep acts on a running step.
   class Panes < SimpleDelegator
-    def initialize(panes, points)
+    def initialize(panes, points, refusals)
       super(panes)
       @points = points
+      @refusals = refusals
       @idle_for = nil
     end
 
@@ -51,6 +59,11 @@ module RunChangeCrash
 
     def kick(text: nil, **rest)
       @points.check!(:before_kick, text)
+      refusal = @refusals.find { |each| each[:match].call(text) }
+      if refusal
+        @refusals.delete(refusal)
+        return {ok: false, code: refusal[:code], message: "refused by the crash spec"}
+      end
       result = __getobj__.kick(text: text, **rest)
       @points.check!(:after_kick, text)
       result
@@ -64,7 +77,7 @@ module RunChangeCrash
     def session_live?(_workspace) = true
   end
 
-  # The run store with a crash point before each history line is written.
+  # The run store with a crash point before and after each history line is written, and after each change is stored.
   class Store < Workspace::WorkflowRunStore
     def initialize(points:, **rest)
       super(**rest)
@@ -73,7 +86,15 @@ module RunChangeCrash
 
     def record_event(id, type, data = {})
       @points.check!(:record_event, type)
-      super
+      written = super
+      @points.check!(:recorded, [type, data])
+      written
+    end
+
+    def change(id, **opts, &block)
+      stored = super
+      @points.check!(:stored, stored) if stored
+      stored
     end
   end
 
@@ -155,6 +176,8 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
   let(:records) { sim::SimRecords.new(Workspace::WorkflowAttemptRecord.new(guard: guard, clock: clock)) }
   let(:points) { RunChangeCrash::Points.new }
   let(:inbox) { RunChangeCrash::Inbox.new(points) }
+  # The daemon refusals armed for a kick, shared between engines as the pane is.
+  let(:refusals) { [] }
   # The fake agent's turns taken, by prompt file: it takes one for each line typed.
   let(:turns) { Hash.new(0) }
 
@@ -163,7 +186,7 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
   def build(points = RunChangeCrash::Points.new)
     store = RunChangeCrash::Store.new(points: points, dir: File.join(@dir, "state", "runs"), archive_dir: File.join(@dir, "state", "archive"),
       clock: clock, id_generator: -> { run_id })
-    panes = RunChangeCrash::Panes.new(sim_panes, points)
+    panes = RunChangeCrash::Panes.new(sim_panes, points, refusals)
     inbox.points = points
     engine = Workspace.build_workflow_engine(store: store, resources: sim::SimResources.new, composer: sim::SimComposer.new, panes: panes,
       checker: sim::SimChecker.new(script), commands_config: sim::SimCommands.new, lineage: sim::SimLineage.new, git: sim::SimGit.new, guard: guard,
@@ -321,5 +344,135 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     fresh, passes = recover
     expect(passes).to eq(0)
     expect(final_state(fresh[:store])).to eq(golden.slice("run", "steps"))
+  end
+
+  # The crash points of a step's delivery are armed at the plan step's first line: the first dispatch that comes out
+  # of another step's pass (research's, in the same change), and the step with a review round and a `status:` check
+  # after it, so a lost line there holds up the most that follows.
+  def plan_line?(text) = text.to_s[/[^\s\/]+\.\d+\.prompt\.md/] == "plan.1.prompt.md"
+
+  # The step_dispatched events recorded for the plan step's first attempt.
+  def plan_dispatched_events(store)
+    store.events(run_id)["events"].select { |each| each["type"] == "step_dispatched" && each["step"] == "plan" && each["attempt"] == 1 }
+  end
+
+  def plan_attempt(run) = run.step("plan")&.last_attempt&.to_h || {}
+
+  # Plays the golden script until the armed point kills the engine. Then whatever the agents were already told goes
+  # on (a turn's end reaches a fresh engine, as the daemon's nudge starts one), the daemon restarts and the sweep
+  # runs ({#recover}), and the run is driven on to its end.
+  # @return [Hash] :left (the plan step's last attempt as the crash left it), :store, :passes
+  def crash_and_recover
+    parts = build(points)
+    expect {
+      start(parts)
+      drive(parts)
+    }.to raise_error(RunChangeCrash::Crash)
+    left = plan_attempt(parts[:store].run(run_id))
+    dispatched = plan_dispatched_events(parts[:store])
+    drive(build)
+    fresh, passes = recover
+    drive(fresh)
+    {left: left, dispatched: dispatched, store: fresh[:store], passes: passes}
+  end
+
+  # The no-crash baseline of a plan line the daemon refuses once with +code+: the golden state, but for the plan
+  # step's attempts. The refused attempt ends `not_delivered` with nothing typed, and the tick's `:redeliver` types
+  # the line again as attempt 2, which plays the script's second plan attempt, as golden attempt 2 does.
+  def refused_baseline(code)
+    baseline = JSON.parse(JSON.generate(golden.slice("run", "steps")))
+    plan = baseline["steps"].find { |each| each["id"] == "plan" }
+    plan["attempts"] = [{"n" => 1, "outcome" => "not_delivered", "code" => code}, plan["attempts"].find { |each| each["n"] == 2 }]
+    baseline
+  end
+
+  def refuse_plan_line(code) = refusals << {code: code, match: method(:plan_line?)}
+
+  # The Measure: the baseline's final run and step state, no attempt the baseline lacks, at most one line typed per
+  # prompt file.
+  def expect_baseline(store, baseline)
+    final = final_state(store)
+    final["steps"].zip(baseline["steps"]).each do |step, base|
+      expect(step["attempts"].map { |each| each["n"] } - base["attempts"].map { |each| each["n"] }).to eq([]), "#{step["id"]} has attempts the baseline lacks"
+    end
+    expect(final).to eq(baseline)
+    expect(typed_lines.values.max).to eq(1)
+  end
+
+  # What the never-typed line leaves, asserted before the pending Measure so the Measure is pending for that reason
+  # alone: the plan's first attempt is stuck `delivering` with no line typed, recovery types none, and the sweep holds
+  # the run for a person.
+  def expect_never_typed(result)
+    expect(result[:left].slice("n", "delivery")).to eq("n" => 1, "delivery" => "delivering")
+    expect(typed_lines["plan.1.prompt.md"]).to eq(0)
+    expect(typed_lines.values.max.to_i).to be <= 1
+    final = final_state(result[:store])
+    expect(final["run"].slice("state", "current", "reason")).to eq("state" => "waiting", "current" => "plan", "reason" => "turn_ended_incomplete")
+    expect(final["steps"].find { |each| each["id"] == "plan" }["attempts"]).to eq([{"n" => 1}])
+  end
+
+  # The tail B5, B6 and B8 share: one pass, the line never typed, and the pending Measure for that reason alone.
+  def expect_untyped_then_pending(result, baseline)
+    expect(result[:passes]).to eq(1)
+    expect_never_typed(result)
+    pending RunChangeCrash::NEVER_TYPED
+    expect_baseline(result[:store], baseline)
+  end
+
+  it "B5: a crash after the store that started the plan step, before its line is delivered, leaves it untyped (1 pass)" do
+    points.arm(:stored) { |run| plan_attempt(run).slice("n", "delivery") == {"n" => 1, "delivery" => "delivering"} }
+    result = crash_and_recover
+
+    expect_untyped_then_pending(result, golden.slice("run", "steps"))
+  end
+
+  it "B6: a crash inside the kick, before the plan line is typed, leaves it untyped (1 pass)" do
+    points.arm(:before_kick) { |text| plan_line?(text) }
+    result = crash_and_recover
+
+    expect_untyped_then_pending(result, golden.slice("run", "steps"))
+  end
+
+  it "B7: a crash after the plan line is typed, before step_dispatched and the settle, ends at the golden state through the turn's end (0 passes)" do
+    points.arm(:after_kick) { |text| plan_line?(text) }
+    result = crash_and_recover
+
+    expect(result[:left].slice("n", "delivery")).to eq("n" => 1, "delivery" => "delivering")
+    expect(result[:dispatched]).to eq([])
+    expect(result[:passes]).to eq(0)
+    expect_baseline(result[:store], golden.slice("run", "steps"))
+  end
+
+  it "B8: a crash after step_dispatched records the refused plan line, before the settle, loses the pane_busy retry (1 pass)" do
+    baseline = refused_baseline("pane_busy")
+    refuse_plan_line("pane_busy")
+    points.arm(:recorded) { |(type, data)| type == "step_dispatched" && data["step"] == "plan" && data["delivered"] == false }
+    result = crash_and_recover
+
+    expect_untyped_then_pending(result, baseline)
+  end
+
+  it "B10: a crash after the settle stored the refused plan line as not_delivered ends where the refusal alone does, through tick :redeliver (1 pass)" do
+    baseline = refused_baseline("pane_busy")
+    refuse_plan_line("pane_busy")
+    points.arm(:stored) { |run| plan_attempt(run).slice("n", "outcome") == {"n" => 1, "outcome" => "not_delivered"} }
+    result = crash_and_recover
+
+    expect(result[:left].slice("n", "outcome", "code")).to eq("n" => 1, "outcome" => "not_delivered", "code" => "pane_busy")
+    expect(result[:passes]).to eq(1)
+    expect_baseline(result[:store], baseline)
+  end
+
+  it "B11: a run with no crash and the one-shot pane_busy refusal at plan.1 reaches the refused baseline" do
+    refuse_plan_line("pane_busy")
+    parts = build(points)
+    start(parts)
+    drive(parts)
+    fresh, passes = recover
+    drive(fresh)
+
+    expect(points.fired).to be_nil
+    expect(passes).to eq(1)
+    expect_baseline(fresh[:store], refused_baseline("pane_busy"))
   end
 end
