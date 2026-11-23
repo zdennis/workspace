@@ -220,6 +220,40 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(attempt["outputs"]).to eq([{"file" => "plan.md", "sha256" => Digest::SHA256.hexdigest("done\n"), "bytes" => 5}])
     end
 
+    context "with a run store" do
+      let(:events) do
+        [{"type" => "permission_guarded", "rule" => "hang_guard", "step" => "plan", "attempt" => 1},
+          {"type" => "permission_guarded", "rule" => "hang_guard", "step" => "plan", "attempt" => 1},
+          {"type" => "permission_guarded", "rule" => "hang_guard:cap", "step" => "plan", "attempt" => 1},
+          {"type" => "permission_guarded", "rule" => "hang_guard", "step" => "plan", "attempt" => 2},
+          {"type" => "permission_guarded", "rule" => "hang_guard", "step" => "other", "attempt" => 1},
+          {"type" => "permission_guarded", "rule" => "hang_guard", "step" => "plan", "attempt" => 1, "round" => 1}]
+      end
+      let(:store) do
+        Class.new do
+          def initialize(events) = @events = events
+          def count_events(_id, type) = @events.count { |event| event["type"] == type && yield(event) }
+        end.new(events)
+      end
+      let(:run) { super().merge("id" => "wr_1") }
+
+      def finish(record) = record.finish(run: run, step: {"id" => "plan"}, attempt: {"n" => 1}).thawed
+
+      it "folds the attempt's own hang guard denies into hang_guard_denies, leaving caps, other attempts and rounds out" do
+        expect(finish(described_class.new(guard: guard, run_store: store))["hang_guard_denies"]).to eq(2)
+      end
+
+      it "leaves the key out when there were none, with no store, or when the history can't be read" do
+        events.clear
+        expect(finish(described_class.new(guard: guard, run_store: store))).not_to have_key("hang_guard_denies")
+        expect(finish(record)).not_to have_key("hang_guard_denies")
+
+        broken = Object.new
+        def broken.count_events(*) = raise(Workspace::Error, "unreadable")
+        expect(finish(described_class.new(guard: guard, run_store: broken))).not_to have_key("hang_guard_denies")
+      end
+    end
+
     it "gives an empty list for a step with no produces" do
       attempt = {}
       attempt.replace(record.finish(run: run, step: {"id" => "plan"}, attempt: attempt).thawed)

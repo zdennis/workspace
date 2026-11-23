@@ -70,6 +70,12 @@ RSpec.describe Workspace::HangGuardCounter do
       expect(counter.take("a", max: 1)).to eq(:capped)
     end
 
+    it "answers the count with take_counted" do
+      expect(counter.take_counted("k", max: 2)).to eq([:deny, 1])
+      expect(counter.take_counted("k", max: 2)).to eq([:deny, 2])
+      expect(counter.take_counted("k", max: 2)).to eq([:capped, 2])
+    end
+
     it "returns unknown when the lock is held past the wait" do
       File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600) do |held|
         held.flock(File::LOCK_EX)

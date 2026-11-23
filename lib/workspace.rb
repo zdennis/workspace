@@ -1065,7 +1065,7 @@ module Workspace
       git: git,
       guard: workflow_guard,
       attempt_record: WorkflowAttemptRecord.new(guard: workflow_guard, ledger: session_ledger, evidence: workflow_evidence,
-        session_names: workflow_session_names, server_for: workflow_server_for),
+        session_names: workflow_session_names, server_for: workflow_server_for, run_store: workflow_store),
       require_check: WorkflowRequire.new(guard: workflow_guard, notes_dir_of: workflow_gate_note.method(:notes_dir_of),
         commands_config: commands_config, checker: workflow_checker,
         inbox_for: workflow_inbox_for),

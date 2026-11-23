@@ -121,7 +121,8 @@ RSpec.describe Workspace::CLI::SessionEventWiring do
     expect([tracker, enforcer].map { |kw| [kw[:lock_namespace], kw[:lock_holder]] }).to all(eq([shared[:lock_namespace], shared[:lock_holder]]))
     expect(deny).to include(bound_run: shared[:bound_run], run_store: shared[:run_store])
     expect([review[:pane_bindings], reflection[:pane_bindings], built[:pane_bindings]]).to all(be(shared[:pane_bindings]))
-    expect(built).to include(session_ledger: shared[:session_ledger], delivery_log: shared[:delivery_log], workspace_for_session: shared[:workspace_for_session])
+    expect(built).to include(session_ledger: shared[:session_ledger], delivery_log: shared[:delivery_log], workspace_for_session: shared[:workspace_for_session],
+      run_store: shared[:run_store])
     expect(built[:session_ambiguous].call("proj")).to be(true)
     expect(release).to include(executable: executable, recovery_marker: shared[:recovery_stop_marker], config: config)
   end

@@ -50,19 +50,29 @@ module Workspace
     # @return [Symbol] `:deny` (counted), `:capped` (`max` reached, nothing counted) or `:unknown`
     #   (the lock wait ran out, or the file can't be used)
     def take(key, max:)
+      take_counted(key, max: max).first
+    end
+
+    # {#take}, with the count under `key` once it has run.
+    #
+    # @param key [String] from {.key_for}
+    # @param max [Integer] denies allowed before a dialog is left to show
+    # @return [Array(Symbol, Integer), Array(Symbol, nil)] the result of {#take} and the count after it (`max`
+    #   once capped); nil with `:unknown`
+    def take_counted(key, max:)
       result = update do |data|
         entry = data[key]
         count = entry ? entry["count"] : 0
         if count >= max
-          :capped
+          [:capped, count]
         else
           data[key] = {"count" => count + 1, "updated_at" => now.iso8601}
-          :deny
+          [:deny, count + 1]
         end
       end
-      (result == LockedJsonFile::UNAVAILABLE) ? :unknown : result
+      (result == LockedJsonFile::UNAVAILABLE) ? [:unknown, nil] : result
     rescue SystemCallError
-      :unknown
+      [:unknown, nil]
     end
 
     # Drops the unbound-pane entries of one pane, for a new prompt or session. Costs one stat

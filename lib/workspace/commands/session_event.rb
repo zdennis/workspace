@@ -201,6 +201,8 @@ module Workspace
       # @param hang_guard_counter [Workspace::HangGuardCounter, nil] counts the hang guard's denies, which deny a
       #   request the policy left undecided (see {PermissionPolicyConfig#hang_guard_context}), and cleared of the pane's
       #   unbound count on UserPromptSubmit and SessionStart; nil skips the guard
+      # @param run_store [#record_event, nil] gets a `permission_guarded` line on a bound run for each hang guard deny or cap;
+      #   nil records none
       # @param command_pieces [Workspace::BashCommandPieces, nil] tells a compound Bash command for the hang guard's hint;
       #   nil gives every Bash call the hint for a call that can't be approved
       # @param session_ambiguous [#call] given the pane's tmux session name, whether more than one workspace
@@ -211,7 +213,7 @@ module Workspace
       # @param reply_timeout [Numeric] seconds to wait for the daemon's reply
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
         lock_idle_tracker: nil, lock_enforcer: nil, workflow_deny: nil, review_write_guard: nil, reflection_write_guard: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
-        workspace_for_session: ->(session) { session }, delivery_log: nil, permission_policy_config: nil, hang_guard_counter: nil, command_pieces: nil, session_ambiguous: ->(_session) { false },
+        workspace_for_session: ->(session) { session }, delivery_log: nil, permission_policy_config: nil, hang_guard_counter: nil, run_store: nil, command_pieces: nil, session_ambiguous: ->(_session) { false },
         connect_timeout: CONNECT_TIMEOUT, reply_timeout: REPLY_TIMEOUT)
         @workspace_for_session = workspace_for_session
         @delivery_log = delivery_log
@@ -219,6 +221,7 @@ module Workspace
         @permission_policy_config = permission_policy_config
         @hang_guard_counter = hang_guard_counter
         @command_pieces = command_pieces
+        @run_store = run_store
         @connect_timeout = connect_timeout
         @reply_timeout = reply_timeout
         @dev_session_release = dev_session_release
@@ -596,13 +599,28 @@ module Workspace
         return nil if binding.nil? && QUESTION_TOOLS.include?(tool)
 
         key = HangGuardCounter.key_for(binding: binding, pane_id: @env["TMUX_PANE"], session_id: text_field(payload, "session_id"))
-        case @hang_guard_counter.take(key, max: context[:max_denies])
+        result, count = @hang_guard_counter.take_counted(key, max: context[:max_denies])
+        decision = case result
         when :deny then reply({action: "deny", rule: "hang_guard"}, HANG_GUARD_HINTS.fetch([binding ? :bound : :unbound, compound_bash?(payload) ? :compound : :other]))
         when :capped then {action: "ask", rule: "hang_guard:cap"}
         end
+        record_guarded(binding, payload, decision, count) if decision && binding
+        decision
       rescue => e
         @logger.debug { "session-event: hang guard failed (#{e.class}: #{e.message})" }
         nil
+      end
+
+      # Appends the run's `permission_guarded` line, never through a run change: the hook must not take the run's lock.
+      # A failure to write it is logged and never changes the decision.
+      def record_guarded(binding, payload, decision, count)
+        return unless @run_store
+        data = {"step" => binding["step"], "attempt" => binding["attempt"], "round" => binding["round"], "group" => binding["group"],
+                "tool" => name_field(payload, "tool_name"), "input" => ToolInputSummary.call(payload["tool_name"], payload["tool_input"]),
+                "rule" => decision[:rule], "count" => count}
+        @run_store.record_event(binding["id"], "permission_guarded", data.compact)
+      rescue => e
+        @logger.debug { "session-event: could not record the hang guard's #{decision[:rule]} on #{binding["id"]} (#{e.class}: #{e.message})" }
       end
 
       # Whether a Bash call holds a shape a simpler form avoids: a substitution, a compound keyword such as a loop

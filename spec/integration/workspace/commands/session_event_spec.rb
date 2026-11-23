@@ -785,10 +785,17 @@ RSpec.describe Workspace::Commands::SessionEvent do
 
         def unbound = context.merge!(binding: nil)
 
-        def guard(payload = request, agent: nil)
+        let(:run_store) { Workspace::WorkflowRunStore.new(dir: File.join(tmpdir, "runs"), archive_dir: File.join(tmpdir, "archive")) }
+
+        def guard(payload = request, agent: nil, store: run_store)
           event = deliver(payload.merge("session_id" => "s1"), agent, output: output, error_output: error_output,
-            permission_policy_config: policy_config, hang_guard_counter: counter, command_pieces: Workspace::BashCommandPieces.new)
+            permission_policy_config: policy_config, hang_guard_counter: counter, command_pieces: Workspace::BashCommandPieces.new, run_store: store)
           [event, output.string]
+        end
+
+        def guarded_lines
+          path = File.join(tmpdir, "runs", "wr_1.events.jsonl")
+          File.exist?(path) ? File.readlines(path).map { |line| JSON.parse(line) } : []
         end
 
         def bash(command) = request.merge("tool_input" => {"command" => command})
@@ -1001,6 +1008,58 @@ RSpec.describe Workspace::Commands::SessionEvent do
           expect(received).to include("event" => "user_prompt", "pane_id" => "%2")
         ensure
           server&.close
+        end
+
+        describe "the run's history" do
+          before { FileUtils.mkdir_p(File.join(tmpdir, "runs")) }
+
+          it "gets a permission_guarded line for each deny and the cap in a bound pane" do
+            3.times { guard }
+
+            expect(guarded_lines.map { |line| line.except("ts") }).to eq([
+              {"type" => "permission_guarded", "step" => "implement", "attempt" => 1, "tool" => "Bash", "input" => "ls", "rule" => "hang_guard", "count" => 1},
+              {"type" => "permission_guarded", "step" => "implement", "attempt" => 1, "tool" => "Bash", "input" => "ls", "rule" => "hang_guard", "count" => 2},
+              {"type" => "permission_guarded", "step" => "implement", "attempt" => 1, "tool" => "Bash", "input" => "ls", "rule" => "hang_guard:cap", "count" => 2}
+            ])
+          end
+
+          it "names a reviewer's round" do
+            context[:binding] = binding.merge("role" => "reviewer", "round" => 3)
+
+            guard
+
+            expect(guarded_lines.first).to include("step" => "implement", "attempt" => 1, "round" => 3, "rule" => "hang_guard")
+          end
+
+          it "names a fan_out group pane's group, with no step or attempt" do
+            context[:binding] = {"kind" => "run", "id" => "wr_1", "group" => "explore", "bound_at" => "2026-11-23T00:00:00Z"}
+
+            guard
+
+            expect(guarded_lines.first.except("ts")).to eq("type" => "permission_guarded", "group" => "explore", "tool" => "Bash", "input" => "ls",
+              "rule" => "hang_guard", "count" => 1)
+            expect(stored.keys).to eq(["run:wr_1:group:explore:2026-11-23T00:00:00Z"])
+          end
+
+          it "gets nothing for an unbound pane, an explicit policy deny, or when the guard denies nothing" do
+            unbound
+            guard
+            context[:binding] = binding
+            allow(policy_config).to receive(:policy).and_return(deny_policy)
+            guard
+
+            expect(guarded_lines).to eq([])
+          end
+
+          it "still denies, and exits 0, when the line can't be written" do
+            broken = instance_double(Workspace::WorkflowRunStore)
+            allow(broken).to receive(:record_event).and_raise(RuntimeError, "disk gone")
+
+            event, = guard(store: broken)
+
+            expect(event).to include("decision" => "deny", "rule" => "hang_guard")
+            expect(message).to eq(hints.fetch([:bound, :other]))
+          end
         end
 
         it "is skipped with no counter" do

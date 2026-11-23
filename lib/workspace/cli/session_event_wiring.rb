@@ -57,7 +57,7 @@ module Workspace
           on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
 
         Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
-          workspace_for_session: workspace_for_session, delivery_log: delivery_log, permission_policy_config: permission_policy_config, hang_guard_counter: hang_guard_counter, command_pieces: command_pieces,
+          workspace_for_session: workspace_for_session, delivery_log: delivery_log, permission_policy_config: permission_policy_config, hang_guard_counter: hang_guard_counter, run_store: run_store, command_pieces: command_pieces,
           session_ambiguous: workspace_for_session.method(:ambiguous?),
           lock_idle_tracker: LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger),
           lock_enforcer: LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger),

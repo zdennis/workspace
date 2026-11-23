@@ -59,6 +59,7 @@ An `allow` reply has `"behavior":"allow"` and no message. The reply never carrie
 - In a pane bound to no live run, `AskUserQuestion` and `ExitPlanMode` are never denied. A pane bound to a run gets the other tools' hint for them.
 - A count that can't be taken in a quarter second (the file is locked) or any error denies nothing: the dialog shows.
 - A deny is forwarded as `decision: "deny"`, `rule: "hang_guard"`, and logged with `by: "hang_guard"`.
+- In a pane bound to a live run, each deny and the cap also append a `permission_guarded` line to the run's history (`step`, `attempt`, `round` for a reviewer, `group` for a fan_out group pane, `tool`, `input`, `rule` `hang_guard` or `hang_guard:cap`, and `count`), and the attempt records how many calls were denied as `hang_guard_denies` when it ends. A line that can't be written changes nothing.
 
 The decision is forwarded with the event, as `decision` and `rule`. The daemon logs an allowed or denied request as a `permission_requested` followed at once by a `permission_resolved` with `by: "policy"` (`by: "hang_guard"` for a hang guard deny; see [`events`](README.events.md#permission-waits)), and opens no wait for it: the pane does not show `waiting`. For a request left to the person, the daemon [puts it in the inbox](README.inbox.md#permission-requests). The daemon also keeps a marker for a request the policy decided, so a `permission_prompt` notification that arrived after the decision wouldn't open a wait; whether Claude Code sends one has not been confirmed, and the marker is only a defensive guard.
 
