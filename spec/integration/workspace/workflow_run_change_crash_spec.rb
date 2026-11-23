@@ -9,7 +9,6 @@ require "stringio"
 # (WorkflowSimulator#play), assembled here so one crash point can be armed in them, and the in-memory fakes (pane,
 # guard, attempt records, clock, inbox) shared with a fresh engine built on the same run directory afterwards.
 module RunChangeCrash
-  # Not a StandardError, so no bare `rescue` in the engine can swallow it, as a killed process is not swallowed.
   STALL = 600
 
   # Why a step line never typed is a failing crash point.
@@ -17,6 +16,7 @@ module RunChangeCrash
     "needs the attempt's outcome `not_delivered` (lib/workspace/workflow_transitions.rb:816-835), so the sweep's " \
     "idle_turn_over at the stall (lib/workspace/workflow_sweep.rb:565) ends the plan step `turn_ended_incomplete`"
 
+  # Not a StandardError, so no bare `rescue` in the engine can swallow it, as a killed process is not swallowed.
   class Crash < Exception # standard:disable Lint/InheritException
   end
 
@@ -563,7 +563,8 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
 
   # Every decided round of the golden script is decided in the change that starts the next line (plan.2 after round
   # 1's rejection), and the after-lock blocks run before the deliveries (lib/workspace/workflow_run_change.rb:168-170).
-  it "B4: the round 1 inbox notify raising keeps summary.md but loses the review item, and plan.2's line too (1 pass)" do
+  # The B4 crash and what it leaves, asserted before each pending Measure so each is pending for its own reason alone.
+  def crash_round_one_notify
     points.arm(:inbox) { |key| key == "review:#{run_id}:plan" }
     result = crash_and_recover
 
@@ -578,9 +579,19 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     expect(final["steps"].find { |each| each["id"] == "plan" }["attempts"].map { |each| each["n"] }).to eq([1, 2])
     expect(alerts_sent).to eq([%w[stalled plan]])
     expect(inbox.items).to eq({})
+    result
+  end
+
+  it "B4: the round 1 inbox notify raising keeps summary.md but loses the review item (1 pass)" do
+    crash_round_one_notify
     pending "WorkflowReviewSummary#notify posts the review_request item once, after the lock, and nothing posts it " \
-      "again (lib/workspace/workflow_review_summary.rb:92-114); the same crash skips plan.2's delivery, and #{RunChangeCrash::NEVER_TYPED}"
+      "again (lib/workspace/workflow_review_summary.rb:92-114)"
     expect(inbox.items.keys).to eq(["review:#{run_id}:plan"])
+  end
+
+  it "B4: the round 1 inbox notify raising leaves plan.2 untyped (1 pass)" do
+    result = crash_round_one_notify
+    pending "the crash skips plan.2's delivery, and #{RunChangeCrash::NEVER_TYPED}"
     expect_baseline(result[:store], golden.slice("run", "steps"))
   end
 
