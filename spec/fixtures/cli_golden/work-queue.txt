@@ -3,9 +3,9 @@
 --- stdout
 Usage: workspace work-queue add workflow ID [--ref REF] [--prompt TEXT] [--input K=V]... [OPTIONS]
        workspace work-queue add go ARG [--text] [--workflow ID] [--input K=V]... [OPTIONS]
-       workspace work-queue list [--name WORKSPACE | --project [NAME]] [--json]
+       workspace work-queue list [--name WORKSPACE | --project [NAME]] [--watch [--interval SECONDS]] [--json]
        workspace work-queue show ITEM [--name WORKSPACE] [--json]
-       workspace work-queue active [--name WORKSPACE] [--json]
+       workspace work-queue active [--name WORKSPACE] [--watch [--interval SECONDS]] [--json]
        workspace work-queue rm ITEM... [--name WORKSPACE] [--json]
        workspace work-queue move ITEM (--before ID | --after ID | --top | --bottom) [--if-revision N] [--name WORKSPACE] [--json]
        workspace work-queue cancel [ITEM] [--and-continue] [--name WORKSPACE] [--json]
@@ -63,6 +63,8 @@ Run `workspace work-queue VERB --help` for a verb's options.
         --state STATE                history list: only this outcome (succeeded, failed, cancelled, skipped, interrupted, launch_failed)
         --all                        history clear: remove every finished item
         --yes                        history clear: skip the question
+        --watch                      list and active: redraw every --interval seconds until Ctrl-C
+        --interval SECONDS           list and active with --watch: seconds between redraws (default 2)
         --json                       Print one JSON document
     -h, --help                       Show this help
 
@@ -80,7 +82,7 @@ Examples:
 ### workspace work-queue --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace work-queue add workflow ID [--ref REF] [--prompt TEXT] [--input K=V]... [OPTIONS]","workspace work-queue add go ARG [--text] [--workflow ID] [--input K=V]... [OPTIONS]","workspace work-queue list [--name WORKSPACE | --project [NAME]] [--json]","workspace work-queue show ITEM [--name WORKSPACE] [--json]","workspace work-queue active [--name WORKSPACE] [--json]","workspace work-queue rm ITEM... [--name WORKSPACE] [--json]","workspace work-queue move ITEM (--before ID | --after ID | --top | --bottom) [--if-revision N] [--name WORKSPACE] [--json]","workspace work-queue cancel [ITEM] [--and-continue] [--name WORKSPACE] [--json]","workspace work-queue enable [--name WORKSPACE] [--json]","workspace work-queue disable [--name WORKSPACE] [--json]","workspace work-queue resume [--name WORKSPACE] [--json]","workspace work-queue skip [ITEM] [--name WORKSPACE] [--json]","workspace work-queue advance [--name WORKSPACE] [--json]","workspace work-queue status [--name WORKSPACE | --project [NAME]] [--json]","workspace work-queue history list [--since DATE] [--before DATE] [--state STATE] [--name WORKSPACE | --project [NAME]] [--json]","workspace work-queue history show ITEM [--name WORKSPACE] [--json]","workspace work-queue history clear (--before DATE | --all) [--yes] [--name WORKSPACE] [--json]"],"description":"Each workspace has its own queue of items that run one at a time (`wq` is another name for\n`work-queue`). A queue is off until `work-queue enable`. Only `work-queue advance` moves it, one\npass by hand, so run it again after each item ends.","options":[],"examples":[{"command":"workspace work-queue add workflow rpiv --prompt \"Add SSO login\"","scenario":"queue an rpiv run for that task"},{"command":"workspace work-queue list","scenario":"the queue of the workspace you are in"},{"command":"workspace work-queue show 3fa9","scenario":"one item by the start of its id"},{"command":"workspace work-queue active","scenario":"which item the queue is on, and what it waits for"},{"command":"workspace work-queue rm 3fa9","scenario":"drop one queued item"},{"command":"workspace work-queue move 3fa9 --top","scenario":"run this one next"},{"command":"workspace work-queue cancel","scenario":"stop the running item and hold the queue"},{"command":"workspace work-queue enable","scenario":"turn the queue on; the agent daemon starts the first item"}],"sections":[{"heading":"Subcommands","text":"add            Add an item to the end of a workspace's queue\n  list           Show the queue as a table\n  show           Show one queued item in full\n  active         Show the item that is running and what it waits on\n  rm             Remove queued items\n  move           Move a queued item\n  cancel         Cancel the running item and pause the queue\n  enable         Turn the workspace's queue on\n  disable        Turn the workspace's queue off\n  resume         Clear the queue's pause\n  skip           Skip the held item and clear the pause\n  advance        Run one pass of the queue by hand\n  status         Show one line per queue: on or off, pause, active item\n  history list   List finished items, oldest first\n  history show   Show one finished item with its spec\n  history clear  Delete finished items\nRun `workspace work-queue VERB --help` for a verb's options.\n\n        --name NAME                  Workspace whose queue to use (default: detected from the current directory)\n        --project [NAME]             list, status and history list: every workspace of a project (read only)\n        --top                        add: put the item first among the queued ones; move: move it there\n        --bottom                     move: move the item to the end\n        --after-current              add: put the item right after the one that is running\n        --before VALUE               add and move: place the item before this item id; history list and clear: finished before this date\n        --after ID                   add and move: place the item after this item id\n        --if-revision N              move: refuse with stale_revision unless the queue's revision is N\n        --headless                   add: run the item without a pane\n        --on-fail MODE               add: stop (pause the queue when it fails, the default) or continue\n        --dedupe-key KEY             add: adding the same key again changes nothing\n        --ref REF                    add workflow: the ticket, pull request or branch to start from\n        --prompt TEXT                add workflow: the task text\n        --input K=V                  add: a workflow input (repeatable)\n        --text                       add go: ARG is free text, not a ticket, pull request or branch\n        --workflow ID                add go: the workflow to run instead of the one config picks\n        --and-continue               cancel: go on to the next item instead of pausing the queue\n        --since DATE                 history list: finished at or after this date (2026-01-31 or 2026-01-31T09:00:00Z)\n        --state STATE                history list: only this outcome (succeeded, failed, cancelled, skipped, interrupted, launch_failed)\n        --all                        history clear: remove every finished item\n        --yes                        history clear: skip the question\n        --json                       Print one JSON document\n    -h, --help                       Show this help"}]}
+{"usage":["workspace work-queue add workflow ID [--ref REF] [--prompt TEXT] [--input K=V]... [OPTIONS]","workspace work-queue add go ARG [--text] [--workflow ID] [--input K=V]... [OPTIONS]","workspace work-queue list [--name WORKSPACE | --project [NAME]] [--watch [--interval SECONDS]] [--json]","workspace work-queue show ITEM [--name WORKSPACE] [--json]","workspace work-queue active [--name WORKSPACE] [--watch [--interval SECONDS]] [--json]","workspace work-queue rm ITEM... [--name WORKSPACE] [--json]","workspace work-queue move ITEM (--before ID | --after ID | --top | --bottom) [--if-revision N] [--name WORKSPACE] [--json]","workspace work-queue cancel [ITEM] [--and-continue] [--name WORKSPACE] [--json]","workspace work-queue enable [--name WORKSPACE] [--json]","workspace work-queue disable [--name WORKSPACE] [--json]","workspace work-queue resume [--name WORKSPACE] [--json]","workspace work-queue skip [ITEM] [--name WORKSPACE] [--json]","workspace work-queue advance [--name WORKSPACE] [--json]","workspace work-queue status [--name WORKSPACE | --project [NAME]] [--json]","workspace work-queue history list [--since DATE] [--before DATE] [--state STATE] [--name WORKSPACE | --project [NAME]] [--json]","workspace work-queue history show ITEM [--name WORKSPACE] [--json]","workspace work-queue history clear (--before DATE | --all) [--yes] [--name WORKSPACE] [--json]"],"description":"Each workspace has its own queue of items that run one at a time (`wq` is another name for\n`work-queue`). A queue is off until `work-queue enable`. Only `work-queue advance` moves it, one\npass by hand, so run it again after each item ends.","options":[],"examples":[{"command":"workspace work-queue add workflow rpiv --prompt \"Add SSO login\"","scenario":"queue an rpiv run for that task"},{"command":"workspace work-queue list","scenario":"the queue of the workspace you are in"},{"command":"workspace work-queue show 3fa9","scenario":"one item by the start of its id"},{"command":"workspace work-queue active","scenario":"which item the queue is on, and what it waits for"},{"command":"workspace work-queue rm 3fa9","scenario":"drop one queued item"},{"command":"workspace work-queue move 3fa9 --top","scenario":"run this one next"},{"command":"workspace work-queue cancel","scenario":"stop the running item and hold the queue"},{"command":"workspace work-queue enable","scenario":"turn the queue on; the agent daemon starts the first item"}],"sections":[{"heading":"Subcommands","text":"add            Add an item to the end of a workspace's queue\n  list           Show the queue as a table\n  show           Show one queued item in full\n  active         Show the item that is running and what it waits on\n  rm             Remove queued items\n  move           Move a queued item\n  cancel         Cancel the running item and pause the queue\n  enable         Turn the workspace's queue on\n  disable        Turn the workspace's queue off\n  resume         Clear the queue's pause\n  skip           Skip the held item and clear the pause\n  advance        Run one pass of the queue by hand\n  status         Show one line per queue: on or off, pause, active item\n  history list   List finished items, oldest first\n  history show   Show one finished item with its spec\n  history clear  Delete finished items\nRun `workspace work-queue VERB --help` for a verb's options.\n\n        --name NAME                  Workspace whose queue to use (default: detected from the current directory)\n        --project [NAME]             list, status and history list: every workspace of a project (read only)\n        --top                        add: put the item first among the queued ones; move: move it there\n        --bottom                     move: move the item to the end\n        --after-current              add: put the item right after the one that is running\n        --before VALUE               add and move: place the item before this item id; history list and clear: finished before this date\n        --after ID                   add and move: place the item after this item id\n        --if-revision N              move: refuse with stale_revision unless the queue's revision is N\n        --headless                   add: run the item without a pane\n        --on-fail MODE               add: stop (pause the queue when it fails, the default) or continue\n        --dedupe-key KEY             add: adding the same key again changes nothing\n        --ref REF                    add workflow: the ticket, pull request or branch to start from\n        --prompt TEXT                add workflow: the task text\n        --input K=V                  add: a workflow input (repeatable)\n        --text                       add go: ARG is free text, not a ticket, pull request or branch\n        --workflow ID                add go: the workflow to run instead of the one config picks\n        --and-continue               cancel: go on to the next item instead of pausing the queue\n        --since DATE                 history list: finished at or after this date (2026-01-31 or 2026-01-31T09:00:00Z)\n        --state STATE                history list: only this outcome (succeeded, failed, cancelled, skipped, interrupted, launch_failed)\n        --all                        history clear: remove every finished item\n        --yes                        history clear: skip the question\n        --watch                      list and active: redraw every --interval seconds until Ctrl-C\n        --interval SECONDS           list and active with --watch: seconds between redraws (default 2)\n        --json                       Print one JSON document\n    -h, --help                       Show this help"}]}
 --- stderr
 --- end
 ### workspace work-queue add --help
@@ -131,31 +133,35 @@ Examples:
 ### workspace work-queue list --help
 --- exit 0
 --- stdout
-Usage: workspace work-queue list [--name WORKSPACE | --project [NAME]] [--json]
+Usage: workspace work-queue list [--name WORKSPACE | --project [NAME]] [--watch [--interval SECONDS]] [--json]
 
 Show the queue as a table.
 
 One row per item: position, id, state, kind, what it runs, headless and age. A footer says whether the
 queue is on, off or paused (and why) and whether the workspace's agent daemon is up; an off queue says
 how to turn it on, and an enabled one whose daemon is down gets a warning (`daemon_not_running`). --project
-reads every workspace of a project and writes nothing.
+reads every workspace of a project and writes nothing. --watch redraws the table until Ctrl-C (exit 0); a
+warning shows below the table, not on the error stream; it cannot be combined with --json.
 
 Options:
     --name NAME                  Workspace (default: detected from the current directory)
     --project [NAME]             Every workspace of a project (NAME, or the project of the current workspace), read only
+    --watch                      Redraw every --interval seconds until Ctrl-C (not with --json)
+    --interval SECONDS           With --watch: seconds between redraws, above 0 (default 2)
     --json                       Print one JSON document
     -h, --help                   Show this help
 
 Examples:
   workspace work-queue list    # the queue of the workspace you are in
   workspace work-queue list --project    # every queue of the project, to see which one is stuck
+  workspace work-queue list --watch --interval 5    # keep the table up to date every 5 seconds until Ctrl-C
   workspace work-queue list --name api.worktree-x --json    # one JSON document, with the revision that --if-revision takes
 --- stderr
 --- end
 ### workspace work-queue list --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace work-queue list [--name WORKSPACE | --project [NAME]] [--json]"],"description":"Show the queue as a table.\n\nOne row per item: position, id, state, kind, what it runs, headless and age. A footer says whether the\nqueue is on, off or paused (and why) and whether the workspace's agent daemon is up; an off queue says\nhow to turn it on, and an enabled one whose daemon is down gets a warning (`daemon_not_running`). --project\nreads every workspace of a project and writes nothing.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--project [NAME]","description":"Every workspace of a project (NAME, or the project of the current workspace), read only"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace work-queue list","scenario":"the queue of the workspace you are in"},{"command":"workspace work-queue list --project","scenario":"every queue of the project, to see which one is stuck"},{"command":"workspace work-queue list --name api.worktree-x --json","scenario":"one JSON document, with the revision that --if-revision takes"}]}
+{"usage":["workspace work-queue list [--name WORKSPACE | --project [NAME]] [--watch [--interval SECONDS]] [--json]"],"description":"Show the queue as a table.\n\nOne row per item: position, id, state, kind, what it runs, headless and age. A footer says whether the\nqueue is on, off or paused (and why) and whether the workspace's agent daemon is up; an off queue says\nhow to turn it on, and an enabled one whose daemon is down gets a warning (`daemon_not_running`). --project\nreads every workspace of a project and writes nothing. --watch redraws the table until Ctrl-C (exit 0); a\nwarning shows below the table, not on the error stream; it cannot be combined with --json.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--project [NAME]","description":"Every workspace of a project (NAME, or the project of the current workspace), read only"},{"flags":"--watch","description":"Redraw every --interval seconds until Ctrl-C (not with --json)"},{"flags":"--interval SECONDS","description":"With --watch: seconds between redraws, above 0 (default 2)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace work-queue list","scenario":"the queue of the workspace you are in"},{"command":"workspace work-queue list --project","scenario":"every queue of the project, to see which one is stuck"},{"command":"workspace work-queue list --watch --interval 5","scenario":"keep the table up to date every 5 seconds until Ctrl-C"},{"command":"workspace work-queue list --name api.worktree-x --json","scenario":"one JSON document, with the revision that --if-revision takes"}]}
 --- stderr
 --- end
 ### workspace work-queue show --help
@@ -188,27 +194,31 @@ Examples:
 ### workspace work-queue active --help
 --- exit 0
 --- stdout
-Usage: workspace work-queue active [--name WORKSPACE] [--json]
+Usage: workspace work-queue active [--name WORKSPACE] [--watch [--interval SECONDS]] [--json]
 
 Show the item that is running and what it waits on.
 
 Says `Nothing is active` when no item is starting, active or held. A held item waits on a person; its next actions say how to approve or skip.
+--watch redraws it until Ctrl-C (exit 0); it cannot be combined with --json.
 
 Options:
     --name NAME                  Workspace (default: detected from the current directory)
+    --watch                      Redraw every --interval seconds until Ctrl-C (not with --json)
+    --interval SECONDS           With --watch: seconds between redraws, above 0 (default 2)
     --json                       Print one JSON document
     -h, --help                   Show this help
 
 Examples:
   workspace work-queue active    # which item the queue is on, and what it waits for
   workspace work-queue active --name api.worktree-x    # the same for another workspace
+  workspace work-queue active --watch    # follow the running item until Ctrl-C
   workspace work-queue active --json    # one JSON document, for a script
 --- stderr
 --- end
 ### workspace work-queue active --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace work-queue active [--name WORKSPACE] [--json]"],"description":"Show the item that is running and what it waits on.\n\nSays `Nothing is active` when no item is starting, active or held. A held item waits on a person; its next actions say how to approve or skip.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace work-queue active","scenario":"which item the queue is on, and what it waits for"},{"command":"workspace work-queue active --name api.worktree-x","scenario":"the same for another workspace"},{"command":"workspace work-queue active --json","scenario":"one JSON document, for a script"}]}
+{"usage":["workspace work-queue active [--name WORKSPACE] [--watch [--interval SECONDS]] [--json]"],"description":"Show the item that is running and what it waits on.\n\nSays `Nothing is active` when no item is starting, active or held. A held item waits on a person; its next actions say how to approve or skip.\n--watch redraws it until Ctrl-C (exit 0); it cannot be combined with --json.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--watch","description":"Redraw every --interval seconds until Ctrl-C (not with --json)"},{"flags":"--interval SECONDS","description":"With --watch: seconds between redraws, above 0 (default 2)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace work-queue active","scenario":"which item the queue is on, and what it waits for"},{"command":"workspace work-queue active --name api.worktree-x","scenario":"the same for another workspace"},{"command":"workspace work-queue active --watch","scenario":"follow the running item until Ctrl-C"},{"command":"workspace work-queue active --json","scenario":"one JSON document, for a script"}]}
 --- stderr
 --- end
 ### workspace work-queue rm --help
@@ -570,9 +580,9 @@ invalid option: --bogus
 --- stdout
 Usage: workspace work-queue add workflow ID [--ref REF] [--prompt TEXT] [--input K=V]... [OPTIONS]
        workspace work-queue add go ARG [--text] [--workflow ID] [--input K=V]... [OPTIONS]
-       workspace work-queue list [--name WORKSPACE | --project [NAME]] [--json]
+       workspace work-queue list [--name WORKSPACE | --project [NAME]] [--watch [--interval SECONDS]] [--json]
        workspace work-queue show ITEM [--name WORKSPACE] [--json]
-       workspace work-queue active [--name WORKSPACE] [--json]
+       workspace work-queue active [--name WORKSPACE] [--watch [--interval SECONDS]] [--json]
        workspace work-queue rm ITEM... [--name WORKSPACE] [--json]
        workspace work-queue move ITEM (--before ID | --after ID | --top | --bottom) [--if-revision N] [--name WORKSPACE] [--json]
        workspace work-queue cancel [ITEM] [--and-continue] [--name WORKSPACE] [--json]
@@ -630,6 +640,8 @@ Run `workspace work-queue VERB --help` for a verb's options.
         --state STATE                history list: only this outcome (succeeded, failed, cancelled, skipped, interrupted, launch_failed)
         --all                        history clear: remove every finished item
         --yes                        history clear: skip the question
+        --watch                      list and active: redraw every --interval seconds until Ctrl-C
+        --interval SECONDS           list and active with --watch: seconds between redraws (default 2)
         --json                       Print one JSON document
     -h, --help                       Show this help
 

@@ -13,9 +13,9 @@ module Workspace
       # The flags each verb takes, besides the positional words. `history` has its own table.
       SUBCOMMANDS = {
         "add" => %i[name json top after_current before after headless on_fail dedupe_key ref prompt input text workflow],
-        "list" => %i[name project json],
+        "list" => %i[name project json watch interval],
         "show" => %i[name json],
-        "active" => %i[name json],
+        "active" => %i[name json watch interval],
         "rm" => %i[name json],
         "move" => %i[name json before after top bottom if_revision],
         "cancel" => %i[name json and_continue],
@@ -46,6 +46,9 @@ module Workspace
 
       # The outcomes `history list --state` can name.
       STATES = %w[succeeded failed cancelled skipped interrupted launch_failed].freeze
+
+      # Seconds between redraws of `--watch` when `--interval` is not given.
+      DEFAULT_INTERVAL = 2.0
 
       # The key a read verb's payload goes under in its document.
       PRIMARY_KEYS = {"list" => "queues", "status" => "queues", "show" => "item", "active" => "item",
@@ -86,6 +89,7 @@ module Workspace
         raise UsageError, "Give only one of --name and --project." if options[:name] && options[:project]
         raise Error, "work-queue is not available: no work-queue command was wired" unless @command
 
+        check_watch(options)
         dispatch(label, args, options, invocation)
       end
 
@@ -96,6 +100,18 @@ module Workspace
         raise UsageError, "Missing history subcommand: one of #{HISTORY_SUBCOMMANDS.keys.join(", ")}. Run 'workspace work-queue history --help'." unless sub
         raise UsageError, "Unknown history subcommand: #{sub}. One of #{HISTORY_SUBCOMMANDS.keys.join(", ")}." unless HISTORY_SUBCOMMANDS.key?(sub)
         sub
+      end
+
+      def check_watch(options)
+        raise UsageError, "--interval needs --watch. Add --watch, or drop --interval." if options[:given].include?(:interval) && !options[:watch]
+        raise UsageError, "--watch redraws a screen and cannot be combined with --json. Drop one of them." if options[:watch] && options[:json]
+        interval = options[:interval]
+        raise UsageError, "--interval needs a number of seconds above 0, not #{interval}." if interval && !(interval.positive? && interval.finite?)
+      end
+
+      def watching(invocation, options)
+        result = yield(options[:interval] || DEFAULT_INTERVAL)
+        invocation.exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
       end
 
       def take(options, key, value)
@@ -136,6 +152,8 @@ module Workspace
           opts.on("--state STATE", "history list: only this outcome (#{STATES.join(", ")})") { |v| take(options, :state, v) }
           opts.on("--all", "history clear: remove every finished item") { take(options, :all, true) }
           opts.on("--yes", "history clear: skip the question") { take(options, :yes, true) }
+          opts.on("--watch", "list and active: redraw every --interval seconds until Ctrl-C") { take(options, :watch, true) }
+          opts.on("--interval SECONDS", Float, "list and active with --watch: seconds between redraws (default #{DEFAULT_INTERVAL.to_i})") { |v| take(options, :interval, v) }
           opts.on("--json", "Print one JSON document") { take(options, :json, true) }
           opts.on("-h", "--help", "Show this help") { options[:help] = true }
           opts.separator ""
@@ -149,13 +167,22 @@ module Workspace
         json = options[:json]
         case label
         when "add" then add(args, options, invocation)
-        when "list" then read(invocation, label, json) { @command.list(name: name, project: options[:project]) }
+        when "list"
+          if options[:watch]
+            watching(invocation, options) { |interval| @command.watch_list(name: name, project: options[:project], interval: interval) }
+          else
+            read(invocation, label, json) { @command.list(name: name, project: options[:project]) }
+          end
         when "show"
           id = one_id(args, label)
           read(invocation, label, json) { @command.show(id: id, name: name) }
         when "active"
           no_args(args, label)
-          read(invocation, label, json) { @command.active(name: name) }
+          if options[:watch]
+            watching(invocation, options) { |interval| @command.watch_active(name: name, interval: interval) }
+          else
+            read(invocation, label, json) { @command.active(name: name) }
+          end
         when "status"
           no_args(args, label)
           read(invocation, label, json) { @command.status(name: name, project: options[:project]) }

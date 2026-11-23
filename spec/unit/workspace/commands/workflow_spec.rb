@@ -386,6 +386,57 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(verify).to include("state" => "current", "passes" => 0, "attempts" => 3)
       end
 
+      describe "with watch:" do
+        let(:sleeps) { [] }
+        let(:completed_run) { Workspace::WorkflowRun.from_h(looped.merge("state" => "completed")) }
+        let(:watching) do
+          described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workflow_config: workflow_config, store: store, panes: panes, files: nil, run_files: nil,
+            process_tree: process_tree, lock_holder: lock_holder, pid: 4242, watch_loop: Workspace::WatchLoop.new(output: output, sleeper: ->(seconds) { sleeps << seconds }), output: output)
+        end
+
+        it "draws a frame per change, stops after the finished one and sleeps once between" do
+          allow(store).to receive(:run).with("wr_simulated").and_return(looped_run, completed_run)
+
+          expect(watching.graph(id: "rpiv", run: "wr_simulated", watch: true, interval: 5)).to eq(exit_code: 0)
+
+          expect(output.string).to include(Workspace::WorkflowGraphAscii.render(marked))
+          expect(output.string).to include("[passed")
+          expect(sleeps).to eq([5])
+          expect(store).to have_received(:run).twice
+        end
+
+        it "draws an already finished run once, without sleeping" do
+          allow(store).to receive(:run).with("wr_simulated").and_return(completed_run)
+
+          expect(watching.graph(id: "rpiv", run: "wr_simulated", watch: true)).to eq(exit_code: 0)
+
+          expect(sleeps).to be_empty
+          expect(store).to have_received(:run).once
+        end
+
+        it "returns exit 0 on Ctrl-C from the sleeper" do
+          allow(store).to receive(:run).with("wr_simulated").and_return(looped_run)
+          interrupting = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workflow_config: workflow_config, store: store, panes: panes, files: nil, run_files: nil,
+            process_tree: process_tree, lock_holder: lock_holder, pid: 4242, watch_loop: Workspace::WatchLoop.new(output: output, sleeper: ->(_) { raise Interrupt }), output: output)
+
+          expect(interrupting.graph(id: "rpiv", run: "wr_simulated", watch: true)).to eq(exit_code: 0)
+        end
+
+        it "raises unknown_run when the run is gone on a later read" do
+          gone = Workspace::Error.new("No workflow run \"wr_simulated\".", code: "unknown_run")
+          calls = 0
+          allow(store).to receive(:run).with("wr_simulated") { ((calls += 1) == 1) ? looped_run : raise(gone) }
+
+          expect { watching.graph(id: "rpiv", run: "wr_simulated", watch: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+        end
+
+        it "refuses watch without a run, with json, or with a format other than ascii" do
+          expect { watching.graph(id: "rpiv", watch: true) }.to raise_error(Workspace::UsageError, /--watch needs --run/)
+          expect { watching.graph(id: "rpiv", run: "wr_simulated", watch: true, json: true) }.to raise_error(Workspace::UsageError, /cannot be combined with --json/)
+          expect { watching.graph(id: "rpiv", run: "wr_simulated", watch: true, format: "dot") }.to raise_error(Workspace::UsageError, /draws ascii/)
+        end
+      end
+
       it "raises the store's unknown_run for an unknown run" do
         allow(store).to receive(:run).with("wr_nope").and_raise(Workspace::Error.new("No workflow run \"wr_nope\".", code: "unknown_run"))
 

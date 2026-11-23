@@ -7,9 +7,9 @@ Keep a queue of work for a workspace: items that run one at a time, each a workf
 ```sh
 workspace work-queue add workflow ID [--ref REF] [--prompt TEXT] [--input K=V]... [OPTIONS]
 workspace work-queue add go ARG [--text] [--workflow ID] [--input K=V]... [OPTIONS]
-workspace work-queue list [--name WORKSPACE | --project [NAME]] [--json]
+workspace work-queue list [--name WORKSPACE | --project [NAME]] [--watch [--interval SECONDS]] [--json]
 workspace work-queue show ITEM [--name WORKSPACE] [--json]
-workspace work-queue active [--name WORKSPACE] [--json]
+workspace work-queue active [--name WORKSPACE] [--watch [--interval SECONDS]] [--json]
 workspace work-queue rm ITEM... [--name WORKSPACE] [--json]
 workspace work-queue move ITEM (--before ID | --after ID | --top | --bottom) [--if-revision N] [--name WORKSPACE] [--json]
 workspace work-queue cancel [ITEM] [--and-continue] [--name WORKSPACE] [--json]
@@ -48,6 +48,8 @@ A verb takes only the flags its own usage line and the table name; a flag it doe
 | `--input K=V` | `add`: a workflow input (repeatable) |
 | `--text` | `add go`: ARG is free text, not a ticket, pull request or branch |
 | `--workflow ID` | `add go`: the workflow to run instead of the one config picks |
+| `--watch` | `list` and `active`: redraw every `--interval` seconds until Ctrl-C (not with `--json`) |
+| `--interval SECONDS` | `list` and `active`, with `--watch`: seconds between redraws, above 0 (default 2) |
 | `--and-continue` | `cancel`: go on to the next item instead of pausing the queue |
 | `--since DATE` | `history list`: finished at or after this date (`2026-01-31` or `2026-01-31T09:00:00Z`) |
 | `--state STATE` | `history list`: only this outcome (`succeeded`, `failed`, `cancelled`, `skipped`, `interrupted`, `launch_failed`) |
@@ -118,6 +120,10 @@ A `go` item runs `workspace go --here` in the workspace's checkout. `add go` ref
 `history list` shows finished items oldest first; `history show` prints one with its spec, and its next action is the `work-queue add` that queues it again. `history clear` takes exactly one of `--before DATE` and `--all`, asks first unless `--yes`, and under `--json`, `--no-input` or without a terminal fails with `confirmation_required` instead of asking.
 
 ### Watching a queue
+
+`list --watch` and `active --watch` keep the table on screen, so you need not rerun the verb. They redraw every `--interval` seconds (default 2) until you press Ctrl-C, which ends with exit 0. On a terminal each frame replaces the last in place. When the output is not a terminal, a frame is appended only when it changed, with no escape codes. A warning, such as `daemon_not_running`, shows inside the frame and not on the error stream, so it does not repeat on every redraw. `--watch` is refused with `--json`, because a redrawn screen is not a document. `--interval` must be above 0 and needs `--watch`.
+
+Other ways to follow a queue:
 
 - `workspace work-queue list` (`wq list`): the items and whether the queue is on, off or paused.
 - `workspace workflow status`: the run the active item waits on.

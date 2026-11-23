@@ -361,6 +361,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/name_migration.rb` — Renames a mixed-case workspace to lowercase before its daemon starts, under the startup lock.
 - `lib/workspace/core/workspace_name.rb` — The workspace name rules: splitting, joining, normalizing and settling typed names.
 - `lib/workspace/which.rb` — Shared default PATH lookup for injectable `which:` collaborators.
+- `lib/workspace/watch_loop.rb` — Redraws a frame on an interval until told to stop, for `--watch`.
 - `lib/workspace/doctor.rb` — Dependency and health checking, with `--fix` repairs.
 - `lib/workspace/project_config.rb` — Tmuxinator config generation and rendering.
 - `lib/workspace/project_catalog.rb` — Groups workspaces into projects (main checkout plus worktrees); backs `projects`.

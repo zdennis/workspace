@@ -10,6 +10,7 @@ RSpec.describe Workspace::CLI::WorkQueue do
     instance_double(Workspace::Commands::WorkQueue,
       add: [row], rm: [row], move: [row], enable: [row], disable: [row], resume: [row], skip: [row], cancel: [row], advance: [row],
       history_clear: [row], action_extra: {"queue" => "app", "revision" => 4},
+      watch_list: {exit_code: 0}, watch_active: {exit_code: 0},
       list: {"queues" => [{"workspace" => "app"}], "warnings" => []}, status: {"queues" => [], "warnings" => []},
       show: {"workspace" => "app", "item" => {"id" => "3fa9"}, "next_actions" => [], "warnings" => []},
       active: {"workspace" => "app", "item" => nil, "next_actions" => [], "warnings" => []},
@@ -202,6 +203,45 @@ RSpec.describe Workspace::CLI::WorkQueue do
       run("list")
 
       expect(out.string).to eq("")
+    end
+  end
+
+  describe "--watch" do
+    it "hands list and active to the watch methods with the default interval" do
+      expect(run("list", "--watch", "--project")).to be_nil
+      run("active", "--watch", "--name", "other")
+
+      expect(command).to have_received(:watch_list).with(name: nil, project: true, interval: 2.0)
+      expect(command).to have_received(:watch_active).with(name: "other", interval: 2.0)
+      expect(command).not_to have_received(:list)
+      expect(command).not_to have_received(:active)
+    end
+
+    it "passes --interval through as a Float" do
+      run("list", "--watch", "--interval", "0.5")
+      run("active", "--interval", "3", "--watch")
+
+      expect(command).to have_received(:watch_list).with(name: nil, project: nil, interval: 0.5)
+      expect(command).to have_received(:watch_active).with(name: nil, interval: 3.0)
+    end
+
+    it "exits with a non-zero exit code of the watch" do
+      allow(command).to receive(:watch_list).and_return(exit_code: 4)
+
+      expect(run("list", "--watch")).to eq(4)
+    end
+
+    it "refuses --watch with --json, --interval without --watch and an interval of 0 or less" do
+      expect(usage_error("list", "--watch", "--json")).to include("cannot be combined with --json")
+      expect(usage_error("active", "--interval", "1")).to include("--interval needs --watch")
+      expect(usage_error("list", "--watch", "--interval", "0")).to include("above 0")
+      expect(usage_error("list", "--watch", "--interval", "-1")).to include("above 0")
+      expect(usage_error("list", "--watch", "--interval", "1e400")).to include("above 0")
+    end
+
+    it "refuses --watch and --interval on other verbs" do
+      expect(usage_error("status", "--watch")).to include("--watch does not apply to 'work-queue status'")
+      expect(usage_error("show", "3fa9", "--interval", "2")).to include("--interval does not apply to 'work-queue show'")
     end
   end
 

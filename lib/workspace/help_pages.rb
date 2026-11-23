@@ -393,7 +393,7 @@ module Workspace
         ]
       },
       "graph" => {
-        usage: ["workflow graph [ID] [--run RUN] [--format mermaid|dot|ascii|json] [--json]"],
+        usage: ["workflow graph [ID] [--run RUN [--watch [--interval SECONDS]]] [--format mermaid|dot|ascii|json] [--json]"],
         summary: "Draw a workflow's steps, gates, reviews and loops",
         about: [
           "With ID left out and --run RUN, that run's workflow is the ID. With ID left out and no --run, the",
@@ -409,19 +409,26 @@ module Workspace
           "passes and attempts, and each fail edge with the loops the run took. The run must be of workflow ID:",
           "another workflow's run is refused with usage, and an unknown RUN with unknown_run.",
           "",
+          "--watch (with --run) redraws the marked graph every --interval seconds (default 2) and ends after the frame",
+          "that shows the run completed, failed or cancelled, or on Ctrl-C, both with exit 0. It needs --run, draws",
+          "ascii only, and is refused with --json or another --format, because a redrawn screen is not a document.",
+          "A run pruned while watching ends the watch with unknown_run.",
+          "",
           "--format picks the drawing: ascii (the default, readable with no tools), mermaid (a stateDiagram-v2 to",
           "paste into a Markdown file), dot (Graphviz) or json (the model the others draw). --json is the same as",
           "--format json: one document with the model under \"graph\" as {nodes, edges, legend}. --json with another",
           "--format is refused. An unknown ID is refused with unknown_workflow."
         ],
-        options: [["--run RUN", "Mark where that run of ID stands, on the definition it stored"], ["--format FMT", "mermaid, dot, ascii (default) or json"],
+        options: [["--run RUN", "Mark where that run of ID stands, on the definition it stored"], ["--watch", "With --run: redraw where the run stands until it finishes or Ctrl-C"], ["--interval SECONDS", "With --watch: seconds between redraws (default 2; above 0)"],
+          ["--format FMT", "mermaid, dot, ascii (default) or json"],
           name_opt("The workspace whose project's definitions are read first (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow graph rpiv", "see the steps, the gate and the verify loop as text"],
           ["workspace workflow graph rpiv --format mermaid", "a diagram to paste into a README"],
           ["workspace workflow graph rpiv --format dot", "Graphviz input: pipe it to `dot -Tsvg`"],
           ["workspace workflow graph rpiv --json", "the nodes and edges as one document, for a script"],
-          ["workspace workflow graph rpiv --run wr_261117123627abcd", "where that run is, and how often verify sent it back"]
+          ["workspace workflow graph rpiv --run wr_261117123627abcd", "where that run is, and how often verify sent it back"],
+          ["workspace workflow graph rpiv --run wr_261117123627abcd --watch", "keep that run's graph on screen until it finishes"]
         ]
       },
       "validate" => {
@@ -2076,6 +2083,8 @@ module Workspace
     WQ_ID = "ITEM is an item id or a unique start of one (see `workspace work-queue list`)."
     WQ_POSITION = "Give at most one of --top, --after-current, --before and --after."
     WQ_PROJECT_OPT = ["--project [NAME]", "Every workspace of a project (NAME, or the project of the current workspace), read only"]
+    WQ_WATCH_OPT = ["--watch", "Redraw every --interval seconds until Ctrl-C (not with --json)"]
+    WQ_INTERVAL_OPT = ["--interval SECONDS", "With --watch: seconds between redraws, above 0 (default 2)"]
     WQ_DATE = "DATE is 2026-01-31 or 2026-01-31T09:00:00Z."
 
     WORK_QUEUE = {
@@ -2115,18 +2124,20 @@ module Workspace
         ]
       },
       "list" => {
-        usage: ["work-queue list [--name WORKSPACE | --project [NAME]] [--json]"],
+        usage: ["work-queue list [--name WORKSPACE | --project [NAME]] [--watch [--interval SECONDS]] [--json]"],
         summary: "Show the queue as a table",
         about: [
           "One row per item: position, id, state, kind, what it runs, headless and age. A footer says whether the",
           "queue is on, off or paused (and why) and whether the workspace's agent daemon is up; an off queue says",
           "how to turn it on, and an enabled one whose daemon is down gets a warning (`daemon_not_running`). --project",
-          "reads every workspace of a project and writes nothing."
+          "reads every workspace of a project and writes nothing. --watch redraws the table until Ctrl-C (exit 0); a",
+          "warning shows below the table, not on the error stream; it cannot be combined with --json."
         ],
-        options: [NAME_OPT, WQ_PROJECT_OPT, JSON_OPT],
+        options: [NAME_OPT, WQ_PROJECT_OPT, WQ_WATCH_OPT, WQ_INTERVAL_OPT, JSON_OPT],
         examples: [
           ["workspace work-queue list", "the queue of the workspace you are in"],
           ["workspace work-queue list --project", "every queue of the project, to see which one is stuck"],
+          ["workspace work-queue list --watch --interval 5", "keep the table up to date every 5 seconds until Ctrl-C"],
           ["workspace work-queue list --name api.worktree-x --json", "one JSON document, with the revision that --if-revision takes"]
         ]
       },
@@ -2142,13 +2153,14 @@ module Workspace
         ]
       },
       "active" => {
-        usage: ["work-queue active [--name WORKSPACE] [--json]"],
+        usage: ["work-queue active [--name WORKSPACE] [--watch [--interval SECONDS]] [--json]"],
         summary: "Show the item that is running and what it waits on",
-        about: ["Says `Nothing is active` when no item is starting, active or held. A held item waits on a person; its next actions say how to approve or skip."],
-        options: [NAME_OPT, JSON_OPT],
+        about: ["Says `Nothing is active` when no item is starting, active or held. A held item waits on a person; its next actions say how to approve or skip.", "--watch redraws it until Ctrl-C (exit 0); it cannot be combined with --json."],
+        options: [NAME_OPT, WQ_WATCH_OPT, WQ_INTERVAL_OPT, JSON_OPT],
         examples: [
           ["workspace work-queue active", "which item the queue is on, and what it waits for"],
           ["workspace work-queue active --name api.worktree-x", "the same for another workspace"],
+          ["workspace work-queue active --watch", "follow the running item until Ctrl-C"],
           ["workspace work-queue active --json", "one JSON document, for a script"]
         ]
       },

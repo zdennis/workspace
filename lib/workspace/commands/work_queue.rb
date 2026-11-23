@@ -30,12 +30,13 @@ module Workspace
       #   enabled queue) for `add` and `enable`
       # @param agent_running [#call] given a workspace, whether its agent daemon answers, for `list` and `status`
       # @param clock [#now] time source, for ages
+      # @param watch_loop [Workspace::WatchLoop, nil] redraws the frames of `watch_list` and `watch_active`; nil builds one over +output+ and `sleep`
       # @param working_dir [String] where the current workspace is looked for
       # @param output [IO] stream for the human result
       # @param error_output [IO] stream for warnings
       # @param input [IO, Workspace::PromptInput] where `history clear` reads its answer
       def initialize(store_factory:, history_factory:, advance:, decisions:, run_store:, checkout:, go:, status_scope:,
-        agent_ensurer:, agent_running:, clock: Time, working_dir: Dir.pwd, output: $stdout, error_output: $stderr, input: $stdin)
+        agent_ensurer:, agent_running:, clock: Time, watch_loop: nil, working_dir: Dir.pwd, output: $stdout, error_output: $stderr, input: $stdin)
         @store_factory = store_factory
         @history_factory = history_factory
         @advance = advance
@@ -47,6 +48,7 @@ module Workspace
         @agent_ensurer = agent_ensurer
         @agent_running = agent_running
         @clock = clock
+        @watch_loop = watch_loop || WatchLoop.new(output: output, sleeper: Kernel.method(:sleep))
         @working_dir = working_dir
         @output = output
         @error_output = error_output
@@ -202,8 +204,21 @@ module Workspace
       #   `daemon_not_running` for each enabled queue whose agent daemon does not answer, also printed to the error stream
       def list(name: nil, project: nil)
         queues, warnings = read_queues(name, project)
-        queues.each { |queue| print_list(queue) }
+        queues.each { |queue| print_list(queue, @output) }
         {"queues" => queues, "warnings" => warnings}
+      end
+
+      # {#list} redrawn every `interval` seconds until Ctrl-C. A `daemon_not_running` warning is a `Warning:` line
+      # in the frame, not on the error stream, so it does not repeat there on every tick.
+      #
+      # @param interval [Numeric] seconds between frames
+      # @return [Hash] `{exit_code: 0}`
+      def watch_list(name: nil, project: nil, interval: 2)
+        watch(interval) do |io|
+          queues, warnings = gather_queues(name, project)
+          queues.each { |queue| print_list(queue, io) }
+          warnings.each { |w| io.puts "Warning: #{w["message"]}" }
+        end
       end
 
       # One pending item in full.
@@ -226,17 +241,15 @@ module Workspace
       # @return [Hash] `"workspace"`, `"item"` (nil when none), `"waiting_on"` (`on`, `reason`, `run_id`, `run_state`, `step`)
       #   and `"next_actions"`
       def active(name: nil)
-        workspace = workspace_of(name)
-        items = @store_factory.call(workspace).snapshot["items"]
-        item = items.find { |i| WorkQueueStore::CURRENT_STATES.include?(i["state"]) }
-        unless item
-          @output.puts "Nothing is active in '#{workspace}'."
-          return {"workspace" => workspace, "item" => nil, "waiting_on" => nil, "next_actions" => [], "warnings" => []}
-        end
-        waiting = waiting_on(item)
-        @output.puts "#{item["id"]} #{item["state"]} #{item["kind"]} #{what(item)}"
-        @output.puts "  waiting on #{waiting["on"]}#{": #{waiting["reason"]}" if waiting["reason"]}"
-        {"workspace" => workspace, "item" => item_row(item, items.index(item) + 1), "waiting_on" => waiting, "next_actions" => item_actions(item, workspace), "warnings" => []}
+        render_active(name, @output)
+      end
+
+      # {#active} redrawn every `interval` seconds until Ctrl-C.
+      #
+      # @param interval [Numeric] seconds between frames
+      # @return [Hash] `{exit_code: 0}`
+      def watch_active(name: nil, interval: 2)
+        watch(interval) { |io| render_active(name, io) }
       end
 
       # One line per queue: on, off or paused, the active item and the queued count.
@@ -479,6 +492,12 @@ module Workspace
       end
 
       def read_queues(name, project)
+        queues, warnings = gather_queues(name, project)
+        warnings.each { |w| @error_output.puts "Warning: #{w["message"]}" }
+        [queues, warnings]
+      end
+
+      def gather_queues(name, project)
         queues = workspaces_for(name, project).map { |workspace| queue_doc(workspace) }
         warnings = queues.select { |q| q["enabled"] && !q["daemon_running"] }.map do |q|
           workspace = q["workspace"]
@@ -486,7 +505,6 @@ module Workspace
            "message" => "The agent daemon of '#{workspace}' is not answering, so its queue moves only on " \
              "`workspace work-queue advance`; `workspace agentd --ensure --name #{workspace}` starts it."}
         end
-        warnings.each { |w| @error_output.puts "Warning: #{w["message"]}" }
         [queues, warnings]
       end
 
@@ -533,17 +551,39 @@ module Workspace
         TerminalText.escape((text.length > WHAT_LENGTH) ? "#{text[0, WHAT_LENGTH - 3]}..." : text)
       end
 
-      def print_list(queue)
+      # One frame of a watch: runs the block into the loop's buffer and never asks the loop to stop.
+      def watch(interval)
+        @watch_loop.run(interval: interval) do |io|
+          yield io
+          false
+        end
+      end
+
+      def render_active(name, io)
+        workspace = workspace_of(name)
+        items = @store_factory.call(workspace).snapshot["items"]
+        item = items.find { |i| WorkQueueStore::CURRENT_STATES.include?(i["state"]) }
+        unless item
+          io.puts "Nothing is active in '#{workspace}'."
+          return {"workspace" => workspace, "item" => nil, "waiting_on" => nil, "next_actions" => [], "warnings" => []}
+        end
+        waiting = waiting_on(item)
+        io.puts "#{item["id"]} #{item["state"]} #{item["kind"]} #{what(item)}"
+        io.puts "  waiting on #{waiting["on"]}#{": #{waiting["reason"]}" if waiting["reason"]}"
+        {"workspace" => workspace, "item" => item_row(item, items.index(item) + 1), "waiting_on" => waiting, "next_actions" => item_actions(item, workspace), "warnings" => []}
+      end
+
+      def print_list(queue, io)
         if queue["items"].empty?
-          @output.puts "'#{queue["workspace"]}': no items."
+          io.puts "'#{queue["workspace"]}': no items."
         else
-          @output.puts format("%-3s %-8s %-9s %-9s %-*s %-8s %s", "#", "ID", "STATE", "KIND", WHAT_LENGTH, "WHAT", "HEADLESS", "AGE")
+          io.puts format("%-3s %-8s %-9s %-9s %-*s %-8s %s", "#", "ID", "STATE", "KIND", WHAT_LENGTH, "WHAT", "HEADLESS", "AGE")
           queue["items"].each do |i|
-            @output.puts format("%-3d %-8s %-9s %-9s %-*s %-8s %s", i["position"], i["id"], i["state"], i["kind"], WHAT_LENGTH, i["what"], i["headless"] ? "yes" : "no", age(i["added_at"]))
+            io.puts format("%-3d %-8s %-9s %-9s %-*s %-8s %s", i["position"], i["id"], i["state"], i["kind"], WHAT_LENGTH, i["what"], i["headless"] ? "yes" : "no", age(i["added_at"]))
           end
         end
-        @output.puts "#{queue["workspace"]}: #{queue["state"]}#{" (#{queue["paused_reason"]})" if queue["paused_reason"]}, daemon #{queue["daemon_running"] ? "up" : "down"}"
-        @output.puts OFF_HINT if queue["state"] == "off"
+        io.puts "#{queue["workspace"]}: #{queue["state"]}#{" (#{queue["paused_reason"]})" if queue["paused_reason"]}, daemon #{queue["daemon_running"] ? "up" : "down"}"
+        io.puts OFF_HINT if queue["state"] == "off"
       end
 
       def print_item(workspace, item)

@@ -82,7 +82,7 @@ features (0 = not available):
   library_installed      1
   instructions           1
   restore                1
-  workflow               64
+  workflow               65
   workflow_trace         1
   workflow_events_follow 2
   window_state           1
@@ -106,7 +106,7 @@ features (0 = not available):
   skills                 1
   template               1
   goal                   2
-  work_queue             2
+  work_queue             3
   spine                  3
   spine_eval             3
   spine_set              3
