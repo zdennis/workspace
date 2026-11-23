@@ -1430,6 +1430,39 @@
       ]
     },
     {
+      "key": "agent.claude.trust_checkout",
+      "scope": "project",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": false,
+      "effective": false,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "`true` or `false`: whether `launch`, `start` and `add` mark the checkout's real path as trusted in Claude Code's `.claude.json` (`hasTrustDialogAccepted`), so a first launch does not stop on the trust dialog. Off by default because trust lets the folder's `.claude/settings.json`, hooks and MCP servers run (default `false`; ignored when `agent.kind` isn't `claude`)",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
+    },
+    {
       "key": "agent.permissions.default",
       "scope": "project",
       "type": "enum",
