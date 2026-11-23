@@ -88,15 +88,16 @@ module Workspace
       {configured: configured, error: nil, allow_without_deny: default == "allow" && rules.none? { |rule| rule["action"] == "deny" }}
     end
 
-    # The hang guard's settings: the most specific config layer that sets each key wins. A value
-    # that does not parse, or any read error, gives the default for that setting.
+    # The hang guard's settings: the bound live run's definition `hang_guard` wins for the mode, then
+    # the most specific config layer that sets each key. The cap is config only. A value that does not
+    # parse, or any read error, gives the default for that setting.
     #
     # @param workspace [String]
     # @param project [String, nil]
     # @return [Hash] `{mode:, max_denies:}`: mode one of {PermissionRules::HANG_GUARD_MODES}, max_denies an Integer of 1 or more
     def hang_guard(workspace:, project:)
       data = @config_resolver.view(workspace: workspace, project: project, strict_global: true).data_by_layer(RULES_KEY)
-      {mode: layered_setting(data, HANG_GUARD_KEY), max_denies: layered_setting(data, MAX_DENIES_KEY)}
+      {mode: run_hang_guard || layered_setting(data, HANG_GUARD_KEY), max_denies: layered_setting(data, MAX_DENIES_KEY)}
     rescue => e
       @logger.debug { "hang guard: reading the defaults (#{e.class}: #{e.message})" }
       {mode: ConfigSchema.default(HANG_GUARD_KEY), max_denies: ConfigSchema.default(MAX_DENIES_KEY)}
@@ -114,6 +115,15 @@ module Workspace
       view = @config_resolver.view(workspace: workspace, project: project, strict_global: true)
       data = view.data_by_layer(RULES_KEY)
       data.map { |layer, content| scan_layer(layer, content) }
+    end
+
+    def run_hang_guard
+      value = live_run&.definition&.then { |definition| definition.is_a?(Hash) ? definition["hang_guard"] : nil }
+      value = "off" if value == false
+      PermissionRules::HANG_GUARD_MODES.include?(value) ? value : nil
+    rescue => e
+      @logger.debug { "hang guard: could not read the run's setting (#{e.class}: #{e.message})" }
+      nil
     end
 
     def layered_setting(data, name)

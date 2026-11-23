@@ -247,6 +247,17 @@ RSpec.describe "workflow extends" do
     end
   end
 
+  describe "hang_guard" do
+    it "is replaced by the child's value and inherited when the child sets none" do
+      write(global_dir, "base", "hang_guard: deny_with_hint\nsteps:\n  one: {prompt: P, produces: [o.md]}\n")
+      write(global_dir, "kid", "extends: base\nhang_guard: \"off\"\n")
+      write(global_dir, "plain", "extends: base\n")
+
+      expect(catalog.find("kid").to_h["hang_guard"]).to eq("off")
+      expect(catalog.find("plain").to_h["hang_guard"]).to eq("deny_with_hint")
+    end
+  end
+
   it "has no lookup to resolve a parent when none is given" do
     expect { Workspace::WorkflowDefinition.parse("extends: base\n", id: "x", source: "file", path: nil) }
       .to raise_error(Workspace::Error) { |e| expect(e.details["problems"].first).to match(/can't be checked here/) }

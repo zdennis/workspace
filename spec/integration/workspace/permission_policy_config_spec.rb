@@ -33,8 +33,9 @@ RSpec.describe Workspace::PermissionPolicyConfig do
 
   def agent(**permissions) = {"agent" => {"permissions" => permissions.transform_keys(&:to_s)}}
 
-  def write_run(state:, permissions: nil)
+  def write_run(state:, permissions: nil, hang_guard: nil)
     definition = {"steps" => [{"id" => "fix"}]}
+    definition["hang_guard"] = hang_guard unless hang_guard.nil?
     definition["permissions"] = permissions if permissions
     File.write(File.join(dir, "runs", "wr_1.json"), JSON.generate("id" => "wr_1", "workflow" => "w", "workspace" => "app", "current" => "fix",
       "state" => state, "definition" => definition, "steps" => {"fix" => {"attempts" => []}}))
@@ -180,6 +181,38 @@ RSpec.describe Workspace::PermissionPolicyConfig do
     it "reads the defaults when a file can't be parsed" do
       write_config("app", nil, raw: "agent: [")
       expect(hang_guard).to eq(mode: "deny_with_hint", max_denies: 2)
+    end
+
+    context "with a bound run" do
+      let(:run_id) { "wr_1" }
+
+      it "lets a live run's hang_guard beat every config layer, and leaves the cap to config" do
+        write_config("app.worktree-x", agent(hang_guard: "deny_with_hint", hang_guard_max_denies: 4))
+        write_run(state: "running", hang_guard: "off")
+        expect(hang_guard).to eq(mode: "off", max_denies: 4)
+      end
+
+      it "lets a run's deny_with_hint beat a config off" do
+        write_config("app.worktree-x", agent(hang_guard: "off"))
+        write_run(state: "running", hang_guard: "deny_with_hint")
+        expect(hang_guard[:mode]).to eq("deny_with_hint")
+      end
+
+      it "reads the config when the run sets none" do
+        write_config("app.worktree-x", agent(hang_guard: "off"))
+        write_run(state: "running")
+        expect(hang_guard[:mode]).to eq("off")
+      end
+
+      it "ignores a finished run" do
+        write_run(state: "completed", hang_guard: "off")
+        expect(hang_guard[:mode]).to eq("deny_with_hint")
+      end
+
+      it "ignores a bad stored value" do
+        write_run(state: "running", hang_guard: "bogus")
+        expect(hang_guard[:mode]).to eq("deny_with_hint")
+      end
     end
 
     it "keeps the rules working and the policy unconfigured when a layer holds only these keys" do

@@ -112,6 +112,23 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
   end
 
+  describe "hang_guard" do
+    it "is absent from to_h when not set" do
+      expect(parse(minimal).to_h).not_to have_key("hang_guard")
+    end
+
+    it "accepts each mode, and reads an unquoted off (YAML false) as off" do
+      expect(parse("hang_guard: deny_with_hint\n#{minimal}").to_h["hang_guard"]).to eq("deny_with_hint")
+      expect(parse("hang_guard: \"off\"\n#{minimal}").to_h["hang_guard"]).to eq("off")
+      expect(parse("hang_guard: off\n#{minimal}").to_h["hang_guard"]).to eq("off")
+    end
+
+    it "rejects another value, naming the allowed ones" do
+      expect(problems("hang_guard: bogus\n#{minimal}")).to include(a_string_matching(/hang_guard must be one of off, deny_with_hint, got "bogus"/))
+      expect(problems("hang_guard: true\n#{minimal}")).to include(a_string_matching(/hang_guard must be one of/))
+    end
+  end
+
   describe "permissions" do
     let(:rule) { {"tool" => "Bash", "pattern" => "git push*", "action" => "ask"} }
 
@@ -672,7 +689,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, version, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, timeout, timeout_action, deny, permissions, reviewers, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, version, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, timeout, timeout_action, deny, permissions, hang_guard, reviewers, steps)",
       "schema_version must be one of 0.1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",
