@@ -125,6 +125,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/commands/agent.rb` — The agent daemon's command object: socket, parts and message handling.
 - `lib/workspace/agentd_restart_desk.rb` — The daemon's side of `restart_agent`: validates, claims the pane and starts a restart.
 - `lib/workspace/hook_fanout.rb` — Fans one workspace's hook events out to the daemon's watchers and desks.
+- `lib/workspace/workflow_nudge.rb` — Wakes a workflow run when a main agent's turn ends in its pane, and ticks the nudger, for one workspace.
 - `lib/workspace/agentd_router.rb` — Routes an agent-protocol message type to its handler.
 - `lib/workspace/agentd_socket_server.rb` — The agent daemon's Unix socket: claim, listen, serve and watch.
 - `lib/workspace/pipeline_desk.rb` — The daemon's pipeline and work-coordinator traffic for one workspace.
