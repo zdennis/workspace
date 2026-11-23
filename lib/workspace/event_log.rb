@@ -252,7 +252,9 @@ module Workspace
     RECENT_TAIL = 256 * 1024
 
     # The payloads of the events of one type and project written since a time, found in the
-    # last {RECENT_TAIL} bytes of the log (an event further back is not seen).
+    # last {RECENT_TAIL} bytes of the log (an event further back is not seen). When the
+    # current log is shorter than that, the rest is read from the end of the rotated
+    # `<log>.1`, so events written just before a rotation or compaction are still found.
     #
     # @param type [String] event type
     # @param project [String] project name
@@ -373,18 +375,39 @@ module Workspace
     GONE_STATES = ["closed", "exited"].freeze
     private_constant :GONE_STATES
 
-    # The whole lines in the last {RECENT_TAIL} bytes; a partial first line is dropped.
+    # The whole lines in the last {RECENT_TAIL} bytes, counting the rotated
+    # `<log>.1` when the current file is shorter than that; a partial first line is dropped.
     def tail_lines
-      return [] unless File.exist?(@config.event_log_file)
-      File.open(@config.event_log_file, "rb") do |file|
+      log = @config.event_log_file
+      return [] unless File.exist?(log)
+      File.open(log, "rb") do |file|
         offset = [file.size - RECENT_TAIL, 0].max
         file.seek(offset)
-        lines = file.read.to_s.force_encoding(Encoding::UTF_8).lines
+        lines = tail_text(file).lines
         lines.shift if offset.positive?
-        lines.map(&:strip).reject(&:empty?)
+        rotated_tail_lines(RECENT_TAIL - file.size) + lines.map(&:strip).reject(&:empty?)
       end
     rescue SystemCallError, IOError => e
       warn_unreadable(e)
+      []
+    end
+
+    def tail_text(file)
+      file.read.to_s.force_encoding(Encoding::UTF_8)
+    end
+
+    # The whole lines in the last `room` bytes of `<log>.1`; none when there is no room or no file.
+    def rotated_tail_lines(room)
+      rotated = "#{@config.event_log_file}.1"
+      return [] unless room.positive? && File.file?(rotated)
+      File.open(rotated, "rb") do |file|
+        offset = [file.size - room, 0].max
+        file.seek(offset)
+        lines = tail_text(file).lines
+        lines.shift if offset.positive?
+        lines.map(&:strip).reject(&:empty?)
+      end
+    rescue Errno::ENOENT
       []
     end
 

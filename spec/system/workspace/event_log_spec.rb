@@ -64,6 +64,53 @@ RSpec.describe Workspace::EventLog do
     end
   end
 
+  describe "#recent with a rotated log" do
+    let(:line) { ->(n, stamp = "2026-10-17T10:05:00.000Z") { JSON.generate({"timestamp" => stamp, "type" => "spine_changed", "project" => "a", "data" => {"n" => n}}) + "\n" } }
+    let(:since) { Time.utc(2026, 10, 17, 10, 1) }
+
+    it "still returns a line written just before the rotation" do
+      File.write("#{event_log_file}.1", line.call(1))
+      File.write(event_log_file, line.call(2))
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 1}, {"n" => 2}])
+    end
+
+    it "leaves out a rotated line older than the cutoff" do
+      File.write("#{event_log_file}.1", line.call(1, "2026-10-17T09:00:00.000Z") + line.call(2))
+      File.write(event_log_file, line.call(3))
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 2}, {"n" => 3}])
+    end
+
+    it "works when there is no rotated file" do
+      File.write(event_log_file, line.call(1))
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 1}])
+    end
+
+    it "does not read the rotated file when the current one fills the tail" do
+      File.write("#{event_log_file}.1", line.call(1))
+      File.write(event_log_file, line.call(0) * 4_000 + line.call(2))
+      expect(File.size(event_log_file)).to be > Workspace::EventLog::RECENT_TAIL
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since).map { |d| d["n"] }).not_to include(1)
+    end
+
+    it "drops the partial first line of the rotated tail" do
+      whole = line.call(1)
+      File.write("#{event_log_file}.1", whole * 3000)
+      File.write(event_log_file, line.call(2))
+      room = Workspace::EventLog::RECENT_TAIL - File.size(event_log_file)
+      expect(File.size("#{event_log_file}.1")).to be > room
+      expect(room % whole.bytesize).not_to eq(0)
+
+      result = event_log.recent(type: "spine_changed", project: "a", since: since)
+
+      expect(result.size).to eq(room / whole.bytesize + 1)
+      expect(result.last).to eq({"n" => 2})
+    end
+  end
+
   describe "#events" do
     it "returns empty array when file does not exist" do
       expect(event_log.events).to eq([])
