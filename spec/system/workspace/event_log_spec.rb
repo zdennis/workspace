@@ -96,6 +96,33 @@ RSpec.describe Workspace::EventLog do
       expect(event_log.recent(type: "spine_changed", project: "a", since: since).map { |d| d["n"] }).not_to include(1)
     end
 
+    it "still returns the current file's lines when the rotated file is unreadable" do
+      skip "root reads any file" if Process.uid.zero?
+      File.write("#{event_log_file}.1", line.call(1))
+      File.write(event_log_file, line.call(2))
+      File.chmod(0o000, "#{event_log_file}.1")
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 2}])
+    ensure
+      File.chmod(0o644, "#{event_log_file}.1") if File.exist?("#{event_log_file}.1")
+    end
+
+    it "still returns the current file's lines when the rotated path is a directory" do
+      Dir.mkdir("#{event_log_file}.1")
+      File.write(event_log_file, line.call(2))
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 2}])
+    end
+
+    it "reads through a symlinked rotated file to its target, as intended" do
+      target = "#{event_log_file}.target"
+      File.write(target, line.call(1))
+      File.symlink(target, "#{event_log_file}.1")
+      File.write(event_log_file, line.call(2))
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: since)).to eq([{"n" => 1}, {"n" => 2}])
+    end
+
     it "drops the partial first line of the rotated tail" do
       whole = line.call(1)
       File.write("#{event_log_file}.1", whole * 3000)

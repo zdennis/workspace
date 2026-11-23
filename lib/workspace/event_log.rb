@@ -409,7 +409,7 @@ module Workspace
         lines.shift if offset.positive?
         lines.map(&:strip).reject(&:empty?)
       end
-    rescue Errno::ENOENT
+    rescue SystemCallError, IOError
       []
     end
 
