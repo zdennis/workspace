@@ -95,6 +95,20 @@ RSpec.describe Workspace::WorkflowReportedStatus do
     expect(parse(text)).to be_nil
   end
 
+  it "reads the last of two consecutive tagged lines" do
+    expect(parse("WORKFLOW_STATUS: running — a\nWORKFLOW_STATUS: done — b")).to eq(state: "done", detail: "b")
+  end
+
+  it "reads the last tagged line when a blank line separates two" do
+    expect(parse("x\nWORKFLOW_STATUS: running — a\nmore\n\nWORKFLOW_STATUS: done — b")).to eq(state: "done", detail: "b")
+  end
+
+  it "reads the final line over an interim one the tail's cut lands in" do
+    interim = "WORKFLOW_STATUS: running — " + ("i" * 250)
+    text = ("prose line\n" * 50) + interim + "\nWORKFLOW_STATUS: done — final"
+    expect(parse(text)).to eq(state: "done", detail: "final")
+  end
+
   it "does not raise on invalid bytes" do
     expect(parse("\xFF\xFE\nWORKFLOW_STATUS: done".b.force_encoding("UTF-8"))).to eq(state: "done", detail: "")
   end

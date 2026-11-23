@@ -35,13 +35,14 @@ module Workspace
     MAX_LINE_BACK = 2000
 
     LINE = /^[ \t]*WORKFLOW_STATUS:[ \t]*([A-Za-z_]+)(.*)/mi
+    TAG_START = /^[ \t]*WORKFLOW_STATUS:/i
     SEPARATOR = /\A[ \t]*(?:—|--|\||-)?[ \t]*/
-    private_constant :LINE, :SEPARATOR
+    private_constant :LINE, :TAG_START, :SEPARATOR
 
     # Reads the status line from the tail of an agent's last message: the last {TAIL_CHARS} characters, widened back
     # to the start of the line the cut lands in, but by at most {MAX_LINE_BACK} characters.
     #
-    # The line is the first in that window that starts its own line with the tag (leading whitespace allowed), so a
+    # The line is the last in that window that starts its own line with the tag (leading whitespace allowed), so a
     # sentence mentioning the tag, or a word that merely contains it, is not read as a report. State is matched
     # without regard to case. The detail runs to the end of its line and on through following lines, up to a blank
     # line or a code fence; its lines are joined with one space.
@@ -52,7 +53,8 @@ module Workspace
     def self.parse(message)
       return nil unless message.is_a?(String)
       text = message.scrub
-      match = LINE.match(text, window_start(text))
+      start = last_tag_start(text, window_start(text))
+      match = start && LINE.match(text, start)
       return nil unless match
       state = match[1].downcase
       return nil unless STATES.include?(state)
@@ -73,6 +75,19 @@ module Workspace
       [line_start, cut - MAX_LINE_BACK].max
     end
     private_class_method :window_start
+
+    # @param text [String] the whole message
+    # @param from [Integer] where the window starts
+    # @return [Integer, nil] where the last line that starts with the tag at or after `from` begins, or nil
+    def self.last_tag_start(text, from)
+      last = nil
+      while (tag = TAG_START.match(text, from))
+        last = tag.begin(0)
+        from = tag.end(0)
+      end
+      last
+    end
+    private_class_method :last_tag_start
 
     # @param rest [String] the text after the state word
     # @return [String] the detail, separator removed, wrapped lines joined
