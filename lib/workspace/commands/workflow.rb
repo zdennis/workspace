@@ -2603,6 +2603,8 @@ module Workspace
             "step #{details["step"]} was reported failed#{": #{details["summary"]}" if details["summary"]}"
           elsif details["cause"] == "timeout"
             "step #{details["step"]} ran past its #{details["timeout"]} second time limit and was failed by the sweep"
+          elsif details["cause"] == "permission_wait"
+            "step #{details["step"]} was failed by the sweep: pane #{details["pane"]} waited at #{details["screen"] ? "a waiting screen" : "a permission dialog"} nobody answered#{" for #{details["waited"]} seconds" if details["waited"]}. Deny or close it (or stop the agent) before you resume the run: allowed, the old attempt carries on without the run's locks and its work is ignored"
           elsif details["cause"] == "require"
             "step #{details["step"]} failed #{details["code"]}: #{TerminalText.escape(details["detail"].to_s)}"
           else

@@ -13,8 +13,12 @@ module Workspace
     DEFAULT_KEY = "agent.permissions.default"
     RULES_KEY = "agent.permissions.rules"
     FINISHED = %w[completed failed cancelled].freeze
-    MALFORMED_NODE = "agent.permissions must be a mapping holding only rules and default, not a dotted key or another key".freeze
-    private_constant :DEFAULT_KEY, :RULES_KEY, :FINISHED, :MALFORMED_NODE
+    HANG_GUARD_KEY = "agent.permissions.hang_guard"
+    MAX_DENIES_KEY = "agent.permissions.hang_guard_max_denies"
+    POLICY_KEYS = %w[rules default].freeze
+    PERMISSION_KEYS = (POLICY_KEYS + %w[hang_guard hang_guard_max_denies]).freeze
+    MALFORMED_NODE = "agent.permissions must be a mapping holding only rules, default, hang_guard and hang_guard_max_denies, not a dotted key or another key".freeze
+    private_constant :DEFAULT_KEY, :RULES_KEY, :FINISHED, :MALFORMED_NODE, :HANG_GUARD_KEY, :MAX_DENIES_KEY, :POLICY_KEYS, :PERMISSION_KEYS
 
     # @param config_resolver [Workspace::ConfigResolver] reads each layer's file
     # @param bound_run [Workspace::BoundRun] names the run the calling pane is bound to
@@ -84,6 +88,32 @@ module Workspace
       {configured: configured, error: nil, allow_without_deny: default == "allow" && rules.none? { |rule| rule["action"] == "deny" }}
     end
 
+    # What the hang guard needs for one request, from one read of the pane's binding, its run and the config.
+    # The bound live run's definition `hang_guard` wins for the mode, then the most specific config layer that sets
+    # each key; the cap is config only, and a value that does not parse gives that key's default. In a pane with no
+    # live run binding, a config file that can't be parsed or a malformed `agent.permissions` node reads as mode
+    # `off`, so the dialog shows as it did before the guard; a bound pane then reads the run's mode over the
+    # defaults, since nobody would answer the dialog.
+    #
+    # @param workspace [String]
+    # @param project [String, nil]
+    # @return [Hash] `{mode:, max_denies:, binding:}`: mode one of {PermissionRules::HANG_GUARD_MODES}, max_denies an
+    #   Integer of 1 or more, binding the binding entry while its run has not finished,
+    #   nil for an unbound pane, a finished run, or a binding or run that can't be read
+    def hang_guard_context(workspace:, project:)
+      binding, run = live_binding_and_run
+      begin
+        data = @config_resolver.view(workspace: workspace, project: project, strict_global: true).data_by_layer(RULES_KEY)
+        broken = data.any? { |layer, content| scan_layer(layer, content)[:malformed] }
+      rescue => e
+        @logger.debug { "hang guard: the config can't be read (#{e.class}: #{e.message})" }
+        return defaults.merge(mode: "off", binding: nil) unless binding
+        return defaults.merge({mode: run_hang_guard(run)}.compact, binding: binding)
+      end
+      return defaults.merge(mode: "off", binding: nil) if broken && !binding
+      settings_from(data, run_hang_guard(run)).merge(binding: binding)
+    end
+
     private
 
     # Each layer's own file, highest first, read raw and strictly (the global file too).
@@ -96,6 +126,50 @@ module Workspace
       view = @config_resolver.view(workspace: workspace, project: project, strict_global: true)
       data = view.data_by_layer(RULES_KEY)
       data.map { |layer, content| scan_layer(layer, content) }
+    end
+
+    def settings_from(data, from_run)
+      {mode: from_run || layered_setting(data, HANG_GUARD_KEY), max_denies: layered_setting(data, MAX_DENIES_KEY)}
+    end
+
+    def defaults
+      {mode: ConfigSchema.default(HANG_GUARD_KEY), max_denies: ConfigSchema.default(MAX_DENIES_KEY)}
+    end
+
+    # @return [Array(Hash, WorkflowRun), Array(nil, nil)] the pane's binding and its run while the run has not finished
+    def live_binding_and_run
+      entry = @bound_run.binding_strict
+      return [nil, nil] unless entry
+      run = @run_store.run(entry["id"])
+      FINISHED.include?(run.state) ? [nil, nil] : [entry, run]
+    rescue => e
+      @logger.debug { "hang guard: could not read the pane's run binding (#{e.class}: #{e.message})" }
+      [nil, nil]
+    end
+
+    def run_hang_guard(run)
+      value = run&.definition&.then { |definition| definition.is_a?(Hash) ? definition["hang_guard"] : nil }
+      value = "off" if value == false
+      PermissionRules::HANG_GUARD_MODES.include?(value) ? value : nil
+    rescue => e
+      @logger.debug { "hang guard: could not read the run's setting (#{e.class}: #{e.message})" }
+      nil
+    end
+
+    def layered_setting(data, name)
+      key = ConfigSchema.key(name)
+      leaf = name.split(".").last
+      data.each_value do |content|
+        next unless content.is_a?(Hash)
+        permissions = content.dig("agent", "permissions")
+        next unless permissions.is_a?(Hash) && !permissions[leaf].nil?
+        begin
+          return key.parse(permissions[leaf])
+        rescue ArgumentError
+          return key.default
+        end
+      end
+      key.default
     end
 
     def scan_layer(layer, content)
@@ -123,7 +197,7 @@ module Workspace
       return true if agent.keys.any? { |key| key.to_s.start_with?("permissions.") }
       permissions = agent["permissions"]
       return false if permissions.nil?
-      !permissions.is_a?(Hash) || (permissions.keys - %w[rules default]).any?
+      !permissions.is_a?(Hash) || (permissions.keys - PERMISSION_KEYS).any?
     end
 
     # @return [Array<Hash>] the bound live run's `permissions:` rules; empty for no run or a finished one

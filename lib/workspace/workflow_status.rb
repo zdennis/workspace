@@ -820,7 +820,7 @@ module Workspace
       if state.state == "running" && reason.nil? && !delivering && !hidden_reason?(run.reason_for(run.current), shown) && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
         flags << "idle"
       end
-      flags << "background_work" if run.reason_for(run.current)&.dig("code") == "turn_ended_background"
+      flags << "background_work" if reason.nil? && run.reason_for(run.current)&.dig("code") == "turn_ended_background"
       flags
     end
 

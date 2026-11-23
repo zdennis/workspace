@@ -100,6 +100,12 @@ RSpec.describe "workspace session-event old path vs fast path" do
     File.write(File.join(state_dir, "bindings.json"), JSON.generate("%1" => {"session" => "proj", "server_pid" => "4242", "workspace" => "proj", "pane_id" => "%1"}.merge(entry)))
   end
 
+  def hang_guard_counts
+    FileUtils.mkdir_p(state_dir)
+    entry = {"count" => 2, "updated_at" => "2099-01-01T00:00:00Z"}
+    File.write(File.join(state_dir, "hang-guard.json"), JSON.generate("pane:%1:s1" => entry, "pane:%12:s1" => entry, "run:wr_1:fix:1" => entry))
+  end
+
   def reviewer
     bind("kind" => "run", "id" => "wr_1", "role" => "reviewer", "step" => "fix", "attempt" => 1, "round" => 1, "artifacts" => File.join(home, "art"))
   end
@@ -280,6 +286,9 @@ RSpec.describe "workspace session-event old path vs fast path" do
        payload: event("PermissionRequest", "tool_name" => "Bash", "tool_input" => {"command" => "rm -rf x"})},
       {name: "Codex PermissionRequest decided by a deny rule", decision: "deny", args: %w[--agent codex], seed: lambda(&:deny_rm_rule),
        payload: event("PermissionRequest", "tool_name" => "Bash", "tool_input" => {"command" => "rm -rf x"})},
+      {name: "Claude UserPromptSubmit clearing the pane's hang guard count", seed: lambda(&:hang_guard_counts), payload: event("UserPromptSubmit", "prompt" => "go")},
+      {name: "Codex UserPromptSubmit clearing the pane's hang guard count", args: %w[--agent codex], seed: lambda(&:hang_guard_counts),
+       payload: event("UserPromptSubmit", "prompt" => "go")},
       {name: "no TMUX_PANE", delivers: false, pane: nil, payload: event("Stop")},
       {name: "daemon down", delivers: false, daemon: :none, payload: event("Stop")},
       {name: "bad JSON", delivers: false, payload: "{not json"},

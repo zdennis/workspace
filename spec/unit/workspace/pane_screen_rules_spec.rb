@@ -62,6 +62,22 @@ RSpec.describe Workspace::PaneScreenRules do
       expect(pane[:waits]["screen"]).to include(since: now - 60, alerted: true)
     end
 
+    it "opens a screen wait for each Claude Code screen that has no hook" do
+      {"folder_trust" => "trust this folder", "mcp_trust" => "trust an MCP server"}.each do |name, words|
+        pane[:waits].clear
+        screen = File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "#{name}.txt"))
+        described_class.screen_wait(pane, claude, screen, now)
+        expect(pane[:waits]).to eq("screen" => {since: now, by: "screen", message: "Claude Code is asking you to #{words}"})
+      end
+    end
+
+    it "opens none for a Claude Code permission dialog or the ready prompt" do
+      Dir[File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "{claude-bash*,question_open*,done_line_idle}.txt")].each do |path|
+        described_class.screen_wait(pane, claude, File.read(path), now)
+        expect(pane[:waits]).to be_empty, path
+      end
+    end
+
     it "keeps the wait's start while the screen stays, and drops it with its alert entry once it goes" do
       described_class.screen_wait(pane, codex, sign_in, now)
       described_class.screen_wait(pane, codex, sign_in, now + 10)

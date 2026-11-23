@@ -161,6 +161,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/agent_status_desk.rb` — The daemon's side of `agent status request|post`.
 - `lib/workspace/prompt_typer.rb` — The one careful typing sequence into a pane, run under the delivery lock.
 - `lib/workspace/prompt_queue_store.rb` — Flock-guarded `prompt-queue.json` of prompts waiting for an idle pane.
+- `lib/workspace/hang_guard_counter.rb` — Counts the permission requests the hang guard denied per turn in `hang-guard.json`, under a lock it waits for only briefly.
 - `lib/workspace/prompt_queue_desk.rb` — The daemon's side of `agent-run send --when-idle` and `--clear-first`.
 - `lib/workspace/clear_confirmation.rb` — Decides whether a typed `/clear` took effect.
 - `lib/workspace/commands/prompt_queue.rb` — `agent-run queue list|cancel`.

@@ -171,6 +171,50 @@ RSpec.describe Workspace::PaneEvents do
       expect(pane[:waits]).to be_empty
     end
 
+    it "keeps a sub-agent's wait, request and alerted mark across a main Stop" do
+      apply("permission_request", "agent_id" => "a1", "tool" => "Bash")
+      apply("notification", "notification_type" => "permission_prompt")
+      pane[:alerted_waits] = {"a1" => now - 5}
+      apply("stop")
+
+      expect(pane[:waits].keys).to eq(["a1"])
+      expect(pane[:permission_requests].keys).to eq(["a1"])
+      expect(pane[:alerted_waits]).to eq("a1" => now - 5)
+    end
+
+    it "clears the main and screen waits on a main Stop" do
+      apply("notification")
+      pane[:waits]["screen"] = {since: now}
+      pane[:alerted_waits] = {nil => now, "screen" => now}
+      apply("stop")
+
+      expect(pane[:waits]).to be_empty
+      expect(pane[:alerted_waits]).to be_empty
+    end
+
+    it "keeps a sub-agent's wait across a failed turn, and a subagent_stop then clears it" do
+      apply("permission_request", "agent_id" => "a1", "tool" => "Bash")
+      apply("notification", "notification_type" => "permission_prompt")
+      apply("turn_failed", "error" => "rate_limit")
+      expect(pane[:waits].keys).to eq(["a1"])
+
+      apply("subagent_stop", "agent_id" => "a1")
+      expect(pane[:waits]).to be_empty
+      expect(pane[:permission_requests]).to be_empty
+    end
+
+    it "clears a sub-agent's wait on a prompt, session start and session end" do
+      %w[user_prompt session_start session_end].each do |name|
+        @pane = nil
+        apply("permission_request", "agent_id" => "a1", "tool" => "Bash")
+        apply("notification", "notification_type" => "permission_prompt")
+        apply(name)
+
+        expect(pane[:waits]).to be_empty
+        expect(pane[:permission_requests]).to be_empty
+      end
+    end
+
     it "opens none for the idle prompt after a Stop" do
       apply("stop")
       apply("notification", "notification_type" => "idle_prompt", "message" => "Claude is waiting for your input")

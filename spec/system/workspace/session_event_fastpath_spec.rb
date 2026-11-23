@@ -64,6 +64,18 @@ RSpec.describe "workspace session-event fast path" do
     end
   end
 
+  it "loads none of the CLI for a UserPromptSubmit in a pane with a hang guard count to clear" do
+    state = File.join(@home, "state", "workspace")
+    FileUtils.mkdir_p(state)
+    File.write(File.join(state, "hang-guard.json"), JSON.generate("pane:%1:s1" => {"count" => 1, "updated_at" => Time.now.utc.iso8601}))
+
+    out, err, status = ruby(loaded_script, "session-event", pane: "%1", stdin: payload("UserPromptSubmit"))
+
+    expect([out, err, status.exitstatus]).to eq(["", "", 0])
+    expect(report).to eq(unloaded)
+    expect(JSON.parse(File.read(File.join(state, "hang-guard.json")))).to eq({})
+  end
+
   it "hands a SessionStart to the whole CLI" do
     out, err, status = ruby(loaded_script, "session-event", stdin: payload("SessionStart"))
 

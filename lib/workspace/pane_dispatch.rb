@@ -12,14 +12,14 @@ module Workspace
     MAIN_KINDS = %w[claude codex].freeze
 
     # The words for each waiting reason in a message.
-    SCREEN_NAMES = {"sign_in" => "sign-in", "trust" => "folder trust", "approval" => "approval"}.freeze
+    SCREEN_NAMES = {"sign_in" => "sign-in", "trust" => "folder trust", "mcp_trust" => "MCP server trust", "approval" => "approval"}.freeze
 
     # Seconds the agent daemon may take to answer.
     DAEMON_TIMEOUT = 1.0
 
     # What {#spawn} did: the new pane's id and the {AgentReadiness::Result} of the wait.
     # +closed+ is true when the agent was never ready and the new pane was closed again. +waiting+ is
-    # `sign_in`, `trust` or `approval` when the agent sits at that screen; the pane is then kept open
+    # `sign_in`, `trust`, `mcp_trust` or `approval` when the agent sits at that screen; the pane is then kept open
     # for the person to finish it. +warning+ says a window that should have been closed was left open
     # (a custom tmux socket), else nil.
     Spawned = Struct.new(:pane, :ready, :label, :closed, :waiting, :warning, keyword_init: true) do

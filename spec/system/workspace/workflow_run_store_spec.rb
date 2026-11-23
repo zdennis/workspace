@@ -236,6 +236,24 @@ RSpec.describe Workspace::WorkflowRunStore do
     end
   end
 
+  describe "#count_events" do
+    it "counts the lines of one type the block accepts, skipping a line that is not JSON" do
+      create
+      store.record_event("wr_1", "permission_guarded", "step" => "plan", "attempt" => 1)
+      store.record_event("wr_1", "permission_guarded", "step" => "plan", "attempt" => 2)
+      store.record_event("wr_1", "command_denied", "step" => "plan", "attempt" => 1)
+      File.write(store.events_path("wr_1"), "{not json \"type\":\"permission_guarded\"\n", mode: "a")
+
+      expect(store.count_events("wr_1", "permission_guarded")).to eq(2)
+      expect(store.count_events("wr_1", "permission_guarded") { |event| event["attempt"] == 1 }).to eq(1)
+    end
+
+    it "is 0 for a run with no history" do
+      create
+      expect(store.count_events("wr_1", "permission_guarded")).to eq(0)
+    end
+  end
+
   describe "#events" do
     def record(*types)
       types.each { |type| store.record_event("wr_1", type, "step" => "plan") }

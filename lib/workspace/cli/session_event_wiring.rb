@@ -2,7 +2,7 @@ module Workspace
   class CLI
     # The one construction of {Commands::SessionEvent} and the collaborators it is given: the lock
     # tracker and enforcer, the workflow `deny:` tripwire, the review and reflection write guards,
-    # the session ledger, the delivery log, the session-to-workspace map and the dev-lock release.
+    # the session ledger, the delivery log, the hang guard's counter, the session-to-workspace map and the dev-lock release.
     # `build_cli` calls it with the objects it shares with other commands; a caller that shares
     # nothing leaves those keywords out and each is built here. It names only classes that have a
     # file of their own, never anything `lib/workspace.rb` alone defines.
@@ -31,13 +31,14 @@ module Workspace
       # @param session_ledger [Workspace::SessionLedger, nil] nil builds one at `state_dir/ledger.jsonl`
       # @param recovery_stop_marker [Workspace::RecoveryStopMarker, nil] nil builds one over `state_dir`
       # @param delivery_log [Workspace::DeliveryLog, nil] nil builds one at `state_dir/session-event.log`; give it with workspace_for_session
+      # @param hang_guard_counter [Workspace::HangGuardCounter, nil] nil builds one at `state_dir/hang-guard.json`
       # @param config_names [#available_projects, nil] the configs {SessionWorkspace} looks through; needed only when workspace_for_session is not given
       # @param workspace_for_session [Workspace::SessionWorkspace, nil] nil builds one whose ambiguity lines go to delivery_log
       # @return [Workspace::Commands::SessionEvent]
       # @raise [ArgumentError] when lineage, process_tree or config_names is missing and the object built from it is not given
       def self.build(config:, tmux:, input:, output:, error_output:, logger:, env:, event_log:, permission_policy_config:, instruction_composer:, executable:,
         lineage: nil, pane_bindings: nil, lock_namespace: nil, process_tree: nil, run_liveness: nil, lock_holder: nil, bound_run: nil, run_store: nil,
-        session_ledger: nil, recovery_stop_marker: nil, delivery_log: nil, config_names: nil, workspace_for_session: nil)
+        session_ledger: nil, recovery_stop_marker: nil, delivery_log: nil, config_names: nil, workspace_for_session: nil, hang_guard_counter: nil)
         raise ArgumentError, "SessionEventWiring.build needs lineage: when lock_namespace: is not given" unless lock_namespace || lineage
         raise ArgumentError, "SessionEventWiring.build needs process_tree: when lock_holder: is not given" unless lock_holder || process_tree
         raise ArgumentError, "SessionEventWiring.build needs config_names: when workspace_for_session: is not given" unless workspace_for_session || config_names
@@ -50,15 +51,17 @@ module Workspace
         session_ledger ||= SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
         recovery_stop_marker ||= RecoveryStopMarker.new(state_dir: config.state_dir)
         delivery_log ||= DeliveryLog.new(path: File.join(config.state_dir, "session-event.log"))
+        hang_guard_counter ||= HangGuardCounter.new(path: File.join(config.state_dir, "hang-guard.json"))
+        command_pieces = BashCommandPieces.new
         workspace_for_session ||= SessionWorkspace.new(tmux: tmux, project_config: config_names, config: config,
           on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
 
         Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
-          workspace_for_session: workspace_for_session, delivery_log: delivery_log, permission_policy_config: permission_policy_config,
+          workspace_for_session: workspace_for_session, delivery_log: delivery_log, permission_policy_config: permission_policy_config, hang_guard_counter: hang_guard_counter, run_store: run_store, command_pieces: command_pieces,
           session_ambiguous: workspace_for_session.method(:ambiguous?),
           lock_idle_tracker: LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger),
           lock_enforcer: LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger),
-          workflow_deny: WorkflowDeny.new(bound_run: bound_run, command_pieces: BashCommandPieces.new, logger: logger, event_log: event_log, run_store: run_store),
+          workflow_deny: WorkflowDeny.new(bound_run: bound_run, command_pieces: command_pieces, logger: logger, event_log: event_log, run_store: run_store),
           review_write_guard: ReviewWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, env: env, event_log: event_log, logger: logger),
           reflection_write_guard: ReflectionWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, config: config, env: env, event_log: event_log, logger: logger),
           session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,

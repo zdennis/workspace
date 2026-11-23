@@ -12,7 +12,9 @@ module Workspace
   # to `now`) whose code is not in {MACHINE_CODES}, so a gate, a parked resume, a held budget or a failed
   # check waits on a person and costs nothing. Every step's stalls ({WorkflowTransitions.stall_spans}: its pane
   # or agent gone, or a failed turn) and any `stops:` given (such as downtime) are cut too. A stop that is never
-  # stored, such as a permission prompt the agent sits at, is not cut, so it counts; the docs say so.
+  # stored, such as a permission prompt the agent sits at, is not cut, so it counts; the docs say so. The run's
+  # timeout acts on nothing while the pane waits at that dialog: {WorkflowSweep} stops such a step on its own limit
+  # (`workflows.permission_wait_limit`), and its `permission_wait` stall cuts no clock.
   class WorkflowDeadline
     # Reasons that are the machine's own time and so still count against the timeout.
     MACHINE_CODES = %w[waiting_lock retry_backoff].freeze

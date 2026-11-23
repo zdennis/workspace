@@ -265,7 +265,7 @@ RSpec.describe Workspace::AgentProvider do
     def fixture(name) = File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "codex_screens", "#{name}.txt"))
 
     it "names no waiting screens for the other agents" do
-      expect(described_class.all.reject { |p| p.key == "codex" }.map(&:waiting_screens)).to all(be_empty)
+      expect(described_class.all.reject { |p| %w[codex claude].include?(p.key) }.map(&:waiting_screens)).to all(be_empty)
     end
 
     it "matches each screen's fixture under one message" do
@@ -283,6 +283,36 @@ RSpec.describe Workspace::AgentProvider do
 
     it "does not match ordinary output" do
       expect(screens.values.none? { |pattern| pattern.match?(fixture("ordinary_output")) }).to be(true)
+    end
+  end
+
+  describe "Claude Code waiting screens" do
+    let(:claude) { described_class.find("claude") }
+    let(:screens) { claude.waiting_screens }
+
+    def fixture(name) = File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "#{name}.txt"))
+
+    it "names folder trust and MCP server trust, each with a reason" do
+      expect(claude.waiting_screen(fixture("folder_trust"))).to eq(message: "Claude Code is asking you to trust this folder", reason: "trust")
+      expect(claude.waiting_screen(fixture("mcp_trust"))).to eq(message: "Claude Code is asking you to trust an MCP server", reason: "mcp_trust")
+    end
+
+    it "matches each captured plain screen under exactly one message" do
+      %w[folder_trust mcp_trust].each do |name|
+        expect(screens.count { |_, pattern| pattern.match?(fixture(name)) }).to eq(1), name
+      end
+    end
+
+    it "matches neither a normal prompt, a question, a permission dialog nor a Codex screen" do
+      others = Dir[File.join(PROJECT_ROOT, "spec", "fixtures", "{claude_screens,codex_screens}", "*.txt")]
+        .reject { |path| File.basename(path).match?(/\A(?:folder|mcp)_trust/) }
+      expect(others).not_to be_empty
+      others.each { |path| expect(claude.waiting_screen(File.read(path))).to be_nil, path }
+    end
+
+    it "does not match output that only quotes the text" do
+      expect(claude.waiting_screen("Quick safety check: Is this a project you created or one you trust?\n")).to be_nil
+      expect(claude.waiting_screen("New MCP server found in this project: dummy\n")).to be_nil
     end
   end
 end

@@ -36,7 +36,7 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description version use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny permissions reviewers steps].freeze
+    TOP_KEYS = %w[schema_version id title description version use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny permissions hang_guard reviewers steps].freeze
     STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts review after execution_mode].freeze
 
     # What a `fan_out` group step may hold. A group has no body of its own: its `fan_out:` is a mapping of sibling
@@ -747,6 +747,7 @@ module Workspace
       timeout = capped_duration_from(raw["timeout"], "timeout", MAX_RUN_TIMEOUT)
       timeout_action = raw.fetch("timeout_action", TIMEOUT_ACTIONS.first)
       problem "timeout_action must be #{TIMEOUT_ACTIONS.join(" or ")}, got #{timeout_action.inspect[0, 40]}" unless TIMEOUT_ACTIONS.include?(timeout_action)
+      hang_guard = hang_guard_from(raw)
       reviewers = review_spec.reviewers(raw["reviewers"], inputs)
       steps = steps_from(raw["steps"], inputs)
       steps.each { |step| for_step(step["id"]) { review_spec.check([step], reviewers) } }
@@ -768,6 +769,7 @@ module Workspace
         "steps" => steps
       }.merge(version ? {"version" => version} : {})
         .merge(budget ? {"budget" => budget} : {})
+        .merge(hang_guard.nil? ? {} : {"hang_guard" => hang_guard})
         .merge(reviewers.any? ? {"reviewers" => reviewers} : {})
         .merge(@groups.any? ? {"groups" => @groups} : {})
         .merge(timeout ? {"timeout" => timeout} : {})
@@ -850,6 +852,15 @@ module Workspace
     rescue ArgumentError => e
       problem e.message
       []
+    end
+
+    def hang_guard_from(raw)
+      return nil unless raw.key?("hang_guard")
+      value = raw["hang_guard"]
+      value = "off" if value == false
+      return value if PermissionRules::HANG_GUARD_MODES.include?(value)
+      problem "hang_guard must be one of #{PermissionRules::HANG_GUARD_MODES.join(", ")}, got #{value.inspect[0, 40]}"
+      nil
     end
 
     def text_or_nil(value, where)

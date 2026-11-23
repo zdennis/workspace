@@ -33,6 +33,16 @@ RSpec.describe Workspace::WorkflowSweepActions, "for a fan_out sibling" do
                           "why" => "wait: the step restarts on its own (pane closed) at 2026-10-04T11:51:00Z; no action needed"}])
   end
 
+  it "focuses the pane a sibling's own permission_wait reason names" do
+    hash = JSON.parse(JSON.generate(stored.to_h)).merge("state" => "waiting")
+    hash["steps"]["test"] = hash["steps"]["test"].merge("state" => "failed", "reason" => {"code" => "failed_check", "details" => {"cause" => "permission_wait", "pane" => "%12"}})
+    allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h(hash))
+
+    found = actions.call([row("timed_out", "cause" => "permission_wait", "action" => "fail")], run: nil, name: nil)
+
+    expect(found.first).to eq("action" => "focus", "args" => ["app", "--pane", "%12"], "needs" => [], "why" => "permission_wait")
+  end
+
   it "offers no --restart-step for a sibling off the cursor, which it would not restart" do
     found = actions.call([row("recorded", "cause" => "pane_gone", "action" => "record")], run: nil, name: nil)
 

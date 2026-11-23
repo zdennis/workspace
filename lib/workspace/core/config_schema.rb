@@ -338,6 +338,13 @@ module Workspace
     end
     private_constant :PERMISSION_DEFAULT
 
+    HANG_GUARD = lambda do |value|
+      value = "off" if value == false
+      raise ArgumentError, "must be one of #{PermissionRules::HANG_GUARD_MODES.join(", ")}" unless PermissionRules::HANG_GUARD_MODES.include?(value)
+      value
+    end
+    private_constant :HANG_GUARD
+
     PERMISSION_RULES = lambda do |value|
       PermissionRules.parse(value, label: "agent.permissions.rules")
     end
@@ -639,6 +646,10 @@ module Workspace
         doc: "`true` or `false`: whether `launch`, `start` and `add` mark the checkout's real path as trusted in Claude Code's `.claude.json` (`hasTrustDialogAccepted`), so a first launch does not stop on the trust dialog. Off by default because trust lets the folder's `.claude/settings.json`, hooks and MCP servers run (default `false`; ignored when `agent.kind` isn't `claude`)"),
       Key.new(name: "agent.permissions.default", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :enum, combine: :most_restrictive, settable: true, default: "ask", choices: PERMISSION_ACTIONS, parser: PERMISSION_DEFAULT,
         doc: "What the permission policy does with a coding agent's tool call that no `agent.permissions.rules` entry matches: `ask` (default, the agent's own dialog), `allow` or `deny`. Of the layers that set it, the most restrictive value wins"),
+      Key.new(name: "agent.permissions.hang_guard", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :enum, settable: true, default: "deny_with_hint", choices: PermissionRules::HANG_GUARD_MODES, parser: HANG_GUARD,
+        doc: "What the hook does when a coding agent's tool call raises a permission dialog and no rule decided it, in every pane: `deny_with_hint` (default) denies the call with a hint to run simpler commands, so the agent tries again instead of waiting at a dialog nobody answers; the cost is that in an interactive pane the agent loses a turn on a call you would have approved, at most `agent.permissions.hang_guard_max_denies` times per turn. `off` leaves every such call to the agent's own dialog; turn it off with `workspace config set agent.permissions.hang_guard off`. The most specific layer that sets it wins"),
+      Key.new(name: "agent.permissions.hang_guard_max_denies", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :integer, settable: true, examples: ["1", "3"], default: 2, min: 1, parser: POSITIVE_INTEGER,
+        doc: "How many undecided tool calls `agent.permissions.hang_guard` denies with a hint in one turn of a pane (one attempt of a workflow step) before it lets the agent's own dialog through (default `2`, at least `1`)"),
       Key.new(name: "agent.permissions.rules", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :rules, combine: :concat, settable: false, parser: PERMISSION_RULES,
         doc: "Edited in the file by hand: a list of `{tool, pattern, action}` rules (`tool` a glob over the tool name, optional `pattern`, `action` one of `allow`, `ask`, `deny`) the permission policy matches a tool call against. Unlike other keys, the lists of the global, project and worktree files are joined, not replaced; `deny` beats `ask` beats `allow`"),
       *AgentProvider.all.map do |provider|
@@ -681,6 +692,8 @@ module Workspace
         doc: "How long a workflow step may sit idle, counted from when the agent's turn is proven over, before `workflow sweep` treats it as stalled, for a definition with no `stall:` of its own (default `10m`). `0` or `off` turns the default off"),
       Key.new(name: "workflows.turn_failed_after", scope: :global, type: :duration, settable: true, examples: ["10m", "off"], default: 1800, parser: OPTIONAL_DURATION,
         doc: "How long a pane whose agent turn ended on an API error (`turn_failed`) may sit before `workflow sweep` records its workflow step as stalled with cause `turn_failed` (default `30m`). `0` or `off` turns the time threshold off; recovery giving up still stalls the step"),
+      Key.new(name: "workflows.permission_wait_limit", scope: :global, type: :duration, settable: true, examples: ["30m", "off"], default: 3600, parser: OPTIONAL_DURATION,
+        doc: "How long a workflow step may wait at an agent permission dialog (time the machine was off does not count) before `workflow sweep` fails the step with code `permission_wait_timeout` and stops the run, whatever `on_fail` says (default `1h`). Nothing is typed and the dialog is left open for a person to answer or close. A review round whose review pane waits at such a dialog that long is decided on the verdicts already written, running no reviewer again, and stops `review_incomplete` with its window kept when they fall short. `0` or `off` turns the limit off, so the step or round waits at a dialog for as long as it stays"),
       Key.new(name: "workflows.downtime_after", scope: :global, type: :duration, settable: true, examples: ["2m", "5m"], default: 120, min: MIN_DOWNTIME_AFTER, parser: DOWNTIME_AFTER,
         doc: "How long a gap between two heartbeats (every agent daemon tick and `workflow sweep` pass records one) must be before workspace treats the machine as asleep or off for that gap and leaves it out of workflow run, step and review-round `timeout:` clocks (default `2m`, at least `30s`; `off` is refused: set a large value such as `24h` to count nearly every gap). Keep it well above the 15s daemon tick: a tick that blocks longer than this is wrongly left out of the clocks"),
       Key.new(name: "workflows.infra_retry.max", scope: :global, type: :integer, settable: true, examples: ["0", "2"], default: 2, min: 0, parser: NON_NEGATIVE_INTEGER,

@@ -140,6 +140,16 @@ RSpec.describe Workspace::PaneDispatch do
       expect(dispatch.spawn("api", "codex")).to have_attributes(closed: false, waiting: "trust")
     end
 
+    it "keeps a Claude Code pane open at an MCP server trust screen and names it" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "x"))
+      allow(tmux).to receive(:capture_screen).with("%23").and_return(File.read(File.join(PROJECT_ROOT, "spec/fixtures/claude_screens/mcp_trust.txt")))
+
+      spawned = dispatch.spawn("api", "claude")
+
+      expect(spawned).to have_attributes(closed: false, waiting: "mcp_trust")
+      expect(dispatch.not_ready_message(spawned, "task")).to match(/finish the MCP server trust screen in it/)
+    end
+
     it "still closes a pane whose screen is unrecognised" do
       allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "x"))
       allow(tmux).to receive(:capture_screen).with("%23").and_return("starting...\n")

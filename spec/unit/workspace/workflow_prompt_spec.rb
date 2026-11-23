@@ -363,6 +363,17 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(text_for(1, run: plain_run, step: direct_step)).not_to include("You are the reviewer of this round")
     end
 
+    it "carries the plain shell command rule in both the sub-agent and the direct round text" do
+      one = review.merge("from" => %w[skeptical])
+      direct_step = step.merge("review" => one)
+      modelled = reviewers.merge("skeptical" => reviewers["skeptical"].merge("model" => "sonnet"))
+      direct_run = Workspace::WorkflowRun.from_h(reviewed_run.to_h.merge("definition" => run.definition.merge("reviewers" => modelled, "steps" => [direct_step])))
+      plain_run = Workspace::WorkflowRun.from_h(direct_run.to_h.merge("definition" => direct_run.definition.merge("reviewers" => reviewers)))
+
+      expect(text_for(1, run: direct_run, step: direct_step)).to include("Keep each Bash call to one plain command")
+      expect(text_for(1, run: plain_run, step: direct_step)).to include("Tell each sub-agent: Keep each Bash call to one plain command")
+    end
+
     it "keeps the sub-agent text for several reviewers even when every one names a model" do
       modelled = reviewers.transform_values { |each| each.merge("model" => "sonnet") }
       many = Workspace::WorkflowRun.from_h(reviewed_run.to_h.merge("definition" => reviewed_run.definition.merge("reviewers" => modelled)))

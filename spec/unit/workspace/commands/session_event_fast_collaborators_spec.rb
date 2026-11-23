@@ -43,7 +43,7 @@ RSpec.describe Workspace::Commands::SessionEvent, "events the fast entry serves"
       output: StringIO.new, error_output: StringIO.new, pane_bindings: pane_bindings,
       workspace_for_session: ->(_session) { "proj" }, session_ambiguous: ->(_session) { false },
       instruction_composer: tripwire.new(calls, "instruction_composer"),
-      permission_policy_config: tripwire.new(calls, "permission_policy_config"),
+      permission_policy_config: tripwire.new(calls, "permission_policy_config"), hang_guard_counter: Class.new(tripwire) { def clear_pane(_pane_id) = nil }.new(calls, "hang_guard_counter"),
       dev_session_release: tripwire.new(calls, "dev_session_release")).call(agent: agent)
   end
 

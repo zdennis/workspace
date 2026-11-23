@@ -483,7 +483,7 @@ module Workspace
       end
     end
 
-    PERMISSION_KEYS = %w[rules default].freeze
+    PERMISSION_KEYS = %w[rules default hang_guard hang_guard_max_denies].freeze
     private_constant :PERMISSION_KEYS
 
     # Warnings about the permission policy this file holds: a key under `agent.permissions` the policy reads

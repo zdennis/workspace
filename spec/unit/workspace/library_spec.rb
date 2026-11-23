@@ -133,6 +133,19 @@ RSpec.describe Workspace::Library do
     end
   end
 
+  describe "the shipped plain-command rule" do
+    let(:config) { instance_double(Workspace::Config, library_dir: File.join(@dir, "library"), builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library")) }
+
+    it "is in the binding, orchestrator and review packs, so agents, sub-agents and reviewers keep Bash calls readable" do
+      %w[binding orchestrator review].each do |name|
+        text = library.builtin_store.read("play", name)
+
+        expect(text).to match(/keep each Bash call to one plain command/i), "play/#{name} lacks the rule"
+        expect(text).to include("bash <path>")
+      end
+    end
+  end
+
   describe "#play and #play_prompt" do
     let(:global) { library.global_store }
     let(:project) { library.project_store("app") }

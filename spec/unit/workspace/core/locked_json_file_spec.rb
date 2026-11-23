@@ -19,6 +19,24 @@ RSpec.describe Workspace::LockedJsonFile do
 
   def leftovers = Dir.children(dir) - ["data.json", "data.json.lock"]
 
+  describe "#exclusive wait:" do
+    it "returns UNAVAILABLE without running the block, writing or calling after: when the lock stays taken" do
+      ran = false
+      File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600) do |held|
+        held.flock(File::LOCK_EX)
+        result = file.exclusive(wait: 0.05, after: ->(_) { ran = true }) { ran = true }
+        expect(result).to eq(described_class::UNAVAILABLE)
+      end
+      expect(ran).to be(false)
+      expect(File.exist?(path)).to be(false)
+    end
+
+    it "runs the block and writes when the lock is free" do
+      expect(file.exclusive(wait: 0.05) { |data| data << "a" && :done }).to eq(:done)
+      expect(JSON.parse(File.read(path))).to eq(["a"])
+    end
+  end
+
   describe "#exclusive after:" do
     it "calls after: with the result once the file is written" do
       seen = []

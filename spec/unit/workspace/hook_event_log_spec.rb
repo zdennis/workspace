@@ -185,6 +185,19 @@ RSpec.describe Workspace::HookEventLog do
       end
     end
 
+    it "writes a hang guard deny as resolved by hang_guard" do
+      log.record(event("permission_request", tool: "Bash", input: "ls", decision: "deny", rule: "hang_guard"))
+
+      expect(lines[1]).to include("outcome" => "denied", "by" => "hang_guard", "rule" => "hang_guard", "wait_ms" => 0)
+    end
+
+    it "leaves a hang guard cap pending like any request left to the person" do
+      written = log.record(event("permission_request", tool: "Bash", decision: "ask", rule: "hang_guard:cap"))
+
+      expect(written.map { |l| l["type"] }).to eq(%w[permission_requested])
+      expect(lines[0]).to include("rule" => "hang_guard:cap")
+    end
+
     it "does not write a second resolved line when a later event arrives for a decided request" do
       log.record(event("permission_request", tool: "Bash", decision: "allow", rule: "r"))
       log.record(event("tool_use", tool: "Bash", tool_use_id: "t1", ok: true))

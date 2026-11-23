@@ -61,6 +61,12 @@ RSpec.describe Workspace::PaneView do
       expect(row(agent)).to include("state" => "done", "state_changed_by" => "stop")
     end
 
+    it "shows waiting, not done, for a sub-agent's wait that outlived the main Stop" do
+      agent[:done] = {since: now - 3, stop_reason: "end_turn", by: "stop"}
+      agent[:waits]["a1"] = {since: now - 5, by: "notification"}
+      expect(row(agent)).to include("state" => "waiting", "waiting_since" => (now - 5).iso8601, "stop_reason" => "end_turn")
+    end
+
     it "names what set a state the monitor has already logged, not nil or restore" do
       agent[:activity_by] = "screen"
       Workspace::PaneStates.state_change(agent, now, 30)

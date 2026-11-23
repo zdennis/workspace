@@ -21,7 +21,10 @@ module Workspace
   # ({WorkflowPanes#review_pane_state}; a tmux that can't be read, or a round that recorded no tmux server, decides
   # neither gone nor restarted, and the daemon's pane row decides the rest): gone (cause `pane_gone`), its agent
   # exited to a shell (cause `agent_gone`), lost with a restarted tmux server (cause `server_restarted`, delivered
-  # again in a new window, counted against `redeliver`), waiting for an answer (left alone), its turn over and idle
+  # again in a new window, counted against `redeliver`), waiting for an answer to a question (left alone), waiting at a
+  # permission dialog or a waiting screen ({WorkflowSweepRows.dialog}: left alone until its age, less downtime, reaches
+  # `workflows.permission_wait_limit` and the pane has been quiet for {WorkflowSweepRows.quiet_window}; the row is then
+  # read again and the round decided on its verdicts with no reviewer run again, cause `permission_wait`), its turn over and idle
   # for the definition's `stall` or past a time limit (cause `idle_turn_over`), its turn over after the sweep
   # interrupted it (cause `interrupted`, decided at once), its turn failed on an API error for `workflows.turn_failed_after`
   # (cause `turn_failed`, decided on its verdicts; nothing is typed into a review pane, and API recovery never takes
@@ -118,8 +121,10 @@ module Workspace
       end
       # Past the short wait, the engine's tick decides it from its pane (so a setup with only the sweep, no daemon
       # timer, decides it too); it still waits for a reviewer at work or a prompt. A reviewer at work past a time
-      # limit is pressed first, as in a delivered round, through the round's own claim (below).
-      if typed && WorkflowTransitions.typed_wait_over?(run.to_h, round, now, stops: Array(pass[:stops])) && !press_typed?(run, round, now, pass[:stops])
+      # limit is pressed first, as in a delivered round, through the round's own claim (below), and one whose pane sits at
+      # a dialog nobody answers is read below too, so `workflows.permission_wait_limit` decides it.
+      if typed && WorkflowTransitions.typed_wait_over?(run.to_h, round, now, stops: Array(pass[:stops])) && !press_typed?(run, round, now, pass[:stops]) &&
+          !typed_at_dialog?(run, round, now, pass[:stops])
         return typed_round(run, what, pass)
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "reviewing", message: "the end of #{what} is being judged") if round["recompute"]
@@ -142,7 +147,8 @@ module Workspace
           "its verdicts are read now, and it stops for a person (review_incomplete) when they fall short")
       end
       if shown["state"] == "waiting"
-        return WorkflowSweepRows.row(run, "nothing", reason: "waiting_permission", message: "review pane #{pane} waits for a permission answer") if shown["waiting_reason"] == "waiting_permission"
+        dialog = WorkflowSweepRows.dialog(shown, now, pass[:stops])
+        return review_dialog(run, round, what, pass, pane, shown, dialog) if dialog
         return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "review pane #{pane} waits for an answer")
       end
       due = time_limits(run, round, now, pass[:stops])
@@ -213,6 +219,15 @@ module Workspace
     def press_typed?(run, round, now, stops)
       return false unless round["pane"].is_a?(String) && time_limits(run, round, now, stops).any?
       @panes.pane_row(run.workspace, round["pane"])&.fetch("state", nil) == "working"
+    end
+
+    # A round whose line may have been typed, its review pane waiting at a permission dialog or a waiting screen
+    # ({WorkflowSweepRows.dialog}): read in its pane, where the limit decides it, rather than handed to the tick, which
+    # never judges a waiting pane.
+    def typed_at_dialog?(run, round, now, stops)
+      return false unless round["pane"].is_a?(String)
+      shown = @panes.pane_row(run.workspace, round["pane"])
+      !shown.nil? && shown["state"] == "waiting" && !WorkflowSweepRows.dialog(shown, now, stops).nil?
     end
 
     # The review pane's turn is over, idle past the floor, and the round was delivered long enough ago that an idle
@@ -352,8 +367,34 @@ module Workspace
       WorkflowSweepRows.engine_row(run, outcome, exhausted ? "stopped" : "redelivered", cause: "round_undelivered", message: message, action: action)
     end
 
+    # The review pane waits at a permission dialog or a waiting screen (+dialog+, from {WorkflowSweepRows.dialog}).
+    # Once its age reaches `workflows.permission_wait_limit` and the pane has been quiet for
+    # {WorkflowSweepRows.quiet_window}, the round is decided on the verdicts written (cause `permission_wait`): no
+    # reviewer runs again, since the next line would land in the dialog, and a round they leave short stops
+    # `review_incomplete` with its window, and the dialog, kept. Nothing is pressed.
+    def review_dialog(run, round, what, pass, pane, shown, dialog)
+      age, kind, waited = dialog.values_at(:age, :what, :waited)
+      limit = pass[:permission_wait_limit]
+      unless limit && age && age >= limit
+        stop = if age.nil? then "; nothing but a person ends it"
+        elsif limit then "; #{what} is decided on its verdicts once it has waited #{Duration.humanize(limit)} (workflows.permission_wait_limit)"
+        else "; no limit is set (workflows.permission_wait_limit)"
+        end
+        return WorkflowSweepRows.row(run, "nothing", reason: "waiting_permission", message: "review pane #{pane} #{waited} at #{kind}#{stop}")
+      end
+      window = WorkflowSweepRows.quiet_window(limit, age)
+      unless WorkflowSweepRows.quiet?(shown, window)
+        return WorkflowSweepRows.row(run, "nothing", reason: "waiting_permission", cause: "permission_wait",
+          message: "review pane #{pane} #{waited} at #{kind}, but it showed output #{shown["idle_seconds"].inspect} seconds ago (it must be quiet for #{Duration.humanize(window.round)}), so the wait may be left by a sub-agent that is gone; nothing is changed")
+      end
+      stall(run, round, pass, pane, "permission_wait",
+        "review pane #{pane} of #{what} waited #{Duration.humanize(age.round)} at #{kind} (limit #{Duration.humanize(limit)}); its verdicts are read now, " \
+        "no reviewer runs again, and it stops for a person (review_incomplete) with the dialog still open when they fall short",
+        {"since" => dialog[:since], "waited" => age.round, "limit" => limit, "screen" => (true if dialog[:screen])}.compact, dialog: dialog, window: window)
+    end
+
     # A round stalled in its review pane: the change is {WorkflowEngine#review_stalled}'s. A turn's end is read again just before it.
-    def stall(run, round, pass, pane, cause, message, data = {})
+    def stall(run, round, pass, pane, cause, message, data = {}, dialog: nil, window: nil)
       action = {"server_restarted" => "redeliver"}.fetch(cause, "evaluate")
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: cause, action: action) if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
@@ -374,6 +415,10 @@ module Workspace
       elsif cause == "agent_gone"
         unless WorkflowPanes.agent_gone_row?(@panes.pane_row(run.workspace, pane))
           return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", message: "review pane #{pane} no longer shows a shell; the next pass looks again", cause: cause)
+        end
+      elsif cause == "permission_wait"
+        unless WorkflowSweepRows.same_dialog?(@panes.pane_row(run.workspace, pane), dialog, window)
+          return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", message: "review pane #{pane} no longer shows the same wait, quiet; the next pass looks again", cause: cause)
         end
       end
       outcome = @engine.review_stalled(run.id, actor: "sweep", step: run.current, attempt: WorkflowSweepRows.attempt_of(run), round: round["round"], pane: pane, cause: cause, data: data)

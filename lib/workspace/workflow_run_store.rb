@@ -319,6 +319,27 @@ module Workspace
       raise store_error(e)
     end
 
+    # Counts a run's history lines of one type that the block accepts, reading the whole history
+    # without the run's lock (the history is append-only); a line that is not JSON is skipped.
+    #
+    # @param id [String] a run id, going or finished
+    # @param type [String] the event type
+    # @yieldparam event [Hash{String=>Object}] one line of that type
+    # @return [Integer] 0 when the run has no history
+    # @raise [Workspace::Error] when the history can't be read
+    def count_events(id, type)
+      marker = JSON.generate("type" => type)[1..-2]
+      File.foreach(events_path(id)).count do |line|
+        next false unless line.end_with?("\n") && line.include?(marker)
+        event = parse_event(line)
+        !event.nil? && event["type"] == type && (!block_given? || yield(event))
+      end
+    rescue Errno::ENOENT
+      0
+    rescue SystemCallError => e
+      raise store_error(e)
+    end
+
     private
 
     # Writes one line to the event errors log for an event that was not written.

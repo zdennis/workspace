@@ -178,6 +178,7 @@ require_relative "workspace/context_reader"
 require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
 require_relative "workspace/prompt_queue_store"
+require_relative "workspace/hang_guard_counter"
 require_relative "workspace/work_queue_history"
 require_relative "workspace/work_queue_store"
 require_relative "workspace/work_queue_starters"
@@ -741,7 +742,8 @@ module Workspace
       work_queue_desk = work_queue_desk_factory.call(workspace: workspace)
       escalation_desk = permission_policy_config && PermissionEscalationDesk.new(
         inbox_store: InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output),
-        policy_config: permission_policy_config, workspace: workspace, project: nil, monitor: monitor, clock: clock, logger: logger
+        policy_config: permission_policy_config, workspace: workspace, project: nil, monitor: monitor,
+        pane_bindings: pane_bindings, tmux: tmux, clock: clock, logger: logger
       )
       hook_fanout = nil
       workflow_nudge = WorkflowNudge.new(workspace: workspace, nudger: workflow_nudger, hook_log: hook_event_log,
@@ -1063,7 +1065,7 @@ module Workspace
       git: git,
       guard: workflow_guard,
       attempt_record: WorkflowAttemptRecord.new(guard: workflow_guard, ledger: session_ledger, evidence: workflow_evidence,
-        session_names: workflow_session_names, server_for: workflow_server_for),
+        session_names: workflow_session_names, server_for: workflow_server_for, run_store: workflow_store),
       require_check: WorkflowRequire.new(guard: workflow_guard, notes_dir_of: workflow_gate_note.method(:notes_dir_of),
         commands_config: commands_config, checker: workflow_checker,
         inbox_for: workflow_inbox_for),
@@ -1106,7 +1108,7 @@ module Workspace
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
       interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall,
       turn_failed_after: -> { workflow_config.turn_failed_after }, infra_retry_max: -> { workflow_config.infra_retry_max },
-      recovery_entry: workflow_recovery_entry, downtime: workflow_downtime, live_usage: workflow_live_usage,
+      permission_wait_limit: -> { workflow_config.permission_wait_limit }, recovery_entry: workflow_recovery_entry, downtime: workflow_downtime, live_usage: workflow_live_usage,
       log_path: config.sweep_log_path, last_path: config.workflow_sweep_last_path, alerts: workflow_alerts)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(home_dir, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do

@@ -12,10 +12,10 @@ A pack is a [library](README.library.md) play. workspace ships thirteen:
 
 | Pack | What it tells the agent |
 |---|---|
-| `binding` | How to work in a pane workspace has [bound](README.binding.md) to a run, a review or a play: read the instructions file, write to the artifacts directory, record questions with `workspace ask`, end the turn when done |
-| `orchestrator` | Delegate to sub-agents, pass `model:` on every Agent call, keep tasks small and reports terse, have a separate agent check each phase |
+| `binding` | How to work in a pane workspace has [bound](README.binding.md) to a run, a review or a play: read the instructions file, write to the artifacts directory, record questions with `workspace ask`, end the turn when done, keep each Bash call to one plain command |
+| `orchestrator` | Delegate to sub-agents, pass `model:` on every Agent call, keep tasks small and reports terse, have a separate agent check each phase, tell every sub-agent to keep shell commands simple |
 | `commits` | Cohesive commits, tests and lint before each one, messages about why, no attribution lines, no push or merge unless told |
-| `review` | Run reviewer sub-agents over the diff, fix or answer every finding, write `review.md` |
+| `review` | Run reviewer sub-agents over the diff, fix or answer every finding, write `review.md`, tell reviewers to keep shell commands simple |
 | `handoff` | Run `workspace handoff check` after every task and hand off to a fresh conversation before the context runs out; sent by `start` and `launch` only for Claude Code, with `--handoff` or `handoff.auto` (see [`handoff`](README.handoff.md#automatic-handoff)) |
 | `dev` | Queue for the project's one shared dev environment before implementing, testing or verifying (`workspace dev up --queue`, then `workspace dev wait`), never test against another worktree's server, and release it with `workspace dev down` when done; sent by `start` and `launch` when the project sets `dev.up` (see [`dev`](README.dev.md#instructions-for-agents)). A workflow step that declares `uses: [devenv]` never gets it |
 | `implementation-plan` | Keep the workspace's `IMPLEMENTATION_PLAN.md` as a counted task list (`[ ]`, `[~]`, `[x]`, `[-]`, `[!]` lines), work it one task at a time, stop when its `status:` is `paused`, and use it as the handoff doc. Not sent automatically: name it with `--pack implementation-plan` or `--play`; `workspace handoff new` binds the pane to it when a plan exists (see [`plan`](README.plan.md#the-implementation-plan-play)) |

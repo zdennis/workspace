@@ -35,10 +35,23 @@ module Workspace
   #   evidence; a start that fails is tried again on the next pass and recorded
   #   once. A workspace with no tmux session gets no daemon (`workspace_stopped`)
   # - the step is held (it has a reason), is still being delivered, or its pane
-  #   waits for a person: left alone. The one exception is a step past its
+  #   waits on a question for a person: left alone. The one exception is a step past its
   #   `timeout` with `on_timeout: fail` that is held on `turn_ended_incomplete`:
   #   it is failed (`step_timed_out`). A `turn_ended_background` hold has its own
   #   90-minute limit and is never touched
+  # - the pane waits at something nobody in a workflow answers: a permission dialog (a wait in the row's `waits`
+  #   with `permission`) or an agent's waiting screen (the wait keyed `screen`: a sign-in or trust screen). A
+  #   question to the person (any other wait) is left alone however long it waits. The age runs from the oldest
+  #   such wait's `since`, less downtime. A daemon restart restores a wait with its first `since` when the old
+  #   daemon had alerted on it ({PaneAlerts.restore_waits}), so the age usually carries on; otherwise the wait opens again and the
+  #   age starts over. A wait with no readable `since` has no age (the row says so) and only the step's timeout can
+  #   stop it. Once the age reaches `workflows.permission_wait_limit`, or the step is past its `timeout` with
+  #   `on_timeout: fail`, and the pane has shown no output for {WorkflowSweepRows::QUIET_WINDOW} (10 minutes, or the limit, the timeout
+  #   or the age when shorter: a real dialog prints nothing, a wait left by a sub-agent that is gone sits beside an
+  #   agent at work; a redraw or a daemon restart starts that count again), the row is read again (`pane_changed`
+  #   when that wait closed or another opened, or output came) and the step is failed with `permission_wait_timeout`
+  #   and the run stopped whatever its `on_fail` says (cause `permission_wait`, outcome `timed_out`). Nothing is
+  #   pressed and the dialog stays up. Before that, a `waiting_permission` row whose message gives the age and the limit
   # - the pane shows a shell where the agent was: records cause `agent_gone`
   # - the agent's turn ended on an API error (the pane row's `turn_failed`): once the failure is older than
   #   `workflows.turn_failed_after`, or the pane's recovery ({AgentRecoveryDesk}) has given up, records cause
@@ -141,11 +154,15 @@ module Workspace
     # @param infra_retry_max [#call] returns `workflows.infra_retry.max`, how many automatic restarts a step whose
     #   pane or agent is gone may get ({WorkflowConfig#infra_retry_max}); called once for each pass. The default, 0,
     #   schedules none, so a sweep built without it acts as it did before infra retries
+    # @param permission_wait_limit [#call] returns `workflows.permission_wait_limit`, the seconds a running step may wait at a
+    #   permission dialog before it is failed and the run stopped ({WorkflowConfig#permission_wait_limit}), or nil for no
+    #   limit; called once for each full pass. The default is no limit
     # @param clock [#call] returns the current Time
     def initialize(store:, engine:, panes:, interrupter:, reviews:, default_stall: -> {}, turn_failed_after: -> {},
       recovery_entry: ->(*) {}, clock: -> { Time.now }, downtime: nil, live_usage: nil, infra_retry_max: -> { 0 },
-      log_path: nil, last_path: nil, alerts: nil, log_limit: 1024 * 1024, log_keep: 256 * 1024)
+      permission_wait_limit: -> {}, log_path: nil, last_path: nil, alerts: nil, log_limit: 1024 * 1024, log_keep: 256 * 1024)
       @infra_retry_max = infra_retry_max
+      @permission_wait_limit = permission_wait_limit
       @live_usage = live_usage
       @log_path = log_path
       @last_path = last_path
@@ -193,7 +210,8 @@ module Workspace
       runs = runs.select { |each| each.workspace == workspace } if workspace
       # Downtime is read once for the pass, after the beat has recorded any gap since the last one.
       pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, sessions: {}, default_stall: @default_stall.call, turn_failed_after: @turn_failed_after.call,
-              stops: downtime_stops, budget_only: budget_only, scheduled: scheduled, infra_retry_max: budget_only ? 0 : @infra_retry_max.call.to_i}
+              stops: downtime_stops, budget_only: budget_only, scheduled: scheduled, infra_retry_max: budget_only ? 0 : @infra_retry_max.call.to_i,
+              permission_wait_limit: budget_only ? nil : @permission_wait_limit.call}
       rows = runs.flat_map { |each| [sweep_run(each, pass)].flatten(1).compact }
       rows += unreadable_rows unless run || workspace || budget_only
       # Every session of the default tmux server unless a workspace or a run narrows the pass.
@@ -545,7 +563,8 @@ module Workspace
         return note(run, pass, "agent_gone", "pane #{pane} shows a shell: the agent has exited, so nothing will end this step. Resume the run to start it again.", {"pane" => pane}, infra: true)
       end
       if shown["state"] == "waiting"
-        return WorkflowSweepRows.row(run, "nothing", reason: "waiting_permission", message: "pane #{pane} waits for a permission answer") if shown["waiting_reason"] == "waiting_permission"
+        dialog = WorkflowSweepRows.dialog(shown, @clock.call, pass[:stops])
+        return permission_wait(run, attempt, pass, pane, shown, dialog, elapsed, timeout, timed_out && on_timeout == "fail") if dialog
         return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "pane #{pane} waits for an answer")
       end
       return turn_failed(run, attempt, pass, pane, shown, elapsed, timeout, timed_out && on_timeout == "fail") if shown["turn_failed"]
@@ -683,6 +702,43 @@ module Workspace
       end
       note(run, pass, "turn_failed", "#{what}, so nothing will end step #{run.current}. Resume the run once the agent can work again (`workspace workflow resume #{run.id}`).",
         {"pane" => pane, "since" => since, "recovery_phase" => entry&.dig("phase"), "recovery_attempts" => entry&.dig("attempts")})
+    end
+
+    # The step's pane waits at a permission dialog or a waiting screen (+dialog+, from {WorkflowSweepRows.dialog}). Once
+    # its age reaches `workflows.permission_wait_limit`, or the step is past its `timeout` with `on_timeout: fail`, and
+    # the pane has been quiet for {WorkflowSweepRows.quiet_window}, the row is read again and the step is failed with
+    # `permission_wait_timeout` and the run stopped, whatever its `on_fail` says ({WorkflowEngine#permission_wait_out}).
+    # Nothing is pressed: the dialog stays up for a person.
+    def permission_wait(run, attempt, pass, pane, shown, dialog, elapsed, timeout, fail_on_timeout)
+      age, what, waited = dialog.values_at(:age, :what, :waited)
+      limit = pass[:permission_wait_limit]
+      due = fail_on_timeout || (limit && age && age >= limit)
+      unless due
+        stop = if age.nil? then "; only the step's own timeout can stop it"
+        elsif limit then "; the step fails and the run stops once it has waited #{Duration.humanize(limit)} (workflows.permission_wait_limit)"
+        else "; no limit is set (workflows.permission_wait_limit)"
+        end
+        return WorkflowSweepRows.row(run, "nothing", reason: "waiting_permission", message: "pane #{pane} #{waited} at #{what}#{stop}")
+      end
+      window = WorkflowSweepRows.quiet_window(limit, (timeout if fail_on_timeout), age)
+      message = "pane #{pane} #{age ? "waited #{Duration.humanize(age.round)}" : "waited"} at #{what} (#{fail_on_timeout ? "past the step's #{Duration.humanize(timeout)} timeout" : "limit #{Duration.humanize(limit)}"}); " \
+        "the step failed and the run stopped with it still open. " \
+        "Deny or close it (or stop the agent) before `workspace workflow resume #{run.id}`: allowed, the old attempt carries on without the run's locks and its work is ignored"
+      unless WorkflowSweepRows.quiet?(shown, window)
+        return WorkflowSweepRows.row(run, "nothing", reason: "waiting_permission", cause: "permission_wait",
+          message: "pane #{pane} #{waited} at #{what}, but it showed output #{shown["idle_seconds"].inspect} seconds ago (it must be quiet for #{Duration.humanize(window.round)}), so the wait may be left by a sub-agent that is gone; nothing is changed")
+      end
+      return WorkflowSweepRows.row(run, "dry_run", message: message, cause: "permission_wait", action: "fail") if pass[:dry_run]
+      refusal = pass[:allow]&.call(run)
+      return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: "permission_wait") if refusal
+      unless WorkflowSweepRows.same_dialog?(@panes.pane_row(run.workspace, pane), dialog, window)
+        return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", cause: "permission_wait",
+          message: "pane #{pane} no longer shows the same wait, quiet; the next pass looks again")
+      end
+      data = {"pane" => pane, "since" => dialog[:since], "waited" => age&.round, "limit" => limit, "screen" => (true if dialog[:screen])}
+      data = data.merge("elapsed" => elapsed.round, "timeout" => timeout) if fail_on_timeout
+      outcome = @engine.permission_wait_out(run.id, actor: "sweep", step: run.current, attempt: attempt.n, data: data.compact)
+      WorkflowSweepRows.engine_row(run, outcome, "timed_out", cause: "permission_wait", message: message, action: "fail")
     end
 
     # Starts the workspace's daemon. The run is not acted on again in this pass.

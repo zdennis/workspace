@@ -92,6 +92,17 @@ RSpec.describe "workspace workflow sweep through build_cli" do
     expect(document["results"].find { |each| each["outcome"] == "failed" }).to include("reason" => "unreadable_run", "run_id" => "wr_bad")
   end
 
+  it "gives the sweep workflows.permission_wait_limit, read from the global config on each call" do
+    built = {}
+    allow(Workspace::WorkflowSweep).to receive(:new) { |**kwargs| built.merge!(kwargs) && double("sweep") }
+    Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {}, exit_handler: FakeExitHandler)
+    expect(built[:permission_wait_limit].call).to eq(3600)
+
+    cli.run(["config", "set", "workflows.permission_wait_limit", "2h"])
+
+    expect(built[:permission_wait_limit].call).to eq(7200)
+  end
+
   it "refuses a RUN together with --name" do
     expect { cli.run(["workflow", "sweep", "wr_2611010900abcd", "--name", "app"]) }.to raise_error(FakeSystemExit)
     expect(err.string).to match(/RUN or --name/)

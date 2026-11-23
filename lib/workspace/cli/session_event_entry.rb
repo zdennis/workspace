@@ -18,11 +18,11 @@ module Workspace
       # The files the hook loads, in dependency order, relative to `lib/workspace`.
       CLOSURE = %w[
         errors core/logger core/id_patterns core/duration byte_size core/agent_provider core/permission_rules
-        core/config_schema core/agent_protocol core/file_lock core/atomic_file core/workspace_name
+        core/config_schema core/agent_protocol core/file_lock core/atomic_file core/locked_json_file core/workspace_name
         core/workspace_lineage core/deferred config terminal_text tool_input_summary review_round_path
         workflow_produced timed_process git process_tree run_liveness lock_holder lock_audit_log lock_store
         lock_namespace lock_idle_tracker lock_enforcer pane_bindings bound_run bash_command_pieces workflow_deny
-        review_write_guard reflection_write_guard session_ledger delivery_log recovery_stop_marker
+        review_write_guard reflection_write_guard session_ledger delivery_log hang_guard_counter recovery_stop_marker
         dev_session_release tmuxinator_config_names session_workspace tmux_pane tmux commands/session_event
         cli/session_event_wiring
       ].freeze

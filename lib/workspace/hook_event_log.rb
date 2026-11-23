@@ -227,7 +227,7 @@ module Workspace
       return nil unless policy_decided?(event)
 
       write_line("permission_resolved", pane_id, permission_fields(event).merge(
-        "outcome" => (event["decision"] == "allow") ? "approved" : "denied", "by" => "policy", "wait_ms" => 0
+        "outcome" => (event["decision"] == "allow") ? "approved" : "denied", "by" => (event["rule"] == "hang_guard") ? "hang_guard" : "policy", "wait_ms" => 0
       ))
     end
 

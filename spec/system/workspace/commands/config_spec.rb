@@ -39,6 +39,16 @@ RSpec.describe Workspace::Commands::Config do
     end
   end
 
+  describe "agent.permissions.hang_guard" do
+    it "stores off, refuses another value and refuses a cap below 1" do
+      command, project_settings = build_command
+      command.set("agent.permissions.hang_guard", "off", project: "app", cwd: Dir.pwd)
+      expect(File.read(project_settings.project_config_path("app"))).to match(/permissions:\s+hang_guard: 'off'/)
+      expect { command.set("agent.permissions.hang_guard", "bogus", project: "app", cwd: Dir.pwd) }.to raise_error(Workspace::UsageError, /Invalid agent.permissions.hang_guard/)
+      expect { command.set("agent.permissions.hang_guard_max_denies", "0", project: "app", cwd: Dir.pwd) }.to raise_error(Workspace::UsageError, /Invalid agent.permissions.hang_guard_max_denies/)
+    end
+  end
+
   describe "unparseable config" do
     def corrupt_project(project_settings, name)
       path = project_settings.project_config_path(name)

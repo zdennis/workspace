@@ -491,7 +491,10 @@ module Workspace
     def incomplete_problem(run, round, problem)
       cause = WorkflowTransitions.round_interrupted(round, @clock.call)
       return problem unless cause
-      why = if cause == "run_timed_out"
+      why = if cause == "permission_wait"
+        "the review pane sat at a dialog nobody answered past workflows.permission_wait_limit, so the sweep decided the round on its verdicts; " \
+        "deny or close that dialog (or stop the agent) first"
+      elsif cause == "run_timed_out"
         "the run used its time limit while the round was reviewed, so the sweep interrupted the review pane; a resume needs --extra-time"
       else
         "the round ran past its #{WorkflowTransitions.review_timeout(run).round} second review timeout, so the sweep interrupted the review pane"

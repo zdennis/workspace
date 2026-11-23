@@ -33,7 +33,10 @@ module Workspace
     # @param evidence [Workspace::WorkflowEvidence, nil] copies the attempt's files aside; nil keeps none
     # @param max_hash_bytes [Integer] the largest `produces` file hashed
     # @param max_transcript_bytes [Integer] how much of a transcript's tail is read
-    def initialize(guard:, ledger: nil, clock: -> { Time.now }, session_names: ->(workspace) { [workspace] }, server_for: ->(_pane) {}, evidence: nil, max_hash_bytes: MAX_HASH_BYTES, max_transcript_bytes: MAX_TRANSCRIPT_BYTES)
+    # @param run_store [Workspace::WorkflowRunStore, nil] counts the attempt's `permission_guarded` history lines for
+    #   `hang_guard_denies`; nil records none
+    def initialize(guard:, ledger: nil, clock: -> { Time.now }, session_names: ->(workspace) { [workspace] }, server_for: ->(_pane) {}, evidence: nil, max_hash_bytes: MAX_HASH_BYTES, max_transcript_bytes: MAX_TRANSCRIPT_BYTES, run_store: nil)
+      @run_store = run_store
       @max_hash_bytes = max_hash_bytes
       @max_transcript_bytes = max_transcript_bytes
       @evidence = evidence
@@ -67,6 +70,8 @@ module Workspace
 
     # Records HEAD now and each declared `produces` file when an attempt passes or fails, and copies its
     # prompt, check log and those files to the evidence directory (`evidence`, see {WorkflowEvidence}).
+    # With a run store it also records `hang_guard_denies`, the calls the hang guard denied the attempt's agent,
+    # from the run's `permission_guarded` lines (absent when there were none or they can't be read).
     # A check log is complete here for a passed or failed check; a cancel or kill that stops a check
     # keeps the log as it stood, and what the stopped check writes later is not copied.
     #
@@ -82,7 +87,19 @@ module Workspace
       attempt["outputs"] = outputs(step, run.to_h, copies)
       attempt.merge!(agent_facts_or_shared(run.to_h, step, attempt))
       attempt["evidence"] = Array(attempt["evidence"]).select { |each| KEPT_EVIDENCE.include?(each["kind"]) } + copies if @evidence
+      denies = hang_guard_denies(run, step["id"], attempt["n"])
+      attempt["hang_guard_denies"] = denies if denies&.positive?
       WorkflowRun::Attempt.from_h(attempt)
+    end
+
+    # The hang guard's denies of the step's attempt's own agent: a reviewer's (with a `round`) are the round's, not the attempt's.
+    def hang_guard_denies(run, step_id, n)
+      return nil unless @run_store
+      @run_store.count_events(run.id, "permission_guarded") do |event|
+        event["rule"] == "hang_guard" && event["step"] == step_id && event["attempt"] == n && event["round"].nil?
+      end
+    rescue
+      nil
     end
 
     # The agent, session and usage facts of an attempt's end. A `subagents` group's siblings share the run

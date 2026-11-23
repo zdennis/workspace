@@ -452,6 +452,18 @@ RSpec.describe Workspace::WorkflowRecovery do
           expect(event_types.first).to eq(["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "interrupt_unanswered", "waited" => 1300}])
         end
 
+        it "decides a round whose review pane sat at a dialog on its verdicts, marking the round so no reviewer runs again (permission_wait)" do
+          stored(reviewing("delivery" => nil, "pane" => "%9", "window" => "@4", "server_pid" => "100"))
+
+          outcome = recovery.review_stalled("wr_1", actor: "sweep", step: "build", attempt: 1, round: 1, pane: "%9", cause: "permission_wait", data: {"waited" => 3700})
+
+          expect(outcome).to eq(:evaluated)
+          expect(evaluation.calls.first).to eq([:review_ended, "build"])
+          expect(store.runs["wr_1"]["steps"]["build"]["review"].dig("sweep", "stalled")).to include("permission_wait")
+          expect(Workspace::WorkflowTransitions.round_interrupted(store.runs["wr_1"]["steps"]["build"]["review"], clock_at.first)).to eq("permission_wait")
+          expect(event_types.first).to eq(["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "permission_wait", "waited" => 3700}])
+        end
+
         it "judges a typed round the sweep pressed whose pane still works once the longer of stall and review timeout has passed since the press" do
           busy = RecordingWorkflowPanes.new(rows: {"%9" => claude_row("working")})
           definition = reviewing["definition"].merge("stall" => 600)
@@ -809,6 +821,30 @@ RSpec.describe Workspace::WorkflowRecovery do
       stalled, recovered = event_types.map(&:last)
       expect(recovered["cause"]).to eq(stalled["cause"])
       expect(store.runs["wr_1"]["steps"]["build"]["state"]).to eq("failed")
+    end
+  end
+
+  describe "#permission_wait_out" do
+    let(:data) { {"pane" => "%3", "since" => "2026-10-04T11:00:00Z", "waited" => 3700, "limit" => 3600} }
+
+    it "fails the running step with permission_wait_timeout and records a stall that opens no clock-cutting span" do
+      stored(run_hash)
+
+      expect(recovery.permission_wait_out("wr_1", actor: "sweep", step: "build", attempt: 1, data: data)).to eq(:timed_out)
+
+      expect(progress.calls).to eq([[:fail_step, "build", {"cause" => "permission_wait"}.merge(data).merge("code" => "permission_wait_timeout", "code_source" => "engine")]])
+      expect(event_types).to eq([
+        ["step_stalled", {"step" => "build", "attempt" => 1, "cause" => "permission_wait"}.merge(data)],
+        ["step_recovered", {"step" => "build", "attempt" => 1, "action" => "failed", "cause" => "permission_wait"}]
+      ])
+      expect(store.runs["wr_1"]["steps"]["build"]["attempts"].last).not_to have_key("stalls")
+    end
+
+    it "does nothing to a step that is held" do
+      stored(run_hash(reason: {"code" => "turn_ended_incomplete", "details" => {}}))
+
+      expect(recovery.permission_wait_out("wr_1", actor: "sweep", step: "build", attempt: 1, data: data)).to eq(:moved_on)
+      expect(progress.calls).to be_empty
     end
   end
 

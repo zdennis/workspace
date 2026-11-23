@@ -88,6 +88,22 @@ RSpec.describe "Workspace.build_agentd_parts" do
     end
   end
 
+  it "opens an item for an undecided request from a pane bound to a live run when no policy is configured" do
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "ws.json")
+      config = Workspace::Config.new
+      allow(config).to receive(:inbox_path).with("workspace", "ws").and_return(path)
+      allow(monitor).to receive(:record)
+      entry = {"kind" => "run", "id" => "r1", "session" => "ws", "pane_slot" => "ws:1.0"}
+      bindings = double("pane_bindings", binding_for: entry, stale?: false)
+      allow(tmux).to receive_messages(session_name_for_pane: "ws", pane_slot: "ws:1.0", server_pid_for_pane: "1")
+      request = {"event" => "permission_request", "pane_id" => "%5", "tool" => "Bash", "input" => "ls"}
+
+      build(config: config, pane_bindings: bindings, permission_policy_config: double("policy_config", configured?: false)).hook_fanout.session_event(request)
+      expect(JSON.parse(File.read(path)).first).to include("dedupe_key" => "permission:ws:%5:main")
+    end
+  end
+
   it "builds the pipeline desk alone with pipeline_only, and puts a desk it is given in its member" do
     built = []
     only = Workspace.build_agentd_parts(**options, session_monitor_factory: ->(_workspace) { built << :monitor })

@@ -114,6 +114,27 @@ RSpec.describe "workspace session-event fast entry's require closure" do
     server&.close
   end
 
+  it "clears the pane's unbound hang guard count on UserPromptSubmit, leaving other panes' and a run's" do
+    FileUtils.mkdir_p(state_dir)
+    path = File.join(state_dir, "hang-guard.json")
+    entry = {"count" => 2, "updated_at" => Time.now.utc.iso8601}
+    File.write(path, JSON.generate("pane:%1:s1" => entry, "pane:%12:s1" => entry, "run:wr_1:fix:1" => entry))
+
+    out, err, status = session_event({"hook_event_name" => "UserPromptSubmit", "session_id" => "s1", "cwd" => @work, "prompt" => "go"})
+
+    expect([out, status.exitstatus]).to eq(["", 0])
+    expect(JSON.parse(File.read(path)).keys).to contain_exactly("pane:%12:s1", "run:wr_1:fix:1")
+    expect_clean(err)
+  end
+
+  it "makes no hang guard file on UserPromptSubmit when there is none" do
+    out, err, status = session_event({"hook_event_name" => "UserPromptSubmit", "session_id" => "s1", "cwd" => @work, "prompt" => "go"})
+
+    expect([out, status.exitstatus]).to eq(["", 0])
+    expect(File.exist?(File.join(state_dir, "hang-guard.json"))).to be(false)
+    expect_clean(err)
+  end
+
   it "records a review write guard's deny in the event log" do
     bind(reviewer)
 

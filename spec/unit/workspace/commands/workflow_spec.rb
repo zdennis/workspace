@@ -1253,6 +1253,12 @@ RSpec.describe Workspace::Commands::Workflow do
           "failed_check: step verify's check ran past its time limit; log: /a/v.log",
         reason("failed_check", {"step" => "verify", "cause" => "reported", "summary" => "two specs red"}) =>
           "failed_check: step verify was reported failed: two specs red",
+        reason("failed_check", {"step" => "verify", "cause" => "permission_wait", "pane" => "%5", "waited" => 3700}) =>
+          "failed_check: step verify was failed by the sweep: pane %5 waited at a permission dialog nobody answered for 3700 seconds. " \
+          "Deny or close it (or stop the agent) before you resume the run: allowed, the old attempt carries on without the run's locks and its work is ignored",
+        reason("failed_check", {"step" => "verify", "cause" => "permission_wait", "pane" => "%5", "screen" => true}) =>
+          "failed_check: step verify was failed by the sweep: pane %5 waited at a waiting screen nobody answered. " \
+          "Deny or close it (or stop the agent) before you resume the run: allowed, the old attempt carries on without the run's locks and its work is ignored",
         reason("waiting_agent_input", {"step" => "plan", "state" => "needs_input", "detail" => "which database?"}) =>
           "waiting_agent_input: step plan's agent says it needs input: which database?",
         reason("waiting_agent_input", {"step" => "plan", "state" => "stuck", "detail" => "no\e[31m access"}) =>

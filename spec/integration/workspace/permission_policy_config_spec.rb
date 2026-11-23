@@ -8,7 +8,7 @@ RSpec.describe Workspace::PermissionPolicyConfig do
   let(:resolver) { Workspace::ConfigResolver.new(project_settings: settings) }
   let(:run_store) { Workspace::WorkflowRunStore.new(dir: File.join(dir, "runs"), archive_dir: File.join(dir, "archive")) }
   let(:run_id) { nil }
-  let(:bound_run) { instance_double(Workspace::BoundRun, run_id_strict: run_id) }
+  let(:bound_run) { instance_double(Workspace::BoundRun, run_id_strict: run_id, binding_strict: run_id && {"kind" => "run", "id" => run_id, "step" => "fix", "attempt" => 1}) }
   let(:logger) { instance_double(Workspace::Logger, debug: nil) }
 
   subject(:config) { described_class.new(config_resolver: resolver, bound_run: bound_run, run_store: run_store, logger: logger) }
@@ -33,8 +33,9 @@ RSpec.describe Workspace::PermissionPolicyConfig do
 
   def agent(**permissions) = {"agent" => {"permissions" => permissions.transform_keys(&:to_s)}}
 
-  def write_run(state:, permissions: nil)
+  def write_run(state:, permissions: nil, hang_guard: nil)
     definition = {"steps" => [{"id" => "fix"}]}
+    definition["hang_guard"] = hang_guard unless hang_guard.nil?
     definition["permissions"] = permissions if permissions
     File.write(File.join(dir, "runs", "wr_1.json"), JSON.generate("id" => "wr_1", "workflow" => "w", "workspace" => "app", "current" => "fix",
       "state" => state, "definition" => definition, "steps" => {"fix" => {"attempts" => []}}))
@@ -148,6 +149,143 @@ RSpec.describe Workspace::PermissionPolicyConfig do
 
       expect(policy).to be_nil
       expect(configured?).to be(true)
+    end
+  end
+
+  describe "#hang_guard_context settings" do
+    def hang_guard = config.hang_guard_context(workspace: "app.worktree-x", project: "app").slice(:mode, :max_denies)
+
+    it "reads the defaults with no files" do
+      expect(hang_guard).to eq(mode: "deny_with_hint", max_denies: 2)
+    end
+
+    it "lets the most specific layer win" do
+      write_config(:global, agent(hang_guard: "off", hang_guard_max_denies: 5))
+      write_config("app", agent(hang_guard: "deny_with_hint", hang_guard_max_denies: 3))
+      expect(hang_guard).to eq(mode: "deny_with_hint", max_denies: 3)
+
+      write_config("app.worktree-x", agent(hang_guard: "off"))
+      expect(hang_guard).to eq(mode: "off", max_denies: 3)
+    end
+
+    it "reads a hand-written unquoted off, which YAML loads as false, as off" do
+      write_config("app", nil, raw: "agent:\n  permissions:\n    hang_guard: off\n")
+      expect(hang_guard[:mode]).to eq("off")
+    end
+
+    it "reads a bad value as the default of that key only" do
+      write_config("app", agent(hang_guard: "bogus", hang_guard_max_denies: 4))
+      expect(hang_guard).to eq(mode: "deny_with_hint", max_denies: 4)
+    end
+
+    context "with a bound run" do
+      let(:run_id) { "wr_1" }
+
+      it "lets a live run's hang_guard beat every config layer, and leaves the cap to config" do
+        write_config("app.worktree-x", agent(hang_guard: "deny_with_hint", hang_guard_max_denies: 4))
+        write_run(state: "running", hang_guard: "off")
+        expect(hang_guard).to eq(mode: "off", max_denies: 4)
+      end
+
+      it "lets a run's deny_with_hint beat a config off" do
+        write_config("app.worktree-x", agent(hang_guard: "off"))
+        write_run(state: "running", hang_guard: "deny_with_hint")
+        expect(hang_guard[:mode]).to eq("deny_with_hint")
+      end
+
+      it "reads the config when the run sets none" do
+        write_config("app.worktree-x", agent(hang_guard: "off"))
+        write_run(state: "running")
+        expect(hang_guard[:mode]).to eq("off")
+      end
+
+      it "ignores a finished run" do
+        write_run(state: "completed", hang_guard: "off")
+        expect(hang_guard[:mode]).to eq("deny_with_hint")
+      end
+
+      it "ignores a bad stored value" do
+        write_run(state: "running", hang_guard: "bogus")
+        expect(hang_guard[:mode]).to eq("deny_with_hint")
+      end
+    end
+
+    it "keeps the rules working and the policy unconfigured when a layer holds only these keys" do
+      write_config("app", agent(hang_guard: "off", hang_guard_max_denies: 1))
+      expect(policy).to be_nil
+      expect(configured?).to be(false)
+
+      write_config("app", agent(hang_guard: "off", rules: [{"tool" => "Bash", "pattern" => "rm *", "action" => "deny"}]))
+      expect(decide("rm x")).to eq(action: "deny", rule: "project:rules[0]")
+    end
+  end
+
+  describe "#hang_guard_context" do
+    def context = config.hang_guard_context(workspace: "app.worktree-x", project: "app")
+
+    let(:entry) { {"kind" => "run", "id" => "wr_1", "step" => "fix", "attempt" => 1} }
+
+    it "gives the settings and no binding for an unbound pane" do
+      write_config("app", agent(hang_guard_max_denies: 3))
+      expect(context).to eq(mode: "deny_with_hint", max_denies: 3, binding: nil)
+    end
+
+    context "with a bound run" do
+      let(:run_id) { "wr_1" }
+
+      it "gives the binding while its run is going, with the run's hang_guard winning" do
+        write_config("app.worktree-x", agent(hang_guard: "deny_with_hint"))
+        write_run(state: "running", hang_guard: "off")
+        expect(context).to eq(mode: "off", max_denies: 2, binding: entry)
+      end
+
+      it "reads the binding and the run once" do
+        write_run(state: "running")
+        reads = []
+        counting = Class.new(SimpleDelegator) { define_method(:run) { |id| reads << id && __getobj__.run(id) } }.new(run_store)
+        expect(bound_run).to receive(:binding_strict).once.and_return(entry)
+
+        described_class.new(config_resolver: resolver, bound_run: bound_run, run_store: counting, logger: logger)
+          .hang_guard_context(workspace: "app.worktree-x", project: "app")
+
+        expect(reads).to eq(["wr_1"])
+      end
+
+      it "gives no binding for a finished run, and ignores its hang_guard" do
+        write_run(state: "completed", hang_guard: "off")
+        expect(context).to eq(mode: "deny_with_hint", max_denies: 2, binding: nil)
+      end
+
+      it "gives no binding when the run can't be read or the binding can't be checked" do
+        expect(context[:binding]).to be_nil
+
+        write_run(state: "running")
+        allow(bound_run).to receive(:binding_strict).and_raise(Errno::ENOENT, "tmux")
+        expect(context[:binding]).to be_nil
+      end
+
+      it "guards at the defaults when a config file can't be parsed or the permissions node is malformed" do
+        write_run(state: "running")
+        write_config("app", nil, raw: "agent: [")
+        expect(context).to eq(mode: "deny_with_hint", max_denies: 2, binding: entry)
+
+        write_config("app", {"agent.permissions.default" => "ask"})
+        expect(context).to include(mode: "deny_with_hint", binding: entry)
+      end
+
+      it "still honours the run's hang_guard when a config file can't be parsed" do
+        write_run(state: "running", hang_guard: "off")
+        write_config("app", nil, raw: "agent: [")
+        expect(context).to eq(mode: "off", max_denies: 2, binding: entry)
+      end
+    end
+
+    it "reads off in an unbound pane when a config file can't be parsed or the permissions node is malformed" do
+      write_config("app", nil, raw: "agent: [")
+      expect(context).to eq(mode: "off", max_denies: 2, binding: nil)
+
+      write_config("app", {"agent.permissions.default" => "ask"})
+      expect(context).to eq(mode: "off", max_denies: 2, binding: nil)
     end
   end
 end

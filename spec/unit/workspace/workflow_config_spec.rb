@@ -103,6 +103,36 @@ RSpec.describe Workspace::WorkflowConfig do
     end
   end
 
+  describe "#permission_wait_limit" do
+    def limit(value)
+      global["workflows"] = {"permission_wait_limit" => value}
+      config.permission_wait_limit
+    end
+
+    it "is 3600 seconds when unset" do
+      expect(config.permission_wait_limit).to eq(3600)
+    end
+
+    it "reads a duration" do
+      expect(limit("30m")).to eq(1800)
+    end
+
+    it "is nil for off and 0" do
+      expect(limit("off")).to be_nil
+      expect(limit("0")).to be_nil
+    end
+
+    it "is 3600 for a value `config set` would refuse" do
+      expect(limit("soon")).to eq(3600)
+    end
+
+    it "is 3600 when the global file can't be parsed" do
+      allow(project_settings).to receive(:load_global).and_raise(Workspace::ConfigParseError.new("/c/config.yml", "bad"))
+
+      expect(config.permission_wait_limit).to eq(3600)
+    end
+  end
+
   describe "#downtime_after" do
     def after(value)
       global["workflows"] = {"downtime_after" => value}
