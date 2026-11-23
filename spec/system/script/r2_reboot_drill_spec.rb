@@ -127,6 +127,26 @@ RSpec.describe "script/r2-reboot-drill" do
     end
   end
 
+  it "teardown stops the lab's demo, waits for it to exit and then removes the lab" do
+    ws = "repo.worktree-r2lab"
+    pid = Process.spawn("sh", "-c", "trap 'exit 0' TERM; while :; do sleep 0.1; done", "script/demo-calculator2 run --id smoke --name #{ws}", pgroup: true)
+    File.write(File.join(@lab, "drill.json"), JSON.generate("workspace" => ws, "demo" => {"pid" => pid, "id" => "smoke"}))
+
+    out, err, status = drill("teardown")
+
+    expect(status.exitstatus).to eq(0), err
+    expect(JSON.parse(out)).to include("demo" => pid, "removed" => true)
+    expect(Process.waitpid(pid, Process::WNOHANG)).to eq(pid)
+    expect(File.exist?(@lab)).to be(false)
+  ensure
+    begin
+      Process.kill("KILL", pid)
+      Process.wait(pid)
+    rescue Errno::ESRCH, Errno::ECHILD
+      nil
+    end
+  end
+
   it "teardown refuses to remove a lab with no drill.json" do
     FileUtils.touch(File.join(@lab, "keep-me"))
 
@@ -135,6 +155,14 @@ RSpec.describe "script/r2-reboot-drill" do
     expect(status.exitstatus).to eq(1)
     expect(err).to include("has no drill.json")
     expect(File.exist?(File.join(@lab, "keep-me"))).to be(true)
+  end
+
+  it "hits a point only once the agent has its prompt, and counts a run held for a person as missed" do
+    load script
+    run = ->(state, flags, run_state = "running") { {"state" => run_state, "current" => {"step" => "research", "state" => state, "flags" => flags}} }
+    expect(R2RebootDrill.point_state(run.call("running", ["delivering"]), "research")).to eq(:wait)
+    expect(R2RebootDrill.point_state(run.call("running", []), "research")).to eq(:hit)
+    expect(R2RebootDrill.point_state(run.call("waiting", [], "waiting"), "research")).to eq(:missed)
   end
 
   it "counts a doctor warn as bad only for workflow runs, review window orphans and agentd orphans" do

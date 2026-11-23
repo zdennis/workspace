@@ -306,9 +306,23 @@ module R2RebootDrill
         return nil
       end
       Process.kill("TERM", -demo["pid"].to_i)
+      # The lab directory is removed next; a demo still writing into it makes that fail (ENOTEMPTY).
+      30.times do
+        return demo["pid"] unless group_alive?(demo["pid"].to_i)
+        sleep 1
+      end
+      @err.puts "r2-reboot-drill: demo pid #{demo["pid"]} still running 30s after TERM"
       demo["pid"]
-    rescue Errno::ESRCH, Errno::EPERM
+    rescue Errno::ESRCH
       nil
+    end
+
+    # macOS answers EPERM for a group left only with zombies its parent has not reaped: the demo has exited.
+    def group_alive?(pgid)
+      Process.kill(0, -pgid)
+      true
+    rescue Errno::ESRCH, Errno::EPERM
+      false
     end
 
     private
@@ -583,19 +597,23 @@ module R2RebootDrill
   end
 
   # :hit, :missed or :wait for a status row of the goal-01 run against a kill point.
+  # The agent has its prompt: the step is running and no longer delivering it. A kill while the prompt is still being
+  # typed fails the dispatch (agent_stopped), which holds the run for a person and is not the case R2 measures.
+  def self.in_turn?(current) = current["state"] == "running" && !Array(current["flags"]).include?("delivering")
+
   def self.point_state(run, step)
     return :missed if TERMINAL.include?(run["state"])
     current = run["current"] || {}
     at = STEP_ORDER.index(current["step"])
     want = STEP_ORDER.index(step)
     return :wait if at.nil? || at < want
-    return :missed if at > want
+    return :missed if at > want || run["state"] == "waiting"
     case step
     when "plan" then (current["state"] == "reviewing" && current.dig("review", "window")) ? :hit : :wait
     when "verify"
       return :missed if current["state"] == "checking"
-      (current["state"] == "running") ? :hit : :wait
-    else (current["state"] == "running") ? :hit : :wait
+      in_turn?(current) ? :hit : :wait
+    else in_turn?(current) ? :hit : :wait
     end
   end
 
