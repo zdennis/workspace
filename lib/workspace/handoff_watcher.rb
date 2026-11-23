@@ -171,11 +171,11 @@ module Workspace
       {watching: true, reason: nil}
     end
 
-    # Reads a main agent's hook event. A sub-agent's is ignored.
+    # Sees each hook event before the session monitor records it. A sub-agent's is ignored.
     #
     # @param message [Hash] a "session_event" message
     # @return [void]
-    def session_event(message)
+    def before_record(message)
       return if message["agent_id"]
       watch = @mutex.synchronize { @watches[message["pane_id"]] }
       return unless watch

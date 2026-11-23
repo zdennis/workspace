@@ -66,7 +66,7 @@ module Workspace
 
     # Shows a hook event to the handoff watcher. A failure there is logged and costs the monitor nothing.
     def notify_handoff_watcher(message)
-      @handoff_watcher&.session_event(message)
+      @handoff_watcher&.before_record(message)
     rescue => e
       @logger.debug { "handoff watcher: #{e.class}: #{e.message}" }
     end

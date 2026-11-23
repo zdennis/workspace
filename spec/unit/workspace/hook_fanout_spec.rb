@@ -26,7 +26,7 @@ RSpec.describe Workspace::HookFanout do
     it "hands a main agent's Stop to the watcher, monitor, hook log, nudger, owner report, queue desk and recovery desk in that order" do
       fanout(spawn: ->(&work) { work.call }).session_event(event("stop"))
 
-      expect(order).to eq([[:handoff_watcher, :session_event], [:monitor, :record], [:hook_log, :record],
+      expect(order).to eq([[:handoff_watcher, :before_record], [:monitor, :record], [:hook_log, :record],
         [:nudger, :turn_ended], [:owner_report, :turn_ended], [:queue_desk, :session_event], [:recovery_desk, :session_event]])
     end
 
@@ -34,7 +34,7 @@ RSpec.describe Workspace::HookFanout do
       fanout.session_event(event("stop"))
 
       expect(spawned.size).to eq(1)
-      expect(order).to eq([[:handoff_watcher, :session_event], [:monitor, :record], [:hook_log, :record],
+      expect(order).to eq([[:handoff_watcher, :before_record], [:monitor, :record], [:hook_log, :record],
         [:nudger, :turn_ended], [:queue_desk, :session_event], [:recovery_desk, :session_event]])
       spawned.first.call
       expect(owner_report.calls).to eq([[:turn_ended, "%1"]])
@@ -96,7 +96,7 @@ RSpec.describe Workspace::HookFanout do
       it "asks for a pass at once when the Stop woke no run" do
         fanout(work_queue_desk: work_queue_desk).session_event(event("stop"))
 
-        expect(order).to eq([[:handoff_watcher, :session_event], [:monitor, :record], [:hook_log, :record],
+        expect(order).to eq([[:handoff_watcher, :before_record], [:monitor, :record], [:hook_log, :record],
           [:nudger, :turn_ended], [:work_queue_desk, :turn_ended], [:queue_desk, :session_event], [:recovery_desk, :session_event]])
       end
 

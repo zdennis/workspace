@@ -128,7 +128,7 @@ RSpec.describe Workspace::HandoffWatcher do
     {"session_id" => "s1", "pane_id" => "%5", "event" => name}.merge(fields.transform_keys(&:to_s))
   end
 
-  def prompt(text) = watcher.session_event(event("user_prompt", prompt: text))
+  def prompt(text) = watcher.before_record(event("user_prompt", prompt: text))
 
   def ends = events.select { |type, _, _| type == "handoff_watch_ended" }.map(&:last)
 
@@ -355,7 +355,7 @@ RSpec.describe Workspace::HandoffWatcher do
     end
   end
 
-  describe "#session_event" do
+  describe "#before_record" do
     it "changes nothing for the save-state prompt arriving before arm" do
       prompt(sent_text)
       arm
@@ -394,8 +394,8 @@ RSpec.describe Workspace::HandoffWatcher do
 
     it "changes nothing for a message with no prompt string" do
       arm
-      watcher.session_event(event("user_prompt"))
-      watcher.session_event(event("user_prompt", prompt: 12))
+      watcher.before_record(event("user_prompt"))
+      watcher.before_record(event("user_prompt", prompt: 12))
       expect(ends).to be_empty
     end
 
@@ -426,34 +426,34 @@ RSpec.describe Workspace::HandoffWatcher do
 
     it "ignores a sub-agent's event" do
       arm
-      watcher.session_event(event("user_prompt", prompt: "sub-agent brief", agent_id: "a1"))
-      watcher.session_event(event("session_end", reason: "other", agent_id: "a1"))
+      watcher.before_record(event("user_prompt", prompt: "sub-agent brief", agent_id: "a1"))
+      watcher.before_record(event("session_end", reason: "other", agent_id: "a1"))
       expect(ends).to be_empty
     end
 
     it "ignores an event for a pane with no watch" do
       arm
-      watcher.session_event(event("user_prompt", prompt: "hello", pane_id: "%6"))
+      watcher.before_record(event("user_prompt", prompt: "hello", pane_id: "%6"))
       expect(ends).to be_empty
     end
 
     it "ends carried_out on a session start from clear" do
       arm
-      watcher.session_event(event("session_end", reason: "clear"))
+      watcher.before_record(event("session_end", reason: "clear"))
       expect(ends).to be_empty
-      watcher.session_event(event("session_start", source: "clear"))
+      watcher.before_record(event("session_start", source: "clear"))
       expect_end("carried_out")
     end
 
     it "ends session_changed on any other session start" do
       arm
-      watcher.session_event(event("session_start", source: "resume"))
+      watcher.before_record(event("session_start", source: "resume"))
       expect_end("session_changed")
     end
 
     it "ends session_ended on a session end" do
       arm
-      watcher.session_event(event("session_end", reason: "logout"))
+      watcher.before_record(event("session_end", reason: "logout"))
       expect_end("session_ended")
     end
   end
@@ -577,13 +577,13 @@ RSpec.describe Workspace::HandoffWatcher do
         expect(message["prompt"].length).to eq(limit)
         expect(message["prompt"]).not_to include("</pasted_content")
 
-        watcher.session_event(message)
+        watcher.before_record(message)
         expect(ends).to be_empty
       end
 
       it "ends the watch for a person's long paste, cut the same way" do
         arm
-        watcher.session_event(through_session_event(wrapped(long)))
+        watcher.before_record(through_session_event(wrapped(long)))
         expect_end("other_prompt")
       end
     end
@@ -919,7 +919,7 @@ RSpec.describe Workspace::HandoffWatcher do
 
     it "types nothing when carried_out arrives while the poll waits on the lock" do
       arm
-      lock_wait << -> { watcher.session_event(event("session_start", source: "clear")) }
+      lock_wait << -> { watcher.before_record(event("session_start", source: "clear")) }
       tick(30)
       expect(tmux.delivered).to be_empty
       expect_end("carried_out")
@@ -936,7 +936,7 @@ RSpec.describe Workspace::HandoffWatcher do
 
     it "types nothing when carried_out arrives right before the paste" do
       arm
-      at_first_check { watcher.session_event(event("session_start", source: "clear")) }
+      at_first_check { watcher.before_record(event("session_start", source: "clear")) }
       tick(30)
       expect(tmux.delivered).to be_empty
       expect(followups).to be_empty

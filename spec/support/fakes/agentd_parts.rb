@@ -312,7 +312,7 @@ class RecordingHookLog
   end
 end
 
-# Fake of Workspace::HandoffWatcher#session_event.
+# Fake of Workspace::HandoffWatcher#before_record.
 class RecordingHandoffWatcher
   CONTROL_METHODS = %i[calls].freeze
 
@@ -325,9 +325,9 @@ class RecordingHandoffWatcher
     @calls = []
   end
 
-  def session_event(message)
-    @calls << [:session_event, message]
-    @order << [@label, :session_event]
+  def before_record(message)
+    @calls << [:before_record, message]
+    @order << [@label, :before_record]
     raise @fail_with if @fail_with
     nil
   end
