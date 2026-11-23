@@ -5,143 +5,161 @@ RSpec.describe Workspace::HookFanout do
   let(:monitor) { RecordingHookMonitor.new(order: order) }
   let(:hook_log) { RecordingHookLog.new(order: order) }
   let(:handoff_watcher) { RecordingHandoffWatcher.new(order: order) }
-  let(:nudger) { RecordingNudger.new(order: order) }
-  let(:owner_report) { RecordingOwnerReport.new(order: order) }
   let(:queue_desk) { RecordingHookDesk.new(order: order, label: :queue_desk) }
   let(:recovery_desk) { RecordingHookDesk.new(order: order, label: :recovery_desk) }
-  let(:now) { Time.utc(2026, 11, 11, 12, 0, 0) }
   let(:log_output) { StringIO.new }
-  let(:spawned) { [] }
 
   def fanout(**given)
-    described_class.new(workspace: "myapp", monitor: monitor, hook_log: hook_log, handoff_watcher: handoff_watcher,
-      nudger: nudger, owner_report: owner_report, desks: [queue_desk, recovery_desk], clock: -> { now },
-      spawn: ->(&work) { spawned << work },
+    Workspace::HookFanout.new(monitor: monitor, hook_log: hook_log, subscribers: [handoff_watcher, queue_desk, recovery_desk],
       logger: Workspace::Logger.new(output: log_output, enabled: true), **given)
   end
 
   def event(name, **extra) = {"type" => "session_event", "workspace" => "myapp", "event" => name, "pane_id" => "%1"}.merge(extra)
 
   describe "#session_event" do
-    it "hands a main agent's Stop to the watcher, monitor, hook log, nudger, owner report, queue desk and recovery desk in that order" do
-      fanout(spawn: ->(&work) { work.call }).session_event(event("stop"))
-
-      expect(order).to eq([[:handoff_watcher, :session_event], [:monitor, :record], [:hook_log, :record],
-        [:nudger, :turn_ended], [:owner_report, :turn_ended], [:queue_desk, :session_event], [:recovery_desk, :session_event]])
-    end
-
-    it "hands the owner report to spawn rather than running it on the caller's thread" do
+    it "runs the before_record subscribers, then the monitor, the hook log, then the session_event subscribers" do
       fanout.session_event(event("stop"))
 
-      expect(spawned.size).to eq(1)
-      expect(order).to eq([[:handoff_watcher, :session_event], [:monitor, :record], [:hook_log, :record],
-        [:nudger, :turn_ended], [:queue_desk, :session_event], [:recovery_desk, :session_event]])
-      spawned.first.call
-      expect(owner_report.calls).to eq([[:turn_ended, "%1"]])
+      expect(order).to eq([[:handoff_watcher, :before_record], [:monitor, :record], [:hook_log, :record],
+        [:queue_desk, :session_event], [:recovery_desk, :session_event]])
     end
 
-    it "leaves the nudger and the owner report out for a sub-agent's event" do
-      fanout.session_event(event("stop", "agent_id" => "a1"))
+    it "calls only the subscribers that respond to the event" do
+      fanout.session_event(event("user_prompt"))
 
-      expect(order.map(&:first)).to eq(%i[handoff_watcher monitor hook_log queue_desk recovery_desk])
-      expect(spawned).to be_empty
+      expect(handoff_watcher.calls.map(&:first)).to eq([:before_record])
+      expect(queue_desk.calls.map(&:first)).to eq([:session_event])
     end
 
-    it "hands the stop event's transcript path to the nudger" do
-      fanout.session_event(event("stop", "transcript_path" => "/t/s.jsonl"))
+    it "keeps going when a before_record subscriber raises, logging it" do
+      failing = RecordingHandoffWatcher.new(order: order, fail_with: RuntimeError.new("boom"))
+      fanout(subscribers: [failing, queue_desk]).session_event(event("user_prompt"))
 
-      expect(nudger.calls.last.last[:transcript_path]).to eq("/t/s.jsonl")
+      expect(order.map(&:first)).to eq(%i[handoff_watcher monitor hook_log queue_desk])
+      expect(log_output.string).to include("agent: RecordingHandoffWatcher before_record failed (RuntimeError: boom)")
     end
 
-    it "tells the nudger when the turn that ended began, and forgets it at a new session" do
-      subject = fanout
-      subject.session_event(event("user_prompt"))
-      subject.session_event(event("stop", "background_tasks" => ["b1"]))
-      subject.session_event(event("session_start"))
-      subject.session_event(event("stop"))
-
-      expect(nudger.calls).to eq([
-        [:turn_ended, "myapp", "%1", {turn_started: now, background: ["b1"], transcript_path: nil, hook_log: hook_log}],
-        [:turn_ended, "myapp", "%1", {turn_started: nil, background: nil, transcript_path: nil, hook_log: hook_log}]
-      ])
-    end
-
-    it "keeps going when the handoff watcher raises, logging it" do
-      fanout(handoff_watcher: RecordingHandoffWatcher.new(order: order, fail_with: RuntimeError.new("boom"))).session_event(event("user_prompt"))
-
-      expect(order.map(&:first)).to eq(%i[handoff_watcher monitor hook_log queue_desk recovery_desk])
-      expect(log_output.string).to include("handoff watcher: RuntimeError: boom")
-    end
-
-    it "lets a desk that raises stop the desks after it" do
+    it "logs a session_event subscriber that raises and still runs the ones after it" do
       failing = RecordingHookDesk.new(order: order, label: :queue_desk, fail_with: RuntimeError.new("full"))
+      fanout(subscribers: [failing, recovery_desk]).session_event(event("user_prompt"))
 
-      expect { fanout(desks: [failing, recovery_desk]).session_event(event("user_prompt")) }.to raise_error(RuntimeError, "full")
-      expect(recovery_desk.calls).to be_empty
+      expect(order.map(&:first)).to eq(%i[monitor hook_log queue_desk recovery_desk])
+      expect(recovery_desk.calls.size).to eq(1)
+      expect(log_output.string).to include("agent: RecordingHookDesk session_event failed (RuntimeError: full)")
     end
 
-    describe "the work queue desk" do
-      let(:work_queue_desk) { RecordingWorkQueueDesk.new(order: order) }
+    it "does not run the session_event subscribers when the monitor raises" do
+      allow(monitor).to receive(:record).and_raise(RuntimeError, "monitor down")
 
-      it "asks for a pass only once the workflow advance a main agent's Stop woke has exited" do
-        nudger = RecordingNudger.new(order: order, woken: "wr_1")
-        fanout(nudger: nudger, work_queue_desk: work_queue_desk).session_event(event("stop"))
-        expect(work_queue_desk.calls).to be_empty
-
-        nudger.exits.each(&:call)
-
-        expect(work_queue_desk.calls).to eq([:turn_ended])
-      end
-
-      it "asks for a pass at once when the Stop woke no run" do
-        fanout(work_queue_desk: work_queue_desk).session_event(event("stop"))
-
-        expect(order).to eq([[:handoff_watcher, :session_event], [:monitor, :record], [:hook_log, :record],
-          [:nudger, :turn_ended], [:work_queue_desk, :turn_ended], [:queue_desk, :session_event], [:recovery_desk, :session_event]])
-      end
-
-      it "asks for a pass at once with no nudger" do
-        fanout(nudger: nil, work_queue_desk: work_queue_desk).session_event(event("stop"))
-
-        expect(work_queue_desk.calls).to eq([:turn_ended])
-      end
-
-      it "asks for none on a sub-agent's Stop or another event" do
-        subject = fanout(work_queue_desk: work_queue_desk)
-        subject.session_event(event("stop", "agent_id" => "a1"))
-        subject.session_event(event("user_prompt"))
-
-        expect(work_queue_desk.calls).to be_empty
-      end
+      expect { fanout.session_event(event("stop")) }.to raise_error(RuntimeError, "monitor down")
+      expect(queue_desk.calls).to be_empty
     end
 
     it "needs only the monitor: the optional parts left out are skipped" do
-      described_class.new(workspace: "myapp", monitor: monitor, desks: [nil]).session_event(event("stop"))
+      Workspace::HookFanout.new(monitor: monitor, subscribers: [nil]).session_event(event("stop"))
 
       expect(order).to eq([[:monitor, :record]])
     end
   end
 
-  describe "#scan_desks" do
-    it "scans the queue desk then the recovery desk" do
-      fanout.scan_desks
-
-      expect(order).to eq([[:queue_desk, :scan], [:recovery_desk, :scan]])
-    end
-
-    it "scans the work queue desk after the other desks, even when one of them raises" do
-      failing = RecordingHookDesk.new(order: order, label: :queue_desk, fail_with: RuntimeError.new("wedged"))
-      fanout(desks: [failing, recovery_desk], work_queue_desk: RecordingWorkQueueDesk.new(order: order)).scan_desks
+  describe "#scan" do
+    it "scans the subscribers that respond to it, in order" do
+      work_queue_desk = RecordingWorkQueueDesk.new(order: order)
+      fanout(subscribers: [handoff_watcher, queue_desk, recovery_desk, work_queue_desk]).scan
 
       expect(order).to eq([[:queue_desk, :scan], [:recovery_desk, :scan], [:work_queue_desk, :scan]])
     end
 
-    it "scans the next desk when one raises, logging it" do
+    it "scans the next subscriber when one raises, logging it" do
       failing = RecordingHookDesk.new(order: order, label: :queue_desk, fail_with: RuntimeError.new("wedged"))
-      fanout(desks: [failing, recovery_desk]).scan_desks
+      work_queue_desk = RecordingWorkQueueDesk.new(order: order)
+      fanout(subscribers: [failing, recovery_desk, work_queue_desk]).scan
 
-      expect(order).to eq([[:queue_desk, :scan], [:recovery_desk, :scan]])
+      expect(order).to eq([[:queue_desk, :scan], [:recovery_desk, :scan], [:work_queue_desk, :scan]])
       expect(log_output.string).to include("agent: RecordingHookDesk scan failed (RuntimeError: wedged)")
+    end
+  end
+
+  describe "#tick" do
+    it "reaches the subscribers that respond to it" do
+      ticker = Class.new do
+        attr_reader :ticks
+
+        def tick = (@ticks = @ticks.to_i + 1)
+      end.new
+      fanout(subscribers: [queue_desk, ticker]).tick
+
+      expect(ticker.ticks).to eq(1)
+      expect(queue_desk.calls).to be_empty
+    end
+
+    it "a tick that raises in one subscriber still reaches the next" do
+      stub_const("WedgedTicker", Class.new { def tick = raise("wedged") })
+      failing = WedgedTicker.new
+      ticker = Class.new do
+        attr_reader :ticks
+
+        def tick = (@ticks = @ticks.to_i + 1)
+      end.new
+      fanout(subscribers: [failing, ticker]).tick
+
+      expect(ticker.ticks).to eq(1)
+      expect(log_output.string).to include("agent: WedgedTicker tick failed (RuntimeError: wedged)")
+    end
+  end
+
+  describe "#turn_ended" do
+    it "reaches the subscribers that respond to it" do
+      work_queue_desk = RecordingWorkQueueDesk.new(order: order)
+      fanout(subscribers: [queue_desk, work_queue_desk]).turn_ended
+
+      expect(order).to eq([[:work_queue_desk, :turn_ended]])
+    end
+  end
+
+  describe "#notify" do
+    it "passes a later event's arguments to the subscribers that respond to it" do
+      listener = Class.new do
+        attr_reader :seen
+
+        def wait_opened(pane) = (@seen = pane)
+      end.new
+      fanout(subscribers: [queue_desk, listener]).notify(:wait_opened, "%3")
+
+      expect(listener.seen).to eq("%3")
+      expect(queue_desk.calls).to be_empty
+    end
+  end
+
+  describe Workspace::HookFanout::OwnerFinished do
+    let(:report) { RecordingOwnerReport.new(order: order) }
+    let(:spawned) { [] }
+    let(:finished) { described_class.new(report: report, spawn: ->(&work) { spawned << work }) }
+
+    it "hands the owner report to spawn for a main agent's Stop, not running it on the caller's thread" do
+      finished.session_event(event("stop"))
+
+      expect(report.calls).to be_empty
+      expect(spawned.size).to eq(1)
+      spawned.first.call
+      expect(report.calls).to eq([[:turn_ended, "%1"]])
+    end
+
+    it "ignores a sub-agent's Stop and the main agent's other events" do
+      finished.session_event(event("stop", "agent_id" => "a1"))
+      finished.session_event(event("user_prompt"))
+
+      expect(spawned).to be_empty
+    end
+
+    it "does not respond to turn_ended, the registry's turn-settled event" do
+      expect(finished).not_to respond_to(:turn_ended)
+    end
+
+    it "reports from a fan-out's session_event phase" do
+      fanout(subscribers: [finished]).session_event(event("stop"))
+
+      expect(spawned.size).to eq(1)
     end
   end
 end

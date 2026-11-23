@@ -9,7 +9,7 @@ module AgentdPartsHelper
     prompt_queue_desk_factory handoff_watcher_factory restart_runner_factory work_coordinator_client pipeline_config
     pipeline_state sentinel_poller_factory workflow_nudger workflow_store work_queue_desk_factory token_generator epoch_generator clock retry_backoff logger
     error_output].freeze
-  SHARED_KEYWORDS = %i[tmux config pipeline_config workflow_nudger event_log logger error_output].freeze
+  SHARED_KEYWORDS = %i[tmux config pipeline_config event_log logger error_output].freeze
 
   def build_agentd(**given)
     agent_given = given.reject { |key, _| PARTS_KEYWORDS.include?(key) && !SHARED_KEYWORDS.include?(key) }

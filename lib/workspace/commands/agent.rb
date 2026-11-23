@@ -32,15 +32,13 @@ module Workspace
       #   pane, raising {Workspace::Error} when none is found
       # @param restart_registry [Workspace::RestartRegistry] the panes being restarted
       # @param event_log [Workspace::EventLog, nil] records the daemon's start and stop; nil records nothing
-      # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes the workspace's workflow runs on a timer
-      #   (the parts' hook fan-out wakes one when a turn ends in its pane); nil leaves workflow runs alone
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
       #   to lowercase before the socket is claimed; nil renames nothing
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
       def initialize(config:, tmux:, pipeline_config:, parts:, socket_server:, router_for:, claude_pane:, restart_registry:,
-        logger:, event_log: nil, workflow_nudger: nil, name_migration: nil, output: $stdout, error_output: $stderr)
+        logger:, event_log: nil, name_migration: nil, output: $stdout, error_output: $stderr)
         @name_migration = name_migration
         @config = config
         @tmux = tmux
@@ -49,7 +47,6 @@ module Workspace
         @router_for = router_for
         @claude_pane = claude_pane
         @session_monitor = nil
-        @workflow_nudger = workflow_nudger
         @agent_recovery_desk = nil
         @hook_fanout = nil
         # Restart workers by pane id, so one pane is restarted once at a time.
@@ -127,16 +124,15 @@ module Workspace
         @prompt_queue_desk = parts.queue_desk
         @agent_recovery_desk = parts.recovery_desk
         @hook_fanout = parts.hook_fanout
-        @hook_event_log = parts.hook_event_log
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
-        @session_monitor.on_scan = -> { @hook_fanout.scan_desks } if @session_monitor.respond_to?(:on_scan=)
+        @session_monitor.on_scan = -> { @hook_fanout.scan } if @session_monitor.respond_to?(:on_scan=)
         @handoff_watcher = parts.handoff_watcher
 
         @output.puts "workspace agent '#{name}' ready"
         log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
         @daemon_started = true
         watcher = @socket_server.watch(socket_path, needs_registration: !registered,
-          on_tick: -> { @workflow_nudger&.tick(@current_name, hook_log: @hook_event_log) }, re_register: -> { @pipeline_desk.re_register })
+          on_tick: -> { @hook_fanout&.tick }, re_register: -> { @pipeline_desk.re_register })
         @socket_server.serve(@router)
 
         true

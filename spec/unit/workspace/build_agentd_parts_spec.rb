@@ -110,11 +110,11 @@ RSpec.describe "Workspace.build_agentd_parts" do
     expect(parts.restart_runner).to equal(restart_runner)
   end
 
-  it "hands hook events through the fan-out to the parts built and the workflow nudger it is given" do
+  it "hands a Stop through the fan-out to the monitor, the hook log and the workflow nudger with that log" do
     nudger = RecordingNudger.new
     hook_log = RecordingHookLog.new
     allow(monitor).to receive(:record)
-    parts = build(workflow_nudger: nudger, hook_event_log_factory: ->(_workspace) { hook_log })
+    parts = build(workflow_nudger: nudger, hook_event_log_factory: ->(_workspace) { hook_log }, work_queue_desk_factory: ->(**) { RecordingWorkQueueDesk.new })
 
     parts.hook_fanout.session_event({"type" => "session_event", "workspace" => "ws", "event" => "stop", "pane_id" => "%5"})
 
@@ -124,19 +124,84 @@ RSpec.describe "Workspace.build_agentd_parts" do
     expect(nudger.calls.first.last[:hook_log]).to equal(parts.hook_event_log)
   end
 
-  it "puts the work queue desk its factory builds for the workspace in its member, and the fan-out asks it for passes" do
+  it "ticks the workflow nudger through the fan-out with the workspace and the one hook log the parts hold" do
+    nudger = RecordingNudger.new
+    parts = build(workflow_nudger: nudger, hook_event_log_factory: ->(_workspace) { RecordingHookLog.new })
+
+    parts.hook_fanout.tick
+
+    expect(nudger.calls.map(&:first)).to eq([:tick])
+    expect(nudger.calls.first[1]).to eq("ws")
+    expect(nudger.calls.first.last[:hook_log]).to equal(parts.hook_event_log)
+  end
+
+  it "puts the work queue desk its factory builds in its member, and asks it for a pass once the Stop's advance exits and on each scan" do
     desk = RecordingWorkQueueDesk.new
     seen = nil
+    nudger = RecordingNudger.new(woken: "wr_1")
     allow(monitor).to receive(:record)
     allow(monitor).to receive(:delivery_facts)
-    parts = build(work_queue_desk_factory: ->(**given) { (seen = given) && desk })
+    parts = build(workflow_nudger: nudger, work_queue_desk_factory: ->(**given) { (seen = given) && desk })
 
     parts.hook_fanout.session_event({"type" => "session_event", "workspace" => "ws", "event" => "stop", "pane_id" => "%5"})
-    parts.hook_fanout.scan_desks
+    expect(desk.calls).to be_empty
+    nudger.exits.each(&:call)
+    parts.hook_fanout.scan
 
     expect(seen).to eq(workspace: "ws")
     expect(parts.work_queue_desk).to equal(desk)
     expect(desk.calls).to eq(%i[turn_ended scan])
+  end
+
+  it "scans the desks, then the work queue desk" do
+    order = []
+    queue_desk = RecordingHookDesk.new(order: order, label: :queue_desk)
+    recovery_desk = RecordingHookDesk.new(order: order, label: :recovery_desk)
+    parts = build(prompt_queue_desk_factory: ->(**) { queue_desk }, agent_recovery_desk_factory: ->(**) { recovery_desk },
+      work_queue_desk_factory: ->(**) { RecordingWorkQueueDesk.new(order: order) })
+
+    parts.hook_fanout.scan
+
+    expect(order).to eq([[:queue_desk, :scan], [:recovery_desk, :scan], [:work_queue_desk, :scan]])
+  end
+
+  it "reports a stage owner's finished turn to the owner report on a main agent's Stop" do
+    report = RecordingOwnerReport.new
+    allow(monitor).to receive(:record)
+    parts = build(spine_owner_report_factory: ->(_workspace) { report }, work_queue_desk_factory: ->(**) { RecordingWorkQueueDesk.new })
+    stop = {"type" => "session_event", "workspace" => "ws", "event" => "stop", "pane_id" => "%5"}
+
+    parts.hook_fanout.session_event(stop.merge("agent_id" => "a1"))
+    parts.hook_fanout.session_event(stop)
+    deadline = Time.now + 2
+    sleep 0.01 until report.calls.any? || Time.now > deadline
+
+    expect(parts.spine_owner_report).to equal(report)
+    expect(report.calls).to eq([[:turn_ended, "%5"]])
+  end
+
+  it "runs a main agent's Stop through the fan-out in the production order of its subscribers" do
+    order = []
+    nudger = RecordingNudger.new(order: order, woken: "wr_1")
+    parts = build(session_monitor_factory: ->(_workspace) { RecordingHookMonitor.new(order: order) },
+      workflow_nudger: nudger, hook_event_log_factory: ->(_workspace) { RecordingHookLog.new(order: order) },
+      handoff_watcher_factory: ->(**) { RecordingHandoffWatcher.new(order: order) },
+      spine_owner_report_factory: ->(_workspace) { RecordingOwnerReport.new(order: order) },
+      prompt_queue_desk_factory: ->(**) { RecordingHookDesk.new(order: order, label: :queue_desk) },
+      agent_recovery_desk_factory: ->(**) { RecordingHookDesk.new(order: order, label: :recovery_desk) },
+      work_queue_desk_factory: ->(**) { RecordingWorkQueueDesk.new(order: order) })
+
+    parts.hook_fanout.session_event({"type" => "session_event", "workspace" => "ws", "event" => "stop", "pane_id" => "%5"})
+    deadline = Time.now + 2
+    sleep 0.01 until order.include?([:owner_report, :turn_ended]) || Time.now > deadline
+
+    # The owner report runs on its own thread, so only its place after the nudger is fixed.
+    expect(order.reject { |entry| entry == [:owner_report, :turn_ended] }).to eq([[:handoff_watcher, :before_record], [:monitor, :record],
+      [:hook_log, :record], [:nudger, :turn_ended], [:queue_desk, :session_event], [:recovery_desk, :session_event]])
+    expect(order.index([:owner_report, :turn_ended])).to be > order.index([:nudger, :turn_ended])
+
+    nudger.exits.each(&:call)
+    expect(order.last).to eq([:work_queue_desk, :turn_ended])
   end
 
   it "gives a replaced desk the keywords the builder passes" do

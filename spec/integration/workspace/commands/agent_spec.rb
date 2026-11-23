@@ -1565,7 +1565,7 @@ RSpec.describe Workspace::Commands::Agent do
 
           def arm(**args) = (@armed << args) && @answer
 
-          def session_event(message)
+          def before_record(message)
             raise "boom" if raise_on_event
             @seen << [message["event"], @recorded.call.dup]
           end

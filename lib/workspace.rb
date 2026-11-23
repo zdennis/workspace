@@ -446,6 +446,7 @@ require_relative "workspace/agentd_parts"
 require_relative "workspace/agentd_restart_desk"
 require_relative "workspace/pipeline_desk"
 require_relative "workspace/hook_fanout"
+require_relative "workspace/workflow_nudge"
 require_relative "workspace/agentd_router"
 require_relative "workspace/agentd_socket_server"
 require_relative "workspace/commands/agent"
@@ -621,8 +622,8 @@ module Workspace
   #   the workspace's persisted state file
   # @param sentinel_poller_factory [#call, nil] given +session_name:+, +pane:+, +token:+ and +deadline:+, builds the
   #   {Workspace::SentinelPoller} that watches a pipeline stage; nil builds the real one
-  # @param workflow_nudger [Workspace::WorkflowNudger, nil] the {Workspace::HookFanout} wakes a workflow run with it when a
-  #   turn ends in the run's pane; nil wakes none
+  # @param workflow_nudger [Workspace::WorkflowNudger, nil] the shared nudger, wrapped per workspace in a {Workspace::WorkflowNudge}
+  #   subscriber of the {Workspace::HookFanout}, that wakes a workflow run when a turn ends in its pane; nil wakes none
   # @param workflow_store [Workspace::WorkflowRunStore, nil] the runs the work queue desk reads; nil builds one over the config's run dirs
   # @param work_queue_desk_factory [#call, nil] given +workspace:+, builds the {Workspace::WorkQueueDesk} that starts the
   #   work queue's pass; nil builds the real one
@@ -742,9 +743,12 @@ module Workspace
         inbox_store: InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output),
         policy_config: permission_policy_config, workspace: workspace, project: nil, monitor: monitor, clock: clock, logger: logger
       )
-      hook_fanout = HookFanout.new(workspace: workspace, monitor: monitor, hook_log: hook_event_log, handoff_watcher: handoff_watcher,
-        nudger: workflow_nudger, owner_report: spine_owner_report, desks: [queue_desk, recovery_desk, escalation_desk], work_queue_desk: work_queue_desk,
-        clock: clock, logger: logger)
+      hook_fanout = nil
+      workflow_nudge = WorkflowNudge.new(workspace: workspace, nudger: workflow_nudger, hook_log: hook_event_log,
+        turn_settled: -> { hook_fanout.turn_ended }, clock: clock)
+      owner_finished = spine_owner_report && HookFanout::OwnerFinished.new(report: spine_owner_report)
+      hook_fanout = HookFanout.new(monitor: monitor, hook_log: hook_event_log, logger: logger,
+        subscribers: [handoff_watcher, workflow_nudge, owner_finished, queue_desk, recovery_desk, escalation_desk, work_queue_desk])
       AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner, restart_desk: restart_desk,
         plan_progress_watcher: plan_progress_watcher, spine_owner_report: spine_owner_report, spine_watcher: spine_watcher,
         status_desk: status_desk, queue_desk: queue_desk, recovery_desk: recovery_desk, handoff_watcher: handoff_watcher,
@@ -766,10 +770,9 @@ module Workspace
   # @param restart_registry [Workspace::RestartRegistry] the panes being restarted
   # @param signal_trapper [#trap] receives the SIGTERM/SIGINT handler registration
   # @param socket_poll_interval [Numeric] seconds between the socket watcher's passes
-  # @param workflow_tick_passes [Integer] the watcher ticks the workflow nudger every this many passes
+  # @param workflow_tick_passes [Integer] the watcher ticks the hook fanout's subscribers (the workflow nudge among them) every this many passes
   # @param current_name [String, nil] the workspace served before {Commands::Agent#call} starts ({Commands::Agent#prepare})
   # @param event_log [Workspace::EventLog, nil] records the daemon's start and stop
-  # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes the workspace's workflow runs on a timer
   # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace before the socket is claimed
   # @param logger [Workspace::Logger] debug logger
   # @param output [IO] output stream for user-facing messages
@@ -777,7 +780,7 @@ module Workspace
   # @return [Workspace::Commands::Agent]
   def self.build_agent_daemon(config:, tmux:, pipeline_config:, parts:, agent_labels: nil, agent_commands: nil,
     restart_registry: RestartRegistry.new, signal_trapper: Signal, socket_poll_interval: AgentdSocketServer::POLL_INTERVAL,
-    workflow_tick_passes: AgentdSocketServer::TICK_PASSES, current_name: nil, event_log: nil, workflow_nudger: nil,
+    workflow_tick_passes: AgentdSocketServer::TICK_PASSES, current_name: nil, event_log: nil,
     name_migration: nil, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
     socket_server = AgentdSocketServer.new(poll_interval: socket_poll_interval, tick_passes: workflow_tick_passes,
       signal_trapper: signal_trapper, logger: logger, output: output, error_output: error_output)
@@ -787,7 +790,7 @@ module Workspace
     end
     agent = Commands::Agent.new(config: config, tmux: tmux, pipeline_config: pipeline_config, parts: parts,
       socket_server: socket_server, router_for: router_for, claude_pane: claude_pane, restart_registry: restart_registry,
-      event_log: event_log, workflow_nudger: workflow_nudger, name_migration: name_migration, logger: logger,
+      event_log: event_log, name_migration: name_migration, logger: logger,
       output: output, error_output: error_output)
     agent.prepare(current_name) if current_name
     agent
@@ -1341,7 +1344,6 @@ module Workspace
       pipeline_config: pipeline_config,
       parts: agentd_parts,
       event_log: event_log,
-      workflow_nudger: workflow_nudger,
       name_migration: name_migration,
       restart_registry: RestartRegistry.new,
       logger: logger,

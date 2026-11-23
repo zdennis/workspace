@@ -1,104 +1,103 @@
 module Workspace
-  # The agent daemon's fan-out of one workspace's hook events: each `session_event` goes to the parts that
-  # follow it in one fixed order, and the session monitor's after-scan call goes to the desks. Holds when the
-  # main agent's current turn began in each pane, for the workflow nudger.
+  # The agent daemon's fan-out of one workspace's hook events: a registry of subscribers that each hear the
+  # events they have a method for. {#notify} calls `event` on every subscriber that responds to it, in the
+  # order they were given, and a subscriber that raises is logged and does not stop the ones after it.
+  #
+  # The events, in the order a hook event meets them in {#session_event}: `before_record(message)` (before the
+  # monitor records it: a /clear moves the pane's session_id there, and a poll in the gap would end a
+  # handoff watch session_changed, not carried_out), then the monitor records it and the hook log writes it,
+  # then `session_event(message)`. Besides these: `scan` (the session monitor's after-scan call, {#scan}),
+  # `tick` (the socket watcher's, {#tick}) and `turn_ended` (a main agent's turn settled, {#turn_ended}).
+  # A later event such as `wait_opened(pane)` is one more `notify(:wait_opened, pane)` call, with no change
+  # to the subscribers that have no method of that name.
+  #
+  # To add a watcher or desk, build it in {Workspace.build_agentd_parts}, put it on `subscribers:` where its
+  # order against the others matters, and give it public methods named for the events it takes. Any public
+  # method of an event's name is called as that event, so a subscriber keeps other methods of those names private.
   class HookFanout
-    # @param workspace [String] the workspace served, named to the workflow nudger
-    # @param monitor [Workspace::SessionMonitor] records each hook event
-    # @param hook_log [Workspace::HookEventLog, nil] writes each hook event; nil writes none
-    # @param handoff_watcher [Workspace::HandoffWatcher, nil] sees each hook event first; nil watches nothing
-    # @param nudger [Workspace::WorkflowNudger, nil] wakes a workflow run when a turn ends in its pane; nil wakes none
-    # @param owner_report [Workspace::SpineOwnerReport, nil] reports a stage owner's finished turn; nil reports nothing
-    # @param desks [Array<#session_event, #scan>] the queue desk then the recovery desk, nil ones left out
-    # @param work_queue_desk [Workspace::WorkQueueDesk, nil] runs a work-queue pass when a main agent's turn ends
-    #   (once the workflow advance the turn woke has exited) and scans after the desks; nil runs none
-    # @param clock [#call] returns the current Time, for when a turn began
-    # @param spawn [#call] runs the given block on its own thread (the owner report's)
-    # @param logger [Workspace::Logger] debug logger
-    def initialize(workspace:, monitor:, hook_log: nil, handoff_watcher: nil, nudger: nil, owner_report: nil, desks: [], work_queue_desk: nil,
-      clock: -> { Time.now }, spawn: ->(&work) { Thread.new(&work) }, logger: Workspace::Logger.new)
-      @workspace = workspace
-      @monitor = monitor
-      @hook_log = hook_log
-      @handoff_watcher = handoff_watcher
-      @nudger = nudger
-      @owner_report = owner_report
-      @desks = desks.compact
-      @work_queue_desk = work_queue_desk
-      @clock = clock
-      @spawn = spawn
-      @logger = logger
-      # When the main agent's current turn began, by pane id, for the workflow nudger.
-      @turn_starts = {}
+    # Spawns a thread for the owner report on a main agent's Stop.
+    class OwnerFinished
+      # @param report [Workspace::SpineOwnerReport] reports a stage owner's finished turn
+      # @param spawn [#call] runs the given block on its own thread
+      def initialize(report:, spawn: ->(&work) { Thread.new(&work) })
+        @report = report
+        @spawn = spawn
+      end
+
+      # The main agent's turn ended (the Stop hook): a stage the pane owns is reported as finished, on its own
+      # thread. A sub-agent's event and any other event are ignored. It has no `turn_ended` method, since that
+      # name is the registry's event for a turn that has settled.
+      #
+      # @param message [Hash] the `session_event` message
+      # @return [void]
+      def session_event(message)
+        return unless message["agent_id"].nil? && message["event"] == "stop"
+
+        pane_id = message["pane_id"]
+        @spawn.call { @report.turn_ended(pane_id) }
+      end
     end
 
-    # Hands one hook event to the handoff watcher, the monitor, the hook log, the nudger and the owner report
-    # (the last two for the main agent only), then each desk. A desk that raises stops the ones after it.
-    # A main agent's Stop also asks the work queue desk for a pass: after the workflow advance it woke has
-    # exited, since the run usually finishes there, or at once when it woke none.
+    # @param monitor [Workspace::SessionMonitor] records each hook event
+    # @param hook_log [Workspace::HookEventLog, nil] writes each hook event; nil writes none
+    # @param subscribers [Array<Object>] told each event they respond to, in this order; nil ones are left out
+    # @param logger [Workspace::Logger] debug logger
+    def initialize(monitor:, hook_log: nil, subscribers: [], logger: Workspace::Logger.new)
+      @monitor = monitor
+      @hook_log = hook_log
+      @subscribers = subscribers.compact
+      @logger = logger
+    end
+
+    # Hands one hook event to the subscribers' `before_record`, the monitor, the hook log, then the
+    # subscribers' `session_event`. A failure of the monitor or the hook log is raised to the caller.
     #
     # @param message [Hash] the `session_event` message
     # @return [void]
     def session_event(message)
-      # Before the monitor records it: a /clear moves the pane's session_id there, and a poll
-      # in the gap would end the watch session_changed, not carried_out.
-      notify_handoff_watcher(message)
+      notify(:before_record, message)
       @monitor.record(message)
       @hook_log&.record(message)
-      nudge_workflow(message) if message["agent_id"].nil?
-      report_owner_finished(message) if @owner_report && message["agent_id"].nil?
-      @desks.each { |desk| desk.session_event(message) }
+      notify(:session_event, message)
     end
 
-    # The session monitor's after-scan call: every desk scans, then the work queue desk, and one that raises
-    # does not stop the others.
+    # The session monitor's after-scan call: every subscriber's `scan`, in order.
     #
     # @return [void]
-    def scan_desks
-      [*@desks, @work_queue_desk].compact.each do |desk|
-        desk.scan
+    def scan
+      notify(:scan)
+    end
+
+    # The socket watcher's tick: every subscriber's `tick`.
+    #
+    # @return [void]
+    def tick
+      notify(:tick)
+    end
+
+    # A main agent's turn has settled (the workflow advance it woke has exited, or none was woken): every
+    # subscriber's `turn_ended`.
+    #
+    # @return [void]
+    def turn_ended
+      notify(:turn_ended)
+    end
+
+    # Calls `event` with `args` on each subscriber that responds to it, in order. One that raises is logged
+    # and the next still runs.
+    #
+    # @param event [Symbol] the method to call
+    # @param args [Array] its arguments
+    # @return [void]
+    def notify(event, *args)
+      @subscribers.each do |subscriber|
+        next unless subscriber.respond_to?(event)
+
+        subscriber.public_send(event, *args)
       rescue => e
-        @logger.debug { "agent: #{desk.class.name.split("::").last} scan failed (#{e.class}: #{e.message})" }
+        @logger.debug { "agent: #{subscriber.class.name.split("::").last} #{event} failed (#{e.class}: #{e.message})" }
       end
-    end
-
-    private
-
-    # Shows a hook event to the handoff watcher. A failure there is logged and costs the monitor nothing.
-    def notify_handoff_watcher(message)
-      @handoff_watcher&.session_event(message)
-    rescue => e
-      @logger.debug { "handoff watcher: #{e.class}: #{e.message}" }
-    end
-
-    # The main agent's turn ended: a workflow run bound to the pane decides
-    # its step now. The run is told when that turn began (the prompt that
-    # started it), so a turn already under way when the step's line was
-    # typed does not decide the step; a turn whose start this daemon did
-    # not see is sent without one.
-    def nudge_workflow(message)
-      pane_id = message["pane_id"]
-      case message["event"]
-      when "user_prompt" then @turn_starts[pane_id] = @clock.call
-      # A new conversation: a prompt this daemon then fails to see leaves no start, so its turn's end counts.
-      when "session_start", "session_end" then @turn_starts.delete(pane_id)
-      when "stop" then turn_ended(pane_id, message)
-      end
-    end
-
-    # The work queue's pass waits for the run's advance to exit, so it sees a run that finished there.
-    def turn_ended(pane_id, message)
-      follow_up = @work_queue_desk && -> { @work_queue_desk.turn_ended }
-      woken = @nudger&.turn_ended(@workspace, pane_id, turn_started: @turn_starts[pane_id], background: message["background_tasks"],
-        transcript_path: message["transcript_path"], hook_log: @hook_log, on_exit: follow_up)
-      follow_up.call if follow_up && woken.nil?
-    end
-
-    # The main agent's turn ended (the Stop hook): a stage the pane owns is reported as finished.
-    def report_owner_finished(message)
-      return unless message["event"] == "stop"
-      pane_id = message["pane_id"]
-      @spawn.call { @owner_report.turn_ended(pane_id) }
+      nil
     end
   end
 end
