@@ -36,6 +36,7 @@ module R2RebootDrill
   DEFAULT_SESSION = "repo-wt-r2lab"
   LAB_PATTERN = %r{\A(/private)?/tmp/r2-[^/]+/?\z}
   DOCTOR_WARN_BAD = %w[workflow-runs workflow-review-window-orphaned agentd-orphans].freeze
+  LEAKED_ENV = /\A(ANTHROPIC_|OPENAI_API_KEY\z|CLAUDECODE\z|CLAUDE_CODE_|CLAUDE_PID\z|CLAUDE_EFFORT\z|AI_AGENT\z)/
   POINTS = %w[research plan verify].freeze
   STEP_ORDER = %w[research plan implement verify acceptance].freeze
   TERMINAL = %w[completed failed cancelled].freeze
@@ -123,9 +124,12 @@ module R2RebootDrill
       resolved == @dir || resolved.start_with?("#{@dir}/")
     end
 
+    # The caller's API keys and its own Claude Code session variables are dropped, so the lab agent signs in through
+    # the keychain as the person's own sessions do and does not believe it runs inside the caller's session.
     def env
-      {"HOME" => home, "XDG_STATE_HOME" => state_home, "XDG_CONFIG_HOME" => config_home, "TMUX_TMPDIR" => tmux_dir,
-       "TMUX" => nil, "TMUX_PANE" => nil, "PATH" => path, "R2_LAB" => @dir}
+      dropped = ENV.keys.grep(LEAKED_ENV).to_h { |key| [key, nil] }
+      dropped.merge("HOME" => home, "XDG_STATE_HOME" => state_home, "XDG_CONFIG_HOME" => config_home,
+        "TMUX_TMPDIR" => tmux_dir, "TMUX" => nil, "TMUX_PANE" => nil, "PATH" => path, "R2_LAB" => @dir)
     end
 
     # $LAB/shims, then the caller's PATH without any ~/bin entry (the caller's HOME and the user's own).
@@ -139,7 +143,8 @@ module R2RebootDrill
     end
 
     def write_shims
-      write_exec("workspace", "#!/bin/sh\nexec #{Shellwords.escape(BIN)} \"$@\"\n")
+      write_exec("workspace", "#!/bin/sh\nexec #{Shellwords.escape(RbConfig.ruby)} #{Shellwords.escape(BIN)} \"$@\"\n")
+      write_zshrc
       real = File.join(Etc.getpwuid.dir, "bin", "claude-dev")
       target = File.join(shims, "claude-dev")
       FileUtils.rm_f(target)
@@ -164,6 +169,13 @@ module R2RebootDrill
     def session_name = drill["session"] || DEFAULT_SESSION
 
     private
+
+    # A login zsh runs path_helper, which puts /usr/bin (and its Ruby 2.6) ahead of the lab PATH, and the lab HOME has no
+    # rbenv setup; the lab's .zshrc puts the shims and this Ruby's bin directory first again in every pane.
+    def write_zshrc
+      FileUtils.mkdir_p(home)
+      File.write(File.join(home, ".zshrc"), "export PATH=#{Shellwords.escape(shims)}:#{Shellwords.escape(RbConfig::CONFIG["bindir"])}:$PATH\n")
+    end
 
     def write_exec(name, text)
       path = File.join(shims, name)
@@ -371,6 +383,17 @@ module R2RebootDrill
       FileUtils.mkdir_p(File.join(@lab.home, ".claude"))
       settings = File.join(@lab.home, ".claude", "settings.json")
       File.write(settings, JSON.pretty_generate("skipDangerousModePermissionPrompt" => true)) unless File.exist?(settings)
+      link_keychains
+    end
+
+    # macOS finds the login keychain through HOME, so the lab HOME links the person's Keychains directory: Claude Code
+    # then signs in with its own `Claude Code-credentials` item. Teardown removes the link, never its target.
+    def link_keychains
+      real = File.join(Etc.getpwuid.dir, "Library", "Keychains")
+      link = File.join(@lab.home, "Library", "Keychains")
+      return if !File.directory?(real) || File.symlink?(link)
+      FileUtils.mkdir_p(File.dirname(link))
+      File.symlink(real, link)
     end
 
     def demo_plan(id)

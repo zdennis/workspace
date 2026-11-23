@@ -78,11 +78,23 @@ RSpec.describe "script/r2-reboot-drill" do
         found, = Open3.capture2(env, "sh", "-c", "command -v #{name}")
         expect(found.strip).to eq(File.join(@lab, "shims", name))
       end
+      expect(File.read(File.join(@lab, "shims", "workspace"))).to include("exec #{Shellwords.escape(RbConfig.ruby)} ")
+      login_ruby, = Open3.capture2(env, "zsh", "-l", "-i", "-c", "command -v ruby; command -v workspace", chdir: @lab)
+      expect(login_ruby.lines.map(&:strip)).to eq([File.join(RbConfig::CONFIG["bindir"], "ruby"), File.join(@lab, "shims", "workspace")])
       headless, = Open3.capture2(env, bin, "config", "get", "launch.headless", chdir: @lab)
       expect(headless.strip).to eq("true")
       _o, _e, tripped = Open3.capture3(env, "osascript", "-e", "beep", chdir: @lab)
       expect(tripped.exitstatus).to eq(1)
       expect(File.read(File.join(@lab, "osascript.log"))).to eq("osascript -e beep\n")
+    end
+
+    it "drops the caller's API keys and Claude Code session variables from the lab environment" do
+      leaked = {"ANTHROPIC_API_KEY" => "sk-test", "CLAUDECODE" => "1", "CLAUDE_CODE_SESSION_ID" => "abc", "CLAUDE_PID" => "1", "AI_AGENT" => "x"}
+      out, err, status = Open3.capture3(parent_env.merge(leaked), RbConfig.ruby, script, "--lab", @lab, "env")
+      expect(status.exitstatus).to eq(0), err
+
+      leaked.each_key { |key| expect(out).to include("unset #{key}\n") }
+      expect(out).not_to include("sk-test")
     end
 
     it "refuses with a non-zero exit when the lab's state path resolves outside the lab" do
