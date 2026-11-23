@@ -130,7 +130,7 @@ module Workspace
 
     def check(index, entry, staged, catalog)
       names = Dir.glob(File.join(staged.dir, "*.yml")).map { |path| File.basename(path, ".yml") }.sort
-      problems = names.flat_map { |id| problems_of(id, index, staged.dir, catalog) }
+      problems = names.flat_map { |id| problems_of(id, index, staged.dir, catalog) } + library_problems_of(staged.dir)
       row = {"index" => index, "source" => entry, "kind" => staged.local ? "local" : "github", "path" => staged.local ? staged.dir : staged.target,
              "workflows" => names, "installed" => [], "changed" => [], "removed" => [], "problems" => problems, "outcome" => nil}
       return row.merge("outcome" => "refused") unless problems.empty?
@@ -152,6 +152,34 @@ module Workspace
       []
     rescue Workspace::Error => e
       (e.details["problems"] || [e.message]).map { |message| problem(file, (e.code == "error") ? "invalid_workflow" : e.code, message) }
+    rescue SystemCallError => e
+      [problem(file, "invalid_workflow", "can't be read (#{e.class})")]
+    end
+
+    # Every file of the source's `steps/` library is checked, used or not: a link anywhere in the directory,
+    # a `prompt_file:` and any fault of the library's shape refuse the source.
+    def library_problems_of(dir)
+      steps_dir = File.join(dir, "steps")
+      return [] unless File.exist?(steps_dir) || File.symlink?(steps_dir)
+      return [problem("steps", "invalid_workflow", "is a link; a source's steps/ must be a real directory")] if File.symlink?(steps_dir)
+      return [problem("steps", "invalid_workflow", "is not a directory")] unless File.directory?(steps_dir)
+      Dir.children(steps_dir).sort.flat_map do |child|
+        file = "steps/#{child}"
+        path = File.join(steps_dir, child)
+        if File.symlink?(path)
+          [problem(file, "invalid_workflow", "is a link; a source's step library files must be real files")]
+        elsif child.end_with?(".yml") && File.file?(path)
+          library_file_problems(file, path)
+        else
+          []
+        end
+      end
+    end
+
+    def library_file_problems(file, path)
+      text = File.read(path, encoding: Encoding::UTF_8)
+      return [problem(file, PROMPT_FILE_CODE, "sets prompt_file:, which a workflow source may not (use prompt:)")] if text.valid_encoding? && prompt_file?(text)
+      WorkflowImports.library_problems(text).map { |message| problem(file, "invalid_workflow", message) }
     rescue SystemCallError => e
       [problem(file, "invalid_workflow", "can't be read (#{e.class})")]
     end
