@@ -1041,6 +1041,7 @@ module Workspace
     rescue
       nil
     end
+    workflow_alerts = WorkflowAlerts.new(alert_config: alert_config, log_path: File.join(config.state_dir, "workflow-alerts.log"), error_output: error_output)
     workflow_engine = build_workflow_engine(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
@@ -1075,7 +1076,7 @@ module Workspace
       task_store: task_store,
       interrupter: workflow_interrupter,
       downtime: workflow_downtime,
-      alerts: WorkflowAlerts.new(alert_config: alert_config, log_path: File.join(config.state_dir, "workflow-alerts.log"), error_output: error_output),
+      alerts: workflow_alerts,
       main_agent: main_agent
     )
     workflow_recovery_entry = ->(workspace, pane) do
@@ -1097,7 +1098,7 @@ module Workspace
       interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall,
       turn_failed_after: -> { workflow_config.turn_failed_after }, infra_retry_max: -> { workflow_config.infra_retry_max },
       recovery_entry: workflow_recovery_entry, downtime: workflow_downtime, live_usage: workflow_live_usage,
-      log_path: config.sweep_log_path, last_path: config.workflow_sweep_last_path)
+      log_path: config.sweep_log_path, last_path: config.workflow_sweep_last_path, alerts: workflow_alerts)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do
         out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)

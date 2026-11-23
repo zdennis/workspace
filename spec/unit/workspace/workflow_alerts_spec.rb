@@ -80,4 +80,38 @@ RSpec.describe Workspace::WorkflowAlerts do
     expect(sent.first.keys).to eq(sent.last.keys)
     expect(sent.first["WORKSPACE_ALERT_TEXT"]).to eq("app: workflow run wr_1 is waiting for you at lint")
   end
+  describe "#unreadable" do
+    let(:path) { "/state/.workflows/wr_bad.json" }
+
+    before { settings[:workflow] = %w[gate unreadable_run] }
+
+    it "sends the event with the run id from the file name and reads the global layer" do
+      alerts.unreadable(path)
+
+      expect(alert_config).to have_received(:for_workspace).with("")
+      expect(sent.size).to eq(1)
+      expect(sent.first).to include("WORKSPACE_ALERT" => "workflow", "WORKSPACE_ALERT_EVENT" => "unreadable_run", "WORKSPACE_ALERT_RUN_ID" => "wr_bad")
+      expect(sent.first["WORKSPACE_ALERT_TEXT"]).to include(path, "locks stay held", "workspace lock clear NAME")
+    end
+
+    it "escapes the path" do
+      alerts.unreadable("/state/wr\e[31m.json")
+
+      expect(sent.first["WORKSPACE_ALERT_TEXT"]).not_to include("\e")
+    end
+
+    it "sends nothing when alerts.workflow does not name it" do
+      settings[:workflow] = %w[gate]
+      alerts.unreadable(path)
+
+      expect(sent).to be_empty
+    end
+
+    it "sends nothing without a notify command" do
+      settings[:notify] = nil
+      alerts.unreadable(path)
+
+      expect(sent).to be_empty
+    end
+  end
 end

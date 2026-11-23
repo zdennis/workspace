@@ -57,6 +57,11 @@ RSpec.describe Workspace::AlertConfig do
       expect(alert_config.for_workspace("app")[:workflow]).to eq(%w[finished])
     end
 
+    it "accepts unreadable_run in alerts.workflow" do
+      project_settings.save("app", {"alerts" => {"workflow" => "gate,unreadable_run"}})
+      expect(alert_config.for_workspace("app")[:workflow]).to eq(%w[gate unreadable_run])
+    end
+
     it "warns and sends no workflow alerts when alerts.workflow names an unknown event" do
       project_settings.save("app", {"alerts" => {"workflow" => "gate,exploded"}})
 

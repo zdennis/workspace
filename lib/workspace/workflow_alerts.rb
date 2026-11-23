@@ -29,7 +29,7 @@ module Workspace
   # to +log_path+.
   class WorkflowAlerts
     # The names `alerts.workflow` accepts.
-    EVENTS = %w[gate failed stalled finished].freeze
+    EVENTS = %w[gate failed stalled finished unreadable_run].freeze
 
     # The {WorkflowTransitions.infra_retry} states in which a stall's `stalled` alert is held back.
     HELD_STATES = %i[waiting due claimed stale_claim].freeze
@@ -118,6 +118,22 @@ module Workspace
     # @return [void]
     def deliver(command, env)
       @spawner.call([RbConfig.ruby, "-e", SUPERVISOR, File.expand_path("../workspace.rb", __dir__), @timeout.to_s, command], env, @log_path)
+    end
+
+    # Sends `unreadable_run` for a run file that can't be read, so it has no workspace: the global layer is read.
+    #
+    # @param path [String] the run file
+    # @return [Boolean] whether an alert was delivered
+    def unreadable(path)
+      alerts = @alert_config.for_workspace("")
+      return false unless alerts[:notify] && Array(alerts[:workflow]).include?("unreadable_run")
+      id = clean(File.basename(path, ".json"))
+      deliver(alerts[:notify], {"WORKSPACE_ALERT" => "workflow", "WORKSPACE_ALERT_EVENT" => "unreadable_run", "WORKSPACE_ALERT_RUN_ID" => id,
+        "WORKSPACE_ALERT_TEXT" => "workflow run file #{clean(path)} can't be read; its locks stay held: `workspace lock clear NAME`"})
+      true
+    rescue => e
+      report "workspace workflow: could not send alerts for #{clean(path)}: #{clean(e.message)}"
+      false
     end
 
     private
