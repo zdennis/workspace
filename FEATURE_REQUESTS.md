@@ -4,6 +4,14 @@ Feature requests and ideas for the workspace CLI.
 
 ## Open
 
+### `work-queue list --watch` (and `active`, `show`)
+
+A live view of a work queue that redraws on an interval and when the queue changes. Today the workarounds are `watch -n 5 "workspace work-queue list"` or `workspace events --follow --types work_queue_item_started,...`.
+
+### `workflow graph --run RUN --watch`
+
+Redraw the graph with the current step marked as the run moves, and exit when the run finishes. Today the workaround is `watch -n 5 "workspace workflow graph --run RUN"`; `workflow graph --run` already marks node states (`lib/workspace/workflow_graph_states.rb`), and `daemon watch --run` streams the run events.
+
 ### `WorkflowGuard#commits_since` should count the same-named origin branch pushed without upstream
 
 When a run pushes its branch with `git push origin B:refs/heads/B` (no `-u`), `origin/B` exists but is not the branch's upstream. `WorkflowGuard#commits_since` excludes every remote ref except the upstream, so the same-named `origin/B` hides the new commits and the run's commit check counts 0. Hit twice during the workflow experiments: U1 (ask 6aa680) and S4 (ask 765bb3). Count commits not on any other remote ref, but not those only on the branch's own same-named origin ref.
