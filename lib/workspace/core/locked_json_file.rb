@@ -6,6 +6,9 @@ module Workspace
   # this class keeps the steps. Corrupt-file rules and messages are the
   # store's, through `parse:`.
   class LockedJsonFile
+    # What {#exclusive} returns, without running its block, when a `wait:` runs out before the lock is held.
+    UNAVAILABLE = Object.new.freeze
+
     # @param path [String] the document
     # @param parse [#call] `(text_or_nil) -> data`; gets nil for no file. Returns the empty
     #   value for a missing or blank file, and raises (or warns and returns empty) for a
@@ -45,15 +48,18 @@ module Workspace
     # @param write [Symbol] `:always`; `:if_changed` skips a write when the data equals what
     #   was read (AgentRecoveryStore, PromptQueueStore); `:if_true` writes only
     #   when the block returned a true value (InboxAcks)
+    # @param wait [Numeric, nil] seconds to keep trying for the lock; when they pass, the block does not run,
+    #   nothing is written and {UNAVAILABLE} is returned. Nil waits as long as it takes
     # @param after [#call, nil] `(result)` called under the same lock once the write step is done
     #   (it ran, or was skipped); not called when `parse:` or the block raised or the write failed
     #   (WorkQueueStore, to append history only after the queue is written)
     # @yieldparam data [Object] what `parse:` made of the file
-    # @return [Object] the block's result
+    # @return [Object] the block's result, or {UNAVAILABLE}
     # @raise [Exception] whatever `parse:` or the block raises; nothing is written then
-    def exclusive(write: :always, after: nil, &block)
+    def exclusive(write: :always, after: nil, wait: nil, &block)
       guarded do
-        @lock.hold do
+        @lock.hold(wait: wait) do |held|
+          next UNAVAILABLE unless held
           data = read
           before = @fingerprint.call(data) if write == :if_changed
           result = block.call(data)
