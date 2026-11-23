@@ -905,6 +905,20 @@ RSpec.describe Workspace::Commands::Config do
   end
 
   describe "global keys" do
+    it "stores event_log.compact_threshold as EventsConfig reads it: off is nil, 1MB is a byte count, 1KB is refused" do
+      command, project_settings = build_command
+      events_config = Workspace::EventsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings), error_output: StringIO.new)
+
+      command.set("event_log.compact_threshold", "off")
+      expect(events_config.compact_threshold).to be_nil
+
+      command.set("event_log.compact_threshold", "1MB")
+      expect(events_config.compact_threshold).to eq(1_048_576)
+
+      expect { command.set("event_log.compact_threshold", "1KB") }.to raise_error(Workspace::UsageError, /Invalid event_log.compact_threshold/)
+      expect(events_config.compact_threshold).to eq(1_048_576)
+    end
+
     it "writes statusline.command to the global config, not a project's" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")
