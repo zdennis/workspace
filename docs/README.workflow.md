@@ -901,7 +901,7 @@ What is counted. The sum of the `usage` each ended attempt recorded ([What an at
 - An attempt that was replaced without ending (a `resume --from` or `--pane` over a running attempt) counts with its `usage` when it has one, and as uncounted when it has none. The attempt a run is working on right now is left out until it ends, and is not uncounted. An `interrupted` attempt counts once, with the `usage` read when `resume --restart-step` closed it (`step_interrupted` says in `usage_counted` whether one was read); the attempt that restarts the step has its own usage.
 - An attempt whose `usage` is `null`: another agent than Claude Code, or a heavy attempt whose last 4 MiB of transcript does not reach back to its start. These are counted in `budget.uncounted`, never read as zero. An attempt that was never delivered ran nothing and is neither counted nor uncounted.
 
-Claude Code is the only agent measured. `budget.counted` and `budget.uncounted` count ended attempts and review rounds, each with its own `usage` (a round with no pane ran nothing and is in neither). A run whose ended attempts and rounds are all uncounted (a Codex run, say) has a total of 0, which is under any budget, so its budget never stops it; `budget.measured` is `false` and `budget.counted` is 0. The alternative, stopping on an unknown figure, would end every such run after its first attempt for a number nobody can check. A run with some counted and some uncounted attempts or rounds stops as soon as the counted ones alone reach the budget, since the real total is at least that.
+Claude Code is the only agent measured. `budget.counted` and `budget.uncounted` count ended attempts and review rounds, each with its own `usage` (a round with no pane ran nothing and is in neither). A run whose ended attempts and rounds are all uncounted (a Codex run, say) has a total of 0, which is under any budget, so its budget never stops it; `budget.measured` is `false` and `budget.counted` is 0. The alternative, stopping on an unknown figure, would end every such run after its first attempt for a number nobody can check. A run with some counted and some uncounted attempts or rounds stops as soon as the counted ones alone reach the budget, since the real total is at least that. What else works or not for a Codex pane is in [Coding agents other than Claude Code](#coding-agents-other-than-claude-code).
 
 Where it stops. A run is held when the budget is used (`used` has reached `tokens` plus `extra_tokens`) at each point an attempt would start:
 
@@ -1467,6 +1467,24 @@ A scheduler runs the sweep with a short `PATH`, which must include a Ruby new en
 Nothing retries an undelivered line unless something runs `workflow sweep`: a person, the installed schedule, or the workspace's agent daemon, each at an interval of 300 seconds.
 
 Needs `workflow` 16 in `capabilities` for the schedule, 17 for the retry of an undelivered line and 62 for `--scheduled`.
+
+### Coding agents other than Claude Code
+
+A run can drive a Codex pane: its hooks go through the same `workspace session-event --agent codex` command as Claude Code's, so every PreToolUse guard reaches it. What Codex does not get is anything read from Claude Code's transcript or resume line. Checked against codex-cli 0.166.0, which sends a shell call as `tool_name: "Bash"` with `tool_input.command` a string, sends `apply_patch` with the patch text in `tool_input.command`, and treats a hook's exit 2 with a message on stderr as a refusal.
+
+| Guarantee | Claude Code | Codex |
+|---|---|---|
+| `deny:` | works | works |
+| Edit lock | works (Edit, Write, MultiEdit, NotebookEdit) | works for `apply_patch`; a shell edit is not gated, as for Claude Code's Bash |
+| Review write guard | works | not reached: review panes always run Claude Code |
+| Reflection write guard | works | works |
+| Verdict proof | works | not reached: review panes always run Claude Code |
+| `WORKFLOW_STATUS:` line | read from the transcript | not read; the agent must run `workspace step done --status` |
+| Token use and `budget:` | measured | not measured, so a `budget:` never stops the run ([Token budgets](#token-budgets)) |
+| `/clear` restart | works | partial: `restart_agent` works, but `agent-run send --clear-first`, `--interrupt` and `--when-idle` refuse a Codex pane |
+| Resume (restore, recover, infra retry) | works | none: restore skips the pane, recover and infra retry give up with `agent_kind_unsupported` |
+
+`workflow validate` warns `agent_not_claude` when the project's main agent is not Claude Code (see [Validating a definition](#validating-a-definition)).
 
 ### Recovering after a reboot
 
