@@ -224,13 +224,15 @@ The command is used by every config written from then on, and at once by what wo
 
 ### Trusting a checkout for Claude Code
 
-Claude Code asks "Do you trust the files in this folder?" the first time it starts in a directory, and waits there until someone answers. A headless launch has no one to answer, so its prompt wait ends with `agent prompt never appeared`. `agent.claude.trust_checkout` answers the dialog ahead of time:
+Trusting a checkout is on by default. Claude Code asks "Do you trust the files in this folder?" the first time it starts in a directory, and waits there until someone answers; a headless launch has no one to answer, so its prompt wait would end with `agent prompt never appeared`. `agent.claude.trust_checkout` answers the dialog ahead of time.
+
+Trust lets Claude Code act on what the folder holds without asking: the checkout's `.claude/settings.json` permissions and hooks (which can run shell commands), its MCP servers and its `CLAUDE.md`. To turn it off:
 
 ```sh
-workspace config set --scope global agent.claude.trust_checkout true
-# or one project, or one worktree:
-workspace config set --scope project --name api agent.claude.trust_checkout true
+workspace config set --scope global agent.claude.trust_checkout false
 ```
+
+Only the global config file is read. A value in a project or worktree file is ignored, and `workspace config validate` flags it.
 
 When the key is `true` and the workspace's main agent is `claude`, `launch`, `start` (and what launches through them: `relaunch`, `restore`, `promote --launch`) and `add` set `projects["<checkout>"].hasTrustDialogAccepted` to `true` in Claude Code's own config file before the agent starts, and, when they newly set it, print `Note: marked <checkout> as trusted in <file> (agent.claude.trust_checkout).` (on stderr under `--json`; `add --json` rows also carry [`claude_trust`](README.add.md)).
 
@@ -238,8 +240,6 @@ When the key is `true` and the workspace's main agent is `claude`, `launch`, `st
 - **`<checkout>`** is the checkout's real path (`/tmp/demo` is recorded as `/private/tmp/demo`), and only that directory: never the parent repository, a main checkout or `$HOME`.
 - **What is left alone.** Every other key in the file stays as it was. Nothing is written when the file is missing (Claude Code has never run), when the flag is already `true`, or when the key is off or the agent is another. A file that doesn't parse as JSON, or whose `projects` isn't an object, is left unchanged with a warning, and so is one that can't be written. A failure never stops the launch: the agent just meets the dialog.
 - **The write** goes through a temp file and a rename, keeping the file's mode, then reads the file back. A running Claude Code rewrites this file often and its lock can't be taken, so when another writer replaced the file in between, the write is done once more, then given up with a warning.
-
-**Why it is off by default.** Trusting a folder lets Claude Code act on what the folder holds without asking: its `.claude/settings.json` (permissions, and hooks that run shell commands), its MCP servers and its `CLAUDE.md`. Turn it on only for repositories whose contents you would accept running on your machine. A checkout of a stranger's pull request is not one of them until you have read it.
 
 ### Permission policy
 
