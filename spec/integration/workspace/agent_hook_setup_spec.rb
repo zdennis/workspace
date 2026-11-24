@@ -50,6 +50,16 @@ RSpec.describe Workspace::AgentHookSetup do
     expect(result.leftovers).to eq([])
   end
 
+  it "creates nothing under a checkout directory that is gone" do
+    gone = File.join(tmpdir, "moved-worktree")
+
+    result = setup.install(gone, "proj", quiet: true)
+
+    expect(File).not_to exist(gone)
+    expect(result.notes).to eq([])
+    expect(result.leftovers).to eq([])
+  end
+
   it "returns a frozen result and prints nothing itself" do
     result = setup.install(tmpdir, "proj", quiet: true)
 

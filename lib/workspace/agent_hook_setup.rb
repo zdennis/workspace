@@ -42,13 +42,17 @@ module Workspace
     # untracked local settings, then routes each status-line-capable agent's
     # status line through `workspace statusline`. Nothing is written for a file
     # that is already current. A settings file that cannot be read or written
-    # becomes a leftover note, never an exception.
+    # becomes a leftover note, never an exception. A checkout directory that
+    # is gone (a moved or deleted worktree) gets nothing, so no `.claude/` is
+    # made under a path that no longer holds a checkout.
     #
     # @param checkout_path [String] the checkout to install into
     # @param config_name [String] the workspace whose agent commands are read
     # @param quiet [Boolean] whether {HookInstaller} stays silent
     # @return [Result]
     def install(checkout_path, config_name, quiet:)
+      return Result.new(notes: [].freeze, leftovers: [].freeze).freeze unless File.directory?(checkout_path)
+
       notes = []
       leftovers = []
 
