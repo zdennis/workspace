@@ -5620,6 +5620,34 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(output.string).to include("warning: step look: produces replaces the produces of imported step research whole and drops sources.md")
       end
 
+      context "when the imported step names reviewers" do
+        let(:library) { File.join(global_dir, "steps", "verify.yml") }
+
+        before do
+          File.write(library, "reviewers:\n  skeptic:\n    prompt: Doubt it.\n  tidy:\n    prompt: Tidy.\nsteps:\n  verify:\n    prompt: Run.\n    produces: [v.md]\n    review: [skeptic, tidy]\n")
+          File.write(target, "title: Flow\nreviewers:\n  tidy:\n    prompt: Mine.\nsteps:\n  check:\n    import: verify\n")
+        end
+
+        it "show prints the reviewers brought in and the ones the host overrides" do
+          command.show(id: "flow")
+
+          expect(output.string).to include("  check: verify (global, #{library})\n    reviewers: skeptic\n    reviewer overrides: tidy\n")
+        end
+
+        it "show --json carries both lists" do
+          command.show(id: "flow", json: true)
+
+          expect(json["workflow"]["imports"][0]).to include("reviewers" => ["skeptic"], "reviewer_overrides" => ["tidy"])
+        end
+      end
+
+      it "prints no reviewer lines for an import with none" do
+        command.show(id: "flow")
+
+        expect(output.string).not_to include("reviewers:")
+        expect(output.string).not_to include("reviewer overrides:")
+      end
+
       it "a definition with no import has no imports field and no Imports block" do
         File.write(target, "title: Flow\nsteps:\n  look:\n    prompt: Look.\n    gate: approve\n")
 

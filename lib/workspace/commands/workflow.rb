@@ -1936,7 +1936,8 @@ module Workspace
       end
 
       # The `Imports:` block: each imported step, its reference and where it resolved, then the keys the host set, the
-      # library keys gone from the result and the lower-layer files of the same name it shadows.
+      # library keys gone from the result, the reviewers the library brought in or the host's own replaced, and the
+      # lower-layer files of the same name it shadows.
       def print_imports(imports)
         return if imports.empty?
         @output.puts "Imports:"
@@ -1944,6 +1945,8 @@ module Workspace
           @output.puts TerminalText.escape("  #{each["step"]}: #{each["import"]} (#{[each["layer"], each["path"]].compact.join(", ")})")
           @output.puts TerminalText.escape("    overrides: #{each["overrides"].join(", ")}") if each["overrides"].any?
           @output.puts TerminalText.escape("    removes: #{each["removes"].join(", ")}") if each["removes"].any?
+          @output.puts TerminalText.escape("    reviewers: #{each["reviewers"].join(", ")}") if each["reviewers"].any?
+          @output.puts TerminalText.escape("    reviewer overrides: #{each["reviewer_overrides"].join(", ")}") if each["reviewer_overrides"].any?
           each["shadows"].each { |path| @output.puts TerminalText.escape("    shadows: #{path}") }
         end
       end
