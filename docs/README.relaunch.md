@@ -60,6 +60,8 @@ Creating 2 new launcher pane(s)...
 Done! Launched 2 project(s).
 ```
 
+Like `launch`, it installs missing agent session hooks into each checkout before the agent pane starts (see [launch](README.launch.md#notes)).
+
 ## JSON output
 
 `--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row per project: `relaunched`, or `failed` as for `launch`. A relaunch handed to the background prints status `ok` with a `relaunch_scheduled` row per project and top-level `log` and `pid`. With `--all` and nothing active it prints the failure envelope. The text goes to stderr.

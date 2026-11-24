@@ -353,6 +353,7 @@ require_relative "workspace/workflow_nudger"
 require_relative "workspace/bookkeeping_exclude"
 require_relative "workspace/hook_installer"
 require_relative "workspace/claude_trust"
+require_relative "workspace/agent_hook_setup"
 require_relative "workspace/launch_hook_check"
 require_relative "workspace/hook_runner"
 require_relative "workspace/core/workspace_name"
@@ -1201,7 +1202,8 @@ module Workspace
     plan_task_command = Commands::PlanTask.new(access: plan_access, output: output)
     plan_command = Commands::Plan.new(notes: notes_command, access: plan_access, dispatch: plan_dispatch_command, catalog: project_catalog, groups: project_groups,
       plan_state: plan_state, plan_config: plan_config, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, binder: binding_command, output: output)
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, hooks_config: hooks_config, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, start_file_copies: start_file_copies, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, agent_commands: agent_commands, ticket_source: ticket_source, spine_init: spine_init_command, spine_config: spine_config, plan_command: plan_command, excluder: bookkeeping_exclude, output: output, input: input)
+    agent_hook_setup = AgentHookSetup.new(hook_installer: hook_installer, hooks_config: hooks_config, agent_commands: agent_commands, project_settings: project_settings)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, agent_hook_setup: agent_hook_setup, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, start_file_copies: start_file_copies, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, agent_commands: agent_commands, ticket_source: ticket_source, spine_init: spine_init_command, spine_config: spine_config, plan_command: plan_command, excluder: bookkeeping_exclude, output: output, input: input)
     workflow_defaults = WorkflowDefaults.new(config_resolver: config_resolver)
     workflow_start_command = Commands::WorkflowStart.new(
       catalog: workflow_catalog, workflow_defaults: workflow_defaults, engine: workflow_engine, start_ref: start_ref, ticket_source: ticket_source, git: git,
@@ -1382,7 +1384,7 @@ module Workspace
     launch_hook_check = LaunchHookCheck.new(hook_installer: hook_installer, hooks_config: hooks_config)
     launcher = CLI::Launcher.new(project_config: project_config, launch_command: launch_command, launch_mode: launch_mode, state: state, project_settings: project_settings,
       hook_runner: hook_runner, common: common, working_dir: working_dir, library: library, instruction_composer: instruction_composer, name_migration: name_migration,
-      hook_check: launch_hook_check)
+      hook_check: launch_hook_check, hook_setup: agent_hook_setup)
     relauncher = CLI::Relauncher.new(stop_command: stop_command, hook_runner: hook_runner, launcher: launcher, state: state, sleeper: sleeper || ->(seconds) { sleep(seconds) }, tmux: tmux,
       detacher: detacher || DetachedSpawn.new, program: [RbConfig.ruby, File.join(SkillSource.stable_dir(config.workspace_dir), "bin", "workspace")], log_dir: config.relaunch_log_dir,
       processes: lock_holder)
@@ -1434,6 +1436,7 @@ module Workspace
       names: names,
       launcher: launcher,
       relauncher: relauncher,
+      agent_hook_setup: agent_hook_setup,
       families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family, template: template_family, work_queue: work_queue_family},
       working_dir: working_dir,
       config: config,

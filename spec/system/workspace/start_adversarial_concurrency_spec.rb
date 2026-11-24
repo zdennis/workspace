@@ -129,9 +129,10 @@ RSpec.describe "T5 start adversarial concurrency" do
 
   def start(git:, project_config: T5StartConcurrencyFakes::ProjectConfig.new, launch: T5StartConcurrencyFakes::Launch.new,
     hook_installer: nil, which: ->(_) { false })
+    project_settings = CLITestHelpers::FakeProjectSettings.new
     Workspace::Commands::Start.new(lineage: LineageSupport.lineage,
-      git: git, project_config: project_config, project_settings: CLITestHelpers::FakeProjectSettings.new,
-      launch_command: launch, hook_installer: hook_installer, which: which,
+      git: git, project_config: project_config, project_settings: project_settings,
+      launch_command: launch, agent_hook_setup: hook_installer && Workspace::AgentHookSetup.new(hook_installer: hook_installer, project_settings: project_settings, which: which), which: which,
       output: output, input: StringIO.new)
   end
 

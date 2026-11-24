@@ -90,6 +90,8 @@ api: launched
 1 recorded pane could not be matched.
 ```
 
+Each recreated workspace is launched like `launch`, which installs missing agent session hooks into its checkout before the agent pane starts (see [launch](README.launch.md#notes)).
+
 ## JSON output
 
 `--json` prints one action document (see [README.json.md](README.json.md#actions)); the text goes to stderr.

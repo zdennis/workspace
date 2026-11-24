@@ -109,6 +109,7 @@ RSpec.describe Workspace::CLI do
       notes_command: overrides[:notes_command],
       notes_setup: overrides[:notes_setup],
       claude_trust: overrides[:claude_trust],
+      agent_hook_setup: overrides[:agent_hook_setup],
       plan_command: overrides[:plan_command],
       plan_dispatch_command: overrides[:plan_dispatch_command],
       plan_task_command: overrides[:plan_task_command],
@@ -1107,6 +1108,28 @@ RSpec.describe Workspace::CLI do
         expect(doc["warnings"]).to eq(["Warning: slow"])
       end
 
+      it "installs agent hooks quietly for a created config and puts their notes in warnings" do
+        hook_setup = instance_double(Workspace::AgentHookSetup, install: Workspace::AgentHookSetup::Result.new(notes: [Workspace::AgentHookSetup::Note.new(provider: "codex", text: "Note: codex hooks missing", kind: :leftover)], leftovers: ["codex"]))
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup, agent_hook_setup: hook_setup)
+
+        cli.run(["add", "--json", root])
+
+        expect(hook_setup).to have_received(:install).with(File.expand_path(root), "plain", quiet: true)
+        expect(output.string.lines.size).to eq(1)
+        expect(JSON.parse(output.string)["warnings"]).to eq(["Note: codex hooks missing"])
+      end
+
+      it "installs no hooks for a config that already exists" do
+        allow(project_config).to receive(:existing_name).and_return("Plain")
+        allow(project_config).to receive(:create).and_return("Plain")
+        hook_setup = instance_double(Workspace::AgentHookSetup, install: nil)
+        cli, = build_test_cli(project_config: project_config, notes_setup: notes_setup, agent_hook_setup: hook_setup)
+
+        cli.run(["add", "--json", root])
+
+        expect(hook_setup).not_to have_received(:install)
+      end
+
       it "gives a path that is not a directory a failed row and still adds the others (partial, exit 3)" do
         cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
         missing = File.join(root, "nope")
@@ -1277,6 +1300,17 @@ RSpec.describe Workspace::CLI do
 
       expect(output.string).to include("Project name: repo-x").and include("Notes directory: /notes/x")
       expect(error_output.string).to include("Warning: could not finish")
+    end
+
+    it "prints the hook install's notes to stdout when it creates a config" do
+      note = Workspace::AgentHookSetup::Note.new(provider: "codex", text: "Note: codex hooks missing", kind: :leftover)
+      hook_setup = instance_double(Workspace::AgentHookSetup, install: Workspace::AgentHookSetup::Result.new(notes: [note], leftovers: ["codex"]))
+      cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup, agent_hook_setup: hook_setup)
+
+      cli.run(["add", root])
+
+      expect(hook_setup).to have_received(:install).with(File.expand_path(root), "plain", quiet: false)
+      expect(output.string).to include("Note: codex hooks missing")
     end
 
     it "leaves a plain project's notes alone" do

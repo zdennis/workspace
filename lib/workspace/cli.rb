@@ -105,7 +105,7 @@ module Workspace
     # @param launcher [CLI::Launcher] what every launching verb shares
     # @param relauncher [CLI::Relauncher] stops and relaunches workspaces for `relaunch`
     # @param families [Hash{Symbol=>#call}] the family parser of each {ROUTES} key, called with the verb, its arguments and the {Invocation}
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, relauncher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, claude_trust: nil, ticket_command: nil, skills_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, relauncher:, families:, hooks_command: nil, agent_hook_setup: nil, name_migration: nil, notes_command: nil, notes_setup: nil, claude_trust: nil, ticket_command: nil, skills_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -118,6 +118,7 @@ module Workspace
       @workspace_name = workspace_name
       @session_event_command = session_event_command
       @hooks_command = hooks_command
+      @agent_hook_setup = agent_hook_setup
       @launch_command = launch_command
       @kill_command = kill_command
       @rename_command = rename_command
@@ -531,7 +532,7 @@ module Workspace
         Usage: workspace <subcommand> [options]
 
         Subcommands:
-          add             Add a tmuxinator config for a project directory
+          add             Add a tmuxinator config for a project directory and install its agent hooks
           agent           Drive a workspace agent: agent run "prompt", agent status request|post
           agentd          Run the long-lived workspace agent daemon for a project, or replace it (agentd restart)
           agent-run       Send a message to a running agent, or type into a pane (command, inject, restart, send, queue)
@@ -559,7 +560,7 @@ module Workspace
           inbox           Keep a durable list of things that need a person: add, list, show, edit, done, dismiss, reopen
           instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan, research, report, plan-review, spine, promote)
           kill            Kill a worktree project, remove its worktree and the branch start made (default: the current one)
-          launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
+          launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux; installs missing agent hooks
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           library         Store named plays, prompts, recipes, agents and skills, beside the built-in packs (alias: lib)
           list            List currently active (launched) projects (--all for all available)
@@ -651,6 +652,10 @@ module Workspace
         opts.separator "Launch tmuxinator projects in iTerm2, each in its own window."
         opts.separator "Reuses existing launcher panes when available."
         opts.separator "Windows are arranged left-to-right with slight overlap."
+        opts.separator "Before each agent pane starts, missing or stale agent session hooks are installed"
+        opts.separator "into the checkout's untracked .claude/settings.local.json; nothing is written when"
+        opts.separator "they are current. A stale tracked .claude/settings.json is not rewritten and gets"
+        opts.separator "a Note. codex.hooks.install still governs ~/.codex/hooks.json."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--reattach", "Reuse a launcher pane's existing tmux session instead of relaunching",
@@ -3784,6 +3789,10 @@ module Workspace
         opts.separator "A new config for a path inside .worktrees/ also gets its notes directory"
         opts.separator "set up (see 'workspace notes dir'): stored as the config's notes.dir,"
         opts.separator "created, and kept out of git status. A problem there is a warning."
+        opts.separator "A new config also gets each coding agent's session hooks installed into the"
+        opts.separator "checkout's untracked .claude/settings.local.json, as 'start' does; nothing is"
+        opts.separator "written when they are current. codex.hooks.install still governs"
+        opts.separator "~/.codex/hooks.json. With --json these notes are warnings."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
@@ -3843,7 +3852,11 @@ module Workspace
       worktree = created && File.basename(File.dirname(root)) == ".worktrees"
       notes = worktree ? setup_notes_for_added_worktree(name, json: json) : nil
       trusted = trust_added_checkout(name, root, json: json)
+      hook_texts = (created && @agent_hook_setup) ? @agent_hook_setup.install(root, name, quiet: json).texts : []
+      hook_texts.each { |text| @output.puts text } unless json
       return unless json
+
+      warnings.concat(hook_texts)
 
       warnings.concat(notes["warnings"]) if notes
       action_row(name, created ? "created" : "exists", root: root,
