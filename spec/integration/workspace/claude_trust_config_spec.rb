@@ -33,4 +33,14 @@ RSpec.describe Workspace::ClaudeTrustConfig do
     expect(config.enabled?("app")).to be(false)
     expect(config.enabled?("app.worktree-x")).to be(false)
   end
+
+  it "keeps a global false when the project and worktree files say true" do
+    on = {"agent" => {"claude" => {"trust_checkout" => true}}}
+    settings.save_global(off)
+    settings.save("app", on)
+    settings.save("app.worktree-x", on)
+
+    expect(config.enabled?("app")).to be(false)
+    expect(config.enabled?("app.worktree-x")).to be(false)
+  end
 end
