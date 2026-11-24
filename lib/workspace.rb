@@ -1384,7 +1384,7 @@ module Workspace
     launch_hook_check = LaunchHookCheck.new(hook_installer: hook_installer, hooks_config: hooks_config)
     launcher = CLI::Launcher.new(project_config: project_config, launch_command: launch_command, launch_mode: launch_mode, state: state, project_settings: project_settings,
       hook_runner: hook_runner, common: common, working_dir: working_dir, library: library, instruction_composer: instruction_composer, name_migration: name_migration,
-      hook_check: launch_hook_check)
+      hook_check: launch_hook_check, hook_setup: agent_hook_setup)
     relauncher = CLI::Relauncher.new(stop_command: stop_command, hook_runner: hook_runner, launcher: launcher, state: state, sleeper: sleeper || ->(seconds) { sleep(seconds) }, tmux: tmux,
       detacher: detacher || DetachedSpawn.new, program: [RbConfig.ruby, File.join(SkillSource.stable_dir(config.workspace_dir), "bin", "workspace")], log_dir: config.relaunch_log_dir,
       processes: lock_holder)

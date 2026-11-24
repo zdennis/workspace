@@ -18,7 +18,8 @@ module Workspace
       # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs; nil sends none and refuses `--pack`/`--handoff`
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace to lowercase first; nil renames nothing
       # @param hook_check [Workspace::LaunchHookCheck, nil] warns when a launched checkout's agent session hooks are missing or stale; nil warns nothing
-      def initialize(project_config:, launch_command:, launch_mode:, state:, project_settings:, hook_runner:, common:, working_dir:, library: nil, instruction_composer: nil, name_migration: nil, hook_check: nil)
+      # @param hook_setup [Workspace::AgentHookSetup, nil] installs missing session hooks into each launched checkout before its agent starts; nil installs nothing
+      def initialize(project_config:, launch_command:, launch_mode:, state:, project_settings:, hook_runner:, common:, working_dir:, library: nil, instruction_composer: nil, name_migration: nil, hook_check: nil, hook_setup: nil)
         @project_config = project_config
         @launch_command = launch_command
         @launch_mode = launch_mode
@@ -31,6 +32,7 @@ module Workspace
         @instruction_composer = instruction_composer
         @name_migration = name_migration
         @hook_check = hook_check
+        @hook_setup = hook_setup
       end
 
       # Launches the given project args (already parsed, no leading flags) and returns
@@ -64,6 +66,9 @@ module Workspace
           h[p] = text if text
         end
 
+        roots = resolved.to_h
+        projects.each { |p| install_hooks(invocation, p, roots[p] || @project_config.project_root_for(p)) }
+
         call_options = {reattach: reattach, prompts: prompts}
         pane_bindings = projects.to_h do |name|
           names = composed[name] ? InstructionComposer.pack_names(composed[name]["packs"]) : []
@@ -78,12 +83,9 @@ module Workspace
         call_options[:arrange] = true if arrange
         result = @launch_command.call(projects, **call_options)
 
-        roots = resolved.to_h
         projects.each do |p|
           @project_settings.ensure_exists(p)
           @hook_runner.run(p, "post_launch")
-          root = roots[p] || @project_config.project_root_for(p)
-          @hook_check&.check(root, io: invocation.error_output) if root
         end
         {exit_code: result && result[:exit_code], projects: projects, result: result, plays: by_project, packs: composed, skipped_packs: skipped_packs, prompts: prompts}
       end
@@ -152,6 +154,18 @@ module Workspace
       end
 
       private
+
+      # Installs one checkout's missing hooks before its agent starts. What a person should know
+      # goes to the error output, so a `--json` stdout stays one document; the check names only
+      # the agents still without current hooks.
+      def install_hooks(invocation, project, root)
+        return unless root
+        return @hook_check&.check(root, io: invocation.error_output) unless @hook_setup
+
+        result = @hook_setup.install(root, project, quiet: true)
+        result.notes.each { |note| invocation.error_output.puts note.text if note.kind == :info }
+        @hook_check&.check(root, io: invocation.error_output, only: result.leftovers) if result.leftovers.any?
+      end
 
       # The lowercase name once a mixed-case workspace is renamed; the name as
       # given when nothing was renamed, or its agent daemon is running.

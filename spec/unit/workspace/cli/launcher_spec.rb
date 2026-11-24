@@ -15,18 +15,44 @@ RSpec.describe Workspace::CLI::Launcher do
     Class.new do
       attr_reader :calls
 
-      def initialize = (@calls = [])
+      def initialize(order = [])
+        @calls = []
+        @order = order
+      end
 
-      def check(root, io:) = (@calls << {root: root, io: io})
+      def check(root, io:, only: nil)
+        @order << :check
+        @calls << {root: root, io: io, only: only}
+      end
     end
   end
+  let(:hook_setup) { nil }
+  let(:order) { [] }
+  let(:hook_setup_class) do
+    Class.new do
+      attr_reader :installs
+
+      def initialize(result, order)
+        @result = result
+        @order = order
+        @installs = []
+      end
+
+      def install(root, name, quiet:)
+        @order << :install
+        @installs << {root: root, name: name, quiet: quiet}
+        @result
+      end
+    end
+  end
+  let(:ordered_launch_command) { RecordingLaunchCommand.new { |*, **| (order << :launch) && {exit_code: 0} } }
   let(:hook_check) { nil }
 
   def launcher
     described_class.new(project_config: project_config, launch_command: launch_command,
       launch_mode: Workspace::LaunchMode.new(project_settings: settings, which: ->(_) { "/usr/bin/osascript" }, platform: "arm64-darwin", env: {}),
       state: state, project_settings: settings, hook_runner: hook_runner, common: Workspace::CLI::Common.new,
-      working_dir: "/src/here", library: library, instruction_composer: composer, name_migration: name_migration, hook_check: hook_check)
+      working_dir: "/src/here", library: library, instruction_composer: composer, name_migration: name_migration, hook_check: hook_check, hook_setup: hook_setup)
   end
 
   def invocation
@@ -73,16 +99,18 @@ RSpec.describe Workspace::CLI::Launcher do
       expect(launch_command.calls.first.first).to eq(["new"])
     end
 
-    context "with a hook check wired" do
-      let(:hook_check) { hook_check_class.new }
+    context "with a hook check wired and no hook setup" do
+      let(:hook_check) { hook_check_class.new(order) }
+      let(:launch_command) { ordered_launch_command }
 
-      it "checks each launched checkout's agent hooks on the run's error output, by the root it resolved" do
+      it "checks each launched checkout on the error output, by the root it resolved, before the launch" do
         project_config.resolutions["~/src/new"] = ["new", "/src/new"]
 
         launcher.launch(invocation, ["app", "~/src/new"])
 
         expect(hook_check.calls.map { |call| call[:root] }).to eq(["/src/app", "/src/new"])
         expect(hook_check.calls.map { |call| call[:io] }).to all(eq(err))
+        expect(order).to eq([:check, :check, :launch])
       end
 
       it "falls back to the project's root from the config when the launch resolved no root for it" do
@@ -97,6 +125,60 @@ RSpec.describe Workspace::CLI::Launcher do
         launcher.launch(invocation, ["loose"])
 
         expect(hook_check.calls).to be_empty
+      end
+    end
+
+    context "with a hook setup wired" do
+      let(:hook_check) { hook_check_class.new(order) }
+      let(:launch_command) { ordered_launch_command }
+      let(:notes) { [] }
+      let(:leftovers) { [] }
+      let(:out) { StringIO.new }
+      let(:hook_setup) { hook_setup_class.new(Workspace::AgentHookSetup::Result.new(notes: notes, leftovers: leftovers), order) }
+      let(:installs) { hook_setup.installs }
+
+      def note(text, kind) = Workspace::AgentHookSetup::Note.new(nil, text, kind)
+
+      def run_launch(args)
+        inv = Workspace::CLI::Invocation.new(output: out, error_output: err, exit_handler: FakeExitHandler, help_asked: false, quiet: false, env: {})
+        launcher.launch(inv, args)
+      end
+
+      it "installs quietly into each checkout before the launch command runs" do
+        run_launch(["app", "web"])
+
+        expect(installs).to eq([{root: "/src/app", name: "app", quiet: true}, {root: "/src/web", name: "web", quiet: true}])
+        expect(order).to eq([:install, :install, :launch])
+      end
+
+      it "prints info notes to the error output, drops refused ones and writes nothing to the output" do
+        notes.push(note("Note: installed", :info), note("Note: refused", :refused))
+
+        run_launch(["app"])
+
+        expect(err.string).to include("Note: installed")
+        expect(err.string).not_to include("refused")
+        expect(out.string).to eq("")
+      end
+
+      it "runs no check when nothing is left over" do
+        run_launch(["app"])
+
+        expect(hook_check.calls).to be_empty
+      end
+
+      it "checks only the leftover providers on the error output" do
+        leftovers << Workspace::AgentProvider.all.first
+
+        run_launch(["app"])
+
+        expect(hook_check.calls).to eq([{root: "/src/app", io: err, only: leftovers}])
+      end
+
+      it "installs nothing for a workspace whose root cannot be resolved" do
+        run_launch(["loose"])
+
+        expect(installs).to be_empty
       end
     end
 
