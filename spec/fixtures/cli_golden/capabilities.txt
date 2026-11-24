@@ -150,6 +150,7 @@ features (0 = not available):
   rename                 1
   help_json              1
   step_expect_fail       1
+  step_check_ids         1
 
 dependencies:
   window-tool not found

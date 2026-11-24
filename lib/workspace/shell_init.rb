@@ -219,7 +219,7 @@ module Workspace
               esac
             fi
           elif [ "${words[2]}" = step ] && [ "$CURRENT" -eq 3 ]; then
-            wf_list=(done status expect-fail)
+            wf_list=(done status expect-fail check-ids)
             compadd -a wf_list
             return 0
           fi
@@ -255,7 +255,7 @@ module Workspace
               esac
             fi
           elif [ "${COMP_WORDS[1]}" = step ] && [ "$COMP_CWORD" -eq 2 ]; then
-            wf_list="done status expect-fail"
+            wf_list="done status expect-fail check-ids"
           fi
           for wf_word in $wf_list; do
             case "$wf_word" in

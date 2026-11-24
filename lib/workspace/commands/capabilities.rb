@@ -119,7 +119,8 @@ module Workspace
         "kill_branches" => 1,
         "rename" => 1,
         "help_json" => 1,
-        "step_expect_fail" => 1
+        "step_expect_fail" => 1,
+        "step_check_ids" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

@@ -277,6 +277,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("step_expect_fail" => 1)
     end
 
+    it "reports step_check_ids 1 once step check-ids checks ID coverage" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("step_check_ids" => 1)
+    end
+
     it "reports launch_prompt_status 1 once the closing line tells a lost prompt" do
       command.call(json: true)
 
