@@ -633,7 +633,7 @@ RSpec.describe Workspace::CLI::Workflow do
         expect(scope).to have_received(:resolve).with(name: nil, project: nil, all: nil, working_dir: "/src/app")
       end
 
-      it "passes on not_in_workspace when --plan-details finds no workspace" do
+      it "re-raises not_in_workspace when --plan-details finds no workspace" do
         scope = double("status scope")
         allow(scope).to receive(:resolve).and_raise(Workspace::Error.new("Not in a workspace.", code: "not_in_workspace"))
         expect { run(*base, "--plan-details", verb: "step", status_scope: scope) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("not_in_workspace") }

@@ -236,8 +236,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "turns a regex that runs out of time into one check-ids line and exit 1" do
-      checker = double("check ids")
-      allow(checker).to receive(:call).and_raise(Regexp::TimeoutError)
+      checker = double("check ids", call: result(passed: false, reason: "regex_timeout", message: "check-ids: --each-line-matches /(a+)+$/ took too long on a line"))
 
       expect(wired(checker).step_check_ids(**keywords, line_regex: /(a+)+$/)).to eq(exit_code: 1)
 
@@ -245,8 +244,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "reports a regex that runs out of time as regex_timeout in --json" do
-      checker = double("check ids")
-      allow(checker).to receive(:call).and_raise(Regexp::TimeoutError)
+      checker = double("check ids", call: result(passed: false, reason: "regex_timeout", message: "check-ids: --each-line-matches /(a+)+$/ took too long on a line"))
 
       expect(wired(checker).step_check_ids(**keywords, line_regex: /(a+)+$/, json: true)).to eq(exit_code: 1)
 

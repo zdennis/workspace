@@ -1912,7 +1912,7 @@ It prints one line, on stdout when every ID is covered and on stderr otherwise. 
 | `prefixes` | The prefixes asked for |
 | `defined` | The IDs the `--defined` file defines |
 | `covered` | The IDs found covered |
-| `missing` | The IDs not covered |
+| `missing` | The IDs not covered; empty when the check could not run (a `reason` other than `uncovered`), so read `reason` |
 | `reason` | `null` on a pass, except `defined_absent` when `--allow-missing` let an absent `--defined` file pass; otherwise `uncovered`, `no_plan`, `defined_absent` (missing, a link, not a regular file or over 1 MiB), `covered_absent` (the same for `--covered`) or `regex_timeout` |
 | `defined_path` | The `--defined` file as resolved |
 | `covered_path` | The `--covered` file as resolved, or the plan's path with `--plan-details` |

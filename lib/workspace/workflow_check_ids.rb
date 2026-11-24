@@ -12,7 +12,7 @@ module Workspace
     # @!attribute defined [Array<String>] the IDs the defining file holds, in its order, as it spelled them first
     # @!attribute covered [Array<String>] the defined IDs that are covered
     # @!attribute missing [Array<String>] the defined IDs that are not
-    # @!attribute reason [String, nil] nil on a pass; `uncovered`, `no_plan`, `defined_absent` (also set on an allowed absence) or `covered_absent`
+    # @!attribute reason [String, nil] nil on a pass; `uncovered`, `no_plan`, `defined_absent` (also set on an allowed absence), `covered_absent` or `regex_timeout`
     # @!attribute message [String] one line, starting `check-ids:`
     # @!attribute defined_path [String, nil] the defining file's absolute path
     # @!attribute covered_path [String, nil] the covering file's absolute path, or the plan's with plan details
@@ -63,7 +63,11 @@ module Workspace
           message = (why == :absent) ? "#{covered_path} does not exist" : why % covered_path
           return outcome(false, defined: ids.values, reason: "covered_absent", message: "check-ids: #{message}", defined_path: defined_path, covered_path: covered_path)
         end
-        named = line_regex ? ids_on_matching_lines(covered_text, alternation, line_regex) : ids_in(covered_text, alternation)
+        named = begin
+          line_regex ? ids_on_matching_lines(covered_text, alternation, line_regex) : ids_in(covered_text, alternation)
+        rescue Regexp::TimeoutError
+          return outcome(false, defined: ids.values, reason: "regex_timeout", message: "check-ids: --each-line-matches /#{line_regex.source[0, 80]}/ took too long on a line", defined_path: defined_path, covered_path: covered_path)
+        end
       else
         named = ids_in(details, alternation)
       end

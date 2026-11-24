@@ -758,7 +758,7 @@ module Workspace
       def step_line_regex(source)
         return nil if source.nil?
         raise UsageError, "--each-line-matches needs a pattern." if source.empty?
-        Regexp.respond_to?(:timeout) ? Regexp.new(source, timeout: 1.0) : Regexp.new(source)
+        Regexp.new(source, timeout: 1.0)
       rescue RegexpError => e
         raise UsageError, "--each-line-matches is not a valid regular expression: #{e.message[0, 200]}"
       end

@@ -1205,13 +1205,7 @@ module Workspace
       # @return [Hash{Symbol=>Integer}] `exit_code`: 0 when every ID is covered, else 1
       def step_check_ids(prefixes:, defined:, base_dir:, covered: nil, plan_details_for: nil, line_regex: nil, allow_missing: false, json: false)
         raise Workspace::Error, "step check-ids is not available: no check was wired" unless @check_ids
-        result = begin
-          @check_ids.call(prefixes: prefixes, defined: defined, covered: covered, plan_details_for: plan_details_for, line_regex: line_regex, allow_missing: allow_missing, base_dir: base_dir)
-        rescue Regexp::TimeoutError
-          source = line_regex&.source.to_s[0, 80]
-          WorkflowCheckIds::Result.new(passed: false, defined: [], covered: [], missing: [], reason: "regex_timeout", message: "check-ids: --each-line-matches /#{source}/ took too long on a line",
-            defined_path: File.expand_path(defined, base_dir), covered_path: covered && File.expand_path(covered, base_dir))
-        end
+        result = @check_ids.call(prefixes: prefixes, defined: defined, covered: covered, plan_details_for: plan_details_for, line_regex: line_regex, allow_missing: allow_missing, base_dir: base_dir)
         if json
           document("ok" => result.passed, "prefixes" => prefixes, "defined" => result.defined, "covered" => result.covered, "missing" => result.missing,
             "reason" => result.reason, "defined_path" => result.defined_path, "covered_path" => result.covered_path)

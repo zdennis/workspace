@@ -245,6 +245,24 @@ RSpec.describe Workspace::WorkflowCheckIds do
     end
   end
 
+  it "reports regex_timeout when the line regex runs out of time" do
+    defined = write("req.md", "R1\n")
+    covered = write("cov.md", "#{"a" * 40}! R1\n")
+    result = run(defined: defined, covered: covered, line_regex: Regexp.new('^(a+)+\1$', timeout: 0.05))
+    expect([result.passed, result.reason, result.defined]).to eq([false, "regex_timeout", ["R1"]])
+  end
+
+  it "matches prefixes case-sensitively" do
+    defined = write("req.md", "r1 lower\n")
+    result = run(defined: defined, covered: defined)
+    expect([result.passed, result.defined]).to eq([true, []])
+  end
+
+  it "fails a defined path that is a directory, even with allow_missing" do
+    result = run(defined: dir, covered: dir, allow_missing: true)
+    expect([result.passed, result.reason, result.message]).to match([false, "defined_absent", /is not a regular file/])
+  end
+
   it "returns a frozen result" do
     defined = write("req.md", "R1\n")
     expect(run(defined: defined, covered: defined)).to be_frozen
