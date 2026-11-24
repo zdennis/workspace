@@ -328,6 +328,14 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     end
   end
 
+  # The golden transcript's "run" and "steps", less each review row's "prompt": the simulator reads that line from the
+  # definition, not from the run, so a run's stored state has nothing to compare it with.
+  def golden_state
+    state = JSON.parse(JSON.generate(golden.slice("run", "steps")))
+    state["steps"].each { |step| step["attempts"].each { |attempt| Array(attempt["reviews"]).each { |review| review.delete("prompt") } } }
+    state
+  end
+
   # The run as the golden transcript's "run" and "steps" show it.
   def final_state(store)
     run = store.run(run_id)
@@ -351,7 +359,7 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     start(parts)
     drive(parts)
 
-    expect(final_state(parts[:store])).to eq(golden.slice("run", "steps"))
+    expect(final_state(parts[:store])).to eq(golden_state)
     expect(points.fired).to be_nil
     expect(typed_lines.keys).to contain_exactly(*%w[research.1 plan.1 plan.2 implement.1 implement.2 verify.1 verify.2].map { |each| "#{each}.prompt.md" })
     expect(typed_lines.values.uniq).to eq([1])
@@ -361,7 +369,7 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
 
     fresh, passes = recover
     expect(passes).to eq(0)
-    expect(final_state(fresh[:store])).to eq(golden.slice("run", "steps"))
+    expect(final_state(fresh[:store])).to eq(golden_state)
   end
 
   # The run's history lines as `[type, step, attempt]`.
@@ -418,7 +426,7 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
   # step's attempts. The refused attempt ends `not_delivered` with nothing typed, and the tick's `:redeliver` types
   # the line again as attempt 2, which plays the script's second plan attempt, as golden attempt 2 does.
   def refused_baseline(code)
-    baseline = JSON.parse(JSON.generate(golden.slice("run", "steps")))
+    baseline = JSON.parse(JSON.generate(golden_state))
     plan = baseline["steps"].find { |each| each["id"] == "plan" }
     plan["attempts"] = [{"n" => 1, "outcome" => "not_delivered", "code" => code}, plan["attempts"].find { |each| each["n"] == 2 }]
     baseline
@@ -461,14 +469,14 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     points.arm(:stored) { |run| plan_attempt(run).slice("n", "delivery") == {"n" => 1, "delivery" => "delivering"} }
     result = crash_and_recover
 
-    expect_untyped_then_pending(result, golden.slice("run", "steps"))
+    expect_untyped_then_pending(result, golden_state)
   end
 
   it "B6: a crash inside the kick, before the plan line is typed, leaves it untyped (1 pass)" do
     points.arm(:before_kick) { |text| plan_line?(text) }
     result = crash_and_recover
 
-    expect_untyped_then_pending(result, golden.slice("run", "steps"))
+    expect_untyped_then_pending(result, golden_state)
   end
 
   it "B7: a crash after the plan line is typed, before step_dispatched and the settle, ends at the golden state through the turn's end (0 passes)" do
@@ -478,7 +486,7 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     expect(result[:left].slice("n", "delivery")).to eq("n" => 1, "delivery" => "delivering")
     expect(result[:dispatched]).to eq([])
     expect(result[:passes]).to eq(0)
-    expect_baseline(result[:store], golden.slice("run", "steps"))
+    expect_baseline(result[:store], golden_state)
   end
 
   it "B8: a crash after step_dispatched records the refused plan line, before the settle, loses the pane_busy retry (1 pass)" do
@@ -523,7 +531,7 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     expect(points.fired).to eq([:record_event, "check_finished"])
     expect(result[:left].slice("n", "outcome")).to eq("n" => 2, "outcome" => "checks_passed")
     expect(result[:passes]).to eq(1)
-    expect_baseline(result[:store], golden.slice("run", "steps"))
+    expect_baseline(result[:store], golden_state)
     # No events_lost mark: the flush raised at its first line, so the change's queued lines are gone, and the
     # review_started there is the one tick :review's redelivery wrote (lib/workspace/workflow_recovery.rb:829-893).
     expect(lost_lines(result[:store])).to eq([["check_finished", "plan", 2], ["step_checks_passed", "plan", 2]])
@@ -538,7 +546,7 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
 
     expect(points.fired.first).to eq(:event_log)
     expect(result[:passes]).to eq(0)
-    expect_baseline(result[:store], golden.slice("run", "steps"))
+    expect_baseline(result[:store], golden_state)
     expect(lost_lines(result[:store])).to eq([])
     # The crash in `changed` comes before `@alerts&.fire` (lib/workspace/workflow_run_change.rb:166-167), so the
     # `finished` alert goes with it, as at B3.
@@ -553,7 +561,7 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
 
     expect(points.fired.first).to eq(:alerts_fire)
     expect(result[:passes]).to eq(0)
-    expect_baseline(result[:store], golden.slice("run", "steps"))
+    expect_baseline(result[:store], golden_state)
     expect(lost_lines(result[:store])).to eq([])
     expect(alerts_sent).to eq([])
     pending "an alert is only the new episodes between the marks one change took, and the marks are never stored " \
@@ -592,7 +600,7 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
   it "B4: the round 1 inbox notify raising leaves plan.2 untyped (1 pass)" do
     result = crash_round_one_notify
     pending "the crash skips plan.2's delivery, and #{RunChangeCrash::NEVER_TYPED}"
-    expect_baseline(result[:store], golden.slice("run", "steps"))
+    expect_baseline(result[:store], golden_state)
   end
 
   # The simulator's round stand-in types no line, so a review round adds no kick: the counts are the step lines'.
@@ -603,7 +611,7 @@ RSpec.describe Workspace::WorkflowRunChange, "when the engine dies mid-change" d
     expect(points.fired.first).to eq(:review_round)
     expect(result[:left].slice("n", "outcome")).to eq("n" => 1, "outcome" => "checks_passed")
     expect(result[:passes]).to eq(1)
-    expect_baseline(result[:store], golden.slice("run", "steps"))
+    expect_baseline(result[:store], golden_state)
     # The redelivery starts the round again (lib/workspace/workflow_recovery.rb:829-893), writing a second review_started.
     expect(lost_lines(result[:store])).to eq([])
     expect(extra_lines(result[:store])).to eq([["review_started", "plan", 1]])
