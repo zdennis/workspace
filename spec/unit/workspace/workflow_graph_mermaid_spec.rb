@@ -78,11 +78,11 @@ RSpec.describe Workspace::WorkflowGraphMermaid do
     expect(marked).to include("<<fork>>", "<<join>>", "n4 --> n0 : fail: max 2 (looped 2)")
   end
 
-  %w[rpiv-auto-approve explore-parallel rpiv].each do |id|
+  %w[rpiv-auto-approve explore-parallel rpiv deliver].each do |id|
     it "draws #{id}" do
       text = described_class.render(WorkflowGraphGolden.model(id))
       expect(text).to start_with("stateDiagram-v2\n")
-      expect(text).to include("<<fork>>", "<<join>>") unless id == "rpiv"
+      expect(text).to include("<<fork>>", "<<join>>") unless %w[rpiv deliver].include?(id)
     end
   end
 end

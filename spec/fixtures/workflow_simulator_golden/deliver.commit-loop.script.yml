@@ -1,0 +1,12 @@
+# The script the deliver commit-loop golden plays: all plan and code reviewers approve, and implement commits but
+# leaves the plan open twice, so its retry fails its require too and the implicit loop goes back to tests_first. tests_first runs
+# again with the commit standing, then implement passes and the run finishes.
+steps:
+  plan:
+    - reviews: {supportive: approve, skeptical: approve, implementer: approve}
+  implement:
+    - {require: {plan_status: fail}}
+    - {require: {plan_status: fail}}
+    - {}
+  code_review:
+    - reviews: {correctness: approve, tests: approve, maintainability: approve}

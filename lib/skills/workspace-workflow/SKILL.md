@@ -1,6 +1,6 @@
 ---
 name: workspace-workflow
-description: "Start and follow `workspace` workflow runs: `go` from a ticket, PR or text, name a preset (rpiv, rpiv-auto-approve, rpiv-auto-approve-v2, investigate, pr-feedback, explore, explore-parallel, bugfix), `workflow start`, `workflow run`, read `workflow status`. Use for 'run rpiv on this' or 'investigate PROJ-101'. Not a worktree with no workflow, or ending one: use workspace-lifecycle."
+description: "Start and follow `workspace` workflow runs: `go` from a ticket, PR or text, name a preset (rpiv, rpiv-auto-approve, rpiv-auto-approve-v2, investigate, pr-feedback, explore, explore-parallel, bugfix, deliver), `workflow start`, `workflow run`, read `workflow status`. Use for 'run rpiv on this' or 'investigate PROJ-101'. Not a worktree with no workflow, or ending one: use workspace-lifecycle."
 ---
 
 Written against workspace 0.97.0; check with the working --help form.
@@ -73,6 +73,7 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 | `explore` | `task` | survey (gate), report | Read-only research or gap analysis |
 | `explore-parallel` | `task` | read (two siblings in parallel), report (gate) | Read-only research fanned out: the two readers run as sub-agents of the run pane (the default mode), then one report |
 | `bugfix` | `task` | reproduce (gate), fix, verify | Experimental. One bug fixed test first: a failing test is proven before the gate. Needs `commands.test` that takes test files, `commands.test_files`, and a `workspace` with `step_expect_fail` in `capabilities --json` on the agent daemon's PATH |
+| `deliver` | `task` | goals, design, research, plan (reviewed), tests_first, implement, verify, acceptance_check, docs_update, code_review, open_pr | Experimental. A task from goals and acceptance criteria to an open pull request with no person: no gates; merging, CI and release are out of scope. Needs `commands.test`, `commands.test_files`, and `gh` logged in with a GitHub remote |
 
 ## Reading status
 

@@ -1,0 +1,149 @@
+schema_version: 0.1
+id: deliver
+title: Deliver (experimental), from goals to an open pull request
+description: Experimental. One task from goals to an open pull request with no person in the loop - goals and acceptance criteria, design, research, a reviewed plan, tests first, implement, verify, an acceptance check, docs, a reviewed branch and the pull request. It ends at the open pull request; merging, CI watching and release are out of scope.
+
+use_when: Experimental. A change to carry end to end to an open pull request when no person will review the plan. Does not merge, watch CI or release.
+
+inputs:
+  task:
+    description: What to build. A ticket key with a sentence, or a path to a spec in the worktree. `workflow run` fills it from the open pull request, else `Branch NAME`, when left out.
+    required: true
+
+instructions: |
+  You are working on {{inputs.task}} in workspace {{workspace}}, branch {{branch}}.
+  Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
+  inputs; read them before you start.
+
+# The explicit loops, summed by hand: the 9 steps without a review, once each, is 9; plan and
+# code_review take one attempt per review round, 3 rounds each, so 6; verify's on_fail goes
+# back to implement twice, and each trip re-runs implement and verify, so 2 x 2 = 4;
+# acceptance_check's on_fail goes back to implement twice, and each trip re-runs implement,
+# verify and acceptance_check, so 2 x 3 = 6. 9 + 6 + 4 + 6 = 25. The 5 to spare
+# are headroom, not a worst case: proof retries alone may add 7 (tests_first takes up to 4
+# attempts, docs_update and open_pr 3 each), and a step with no on_fail goes back one step
+# when it fails, a loop only this cap bounds.
+max_attempts: 30
+# Machine time for the longest chain of steps and review rounds, with 12h to spare.
+timeout: 12h
+# Both limits hold the run rather than end it: a spent budget with `action: stop` keeps the run
+# waiting (budget_spent) for a person to resume or cancel, and `timeout_action: hold` does the
+# same when the clock runs out.
+timeout_action: hold
+budget:
+  tokens: 60000000
+  action: stop
+
+reviewers:
+  supportive:
+    title: Supportive review
+    prompt: |
+      You review {{review.subject}}. No person will look at it, so this review is the only
+      approval it gets. Look for what makes it sound, and approve unless something would
+      really stop it working. Do not edit the plan.
+      If {{review.previous}} is set, read your earlier write-up there first and say whether
+      each objection in it was answered.
+  skeptical:
+    title: Skeptical review
+    prompt: |
+      You review {{review.subject}}. No person will look at it. Assume it is wrong and try
+      to prove it: missing cases, wrong order, steps that can't be undone, any R in
+      {{artifacts}}/requirements.md or AC in {{artifacts}}/acceptance.md with no task, and any
+      reading chosen there that the brief does not support. Approve only if you can't find a
+      blocking problem. Do not edit the plan.
+      If {{review.previous}} is set, read your earlier write-up there first and say whether
+      each objection in it was answered.
+  implementer:
+    title: Implementer review
+    prompt: |
+      You review {{review.subject}}. You will have to build it. Check each task is small,
+      ordered, testable and says enough to start, and approve unless something would really
+      stop you. Do not edit the plan.
+      If {{review.previous}} is set, read your earlier write-up there first and say whether
+      each objection in it was answered.
+
+steps:
+  goals:
+    import: goals
+
+  design:
+    import: design
+
+  research:
+    import: research
+
+  plan:
+    title: Plan
+    include: [notes, implementation-plan]
+    prompt: |
+      If reviewers turned the last plan down, read every reviewer's reasons, including the ones
+      that approved. Don't just patch each objection: rethink what it takes, and change the
+      design if the current one can't meet them all.
+      Using {{artifacts}}/research.md, write the plan as the workspace plan: the
+      IMPLEMENTATION_PLAN.md that `workspace plan path` names (run `workspace plan init --title "<title>"` first if it does not exist), in the syntax the
+      implementation-plan instructions give, so `workspace plan status` shows it.
+      One task per commit, in order, with the files touched, tests to add and how you'll
+      know it works under that task in Task details, and the R-numbers from
+      {{artifacts}}/requirements.md and the AC-numbers from {{artifacts}}/acceptance.md it
+      covers: every R and every AC needs a task, and the run checks it.
+      Call out anything that needs the
+      dev environment or the test database. Set `status: active` and leave every task `[ ]`.
+      You only write the plan here; do not start any task, and do not set `status: done`.
+      Then write {{artifacts}}/plan.md: the approach, the risks, and
+      the path of the plan file. Do not copy the task list into it. The step is not
+      finished until plan.md exists.
+      Say in plan.md how each reviewer objection, if any, was answered.
+      No person reads the plan before it is built, so for each reading
+      {{artifacts}}/requirements.md gives an open part, also run
+      `workspace ask "<the open question>" --default "<the reading chosen>"`, once each, and
+      carry on without waiting for an answer.
+      Don't change code.
+    produces: [plan.md]
+    guard: config
+    # Done only when the workspace plan exists, has at least one task, and names in its Task
+    # details every R-number requirements.md and every AC-number acceptance.md starts a line with.
+    status:
+      run: workspace step check-ids --prefix R --defined requirements.md --plan-details && workspace step check-ids --prefix AC --defined acceptance.md --plan-details
+    timeout: 45m
+    max_attempts: 4
+    review:
+      from: [supportive, skeptical, implementer]
+      need: 2
+      must: [skeptical]
+      subject: the workspace plan (`workspace plan path`), against {{artifacts}}/research.md
+      # Added to the hash of plan.md, HEAD and the tracked tree: the plan lives outside the
+      # checkout, and plan.md under .workflow/ is not tracked.
+      revision: workspace plan status --json | ruby -rjson -e 'data = JSON.parse($stdin.read); abort "no plans" unless data.key?("plans"); puts data["plans"].to_a.first&.dig("revision")'
+      max_rounds: 3
+      timeout: 30m
+      context: fresh
+
+  tests_first:
+    import: tests_first
+    # A failed fail-first proof is not fixed by redoing the plan, so it stops the run.
+    on_fail: stop
+
+  implement:
+    import: implement
+    guard: config
+
+  verify:
+    import: verify
+    guard: config
+    on_fail:
+      goto: implement
+      max: 2
+      context: continue
+      log_tail: 40
+
+  acceptance_check:
+    import: acceptance_check
+
+  docs_update:
+    import: docs_update
+
+  code_review:
+    import: code_review
+
+  open_pr:
+    import: open_pr

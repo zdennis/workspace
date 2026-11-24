@@ -8,6 +8,7 @@ require "digest"
 RSpec.describe Workspace::WorkflowDefinition do
   pins = {
     "bugfix" => {sha256: "0809245135af9b3d3bb4715a8f660b4edabf7d196617bc17e8eed800a5fc532a", resolved_sha256: "0809245135af9b3d3bb4715a8f660b4edabf7d196617bc17e8eed800a5fc532a", to_h: "f67c1cfbafe5018c2f557010fd64564e667af25bb6deb8b34cfe2827d7ebe195"},
+    "deliver" => {sha256: "7c58a972e0951b3e55e22a2347e7bce779fc1b308e6eefe15050c09082a6c510", resolved_sha256: "bda526e8d08fbb899c49fb90e1f7ea907d6f129309d2bb3197006754426f0cb2", to_h: "9628987b49f01d17dfa2107781634e15bba55b1d4f539745d605777bd174bc01"},
     "explore-parallel" => {sha256: "55d2085d2fd45d5caae5356c847a66f7f961ade405b507b273cd6a6b3f072e0b", resolved_sha256: "55d2085d2fd45d5caae5356c847a66f7f961ade405b507b273cd6a6b3f072e0b", to_h: "037fa990ee86f5eeab630d2a18a583b4a26545a93f99868e076b4d7d8daa0eac"},
     "explore" => {sha256: "0c9103d9fd3a39c92cafb2a04b11b801793ed3941f810538ba4be1a9fa02f3ae", resolved_sha256: "0c9103d9fd3a39c92cafb2a04b11b801793ed3941f810538ba4be1a9fa02f3ae", to_h: "546c52d5747ccba4ba40c3219df144c0b4ad771e89f1c0d736f2ce42fbacb17e"},
     "investigate" => {sha256: "d8f97197f6618be2d906398c9b56ddb602140d1073aa45de54f1840f3261c71f", resolved_sha256: "d8f97197f6618be2d906398c9b56ddb602140d1073aa45de54f1840f3261c71f", to_h: "2e7f41928cd67fe6de2a63b94091fb7e065cf100d151c4bdd462156746155269"},
@@ -50,5 +51,13 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(run).to eq("workspace step check-ids --prefix R --defined requirements.md --allow-missing --plan-details")
       expect(run).not_to include("ruby")
     end
+  end
+
+  it "checks deliver's plan for every R and every AC with two step check-ids calls and no inline Ruby" do
+    plan = PresetSimulation.definition("deliver").to_h["steps"].find { |step| step["id"] == "plan" }
+    run = plan["status"]["run"]
+
+    expect(run).to eq("workspace step check-ids --prefix R --defined requirements.md --plan-details && workspace step check-ids --prefix AC --defined acceptance.md --plan-details")
+    expect(run).not_to include("ruby")
   end
 end

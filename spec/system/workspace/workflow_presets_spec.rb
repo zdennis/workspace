@@ -12,7 +12,7 @@ RSpec.describe "the shipped workflow presets" do
   after { FileUtils.remove_entry(dir) }
 
   it "parses every file in lib/workflows" do
-    expect(ids).to include("rpiv", "rpiv-auto-approve", "rpiv-auto-approve-v2", "pr-feedback", "investigate", "explore", "explore-parallel", "bugfix")
+    expect(ids).to include("deliver", "rpiv", "rpiv-auto-approve", "rpiv-auto-approve-v2", "pr-feedback", "investigate", "explore", "explore-parallel", "bugfix")
     ids.each { |id| expect(catalog.find(id).source).to eq("builtin") }
   end
 
@@ -31,6 +31,7 @@ RSpec.describe "the shipped workflow presets" do
   it "proves the inbox item of exactly the steps that post one on every successful path" do
     expected = {
       "bugfix" => [],
+      "deliver" => [],
       "explore" => %w[survey report],
       "explore-parallel" => [],
       "pr-feedback" => %w[triage fix],

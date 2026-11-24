@@ -2,7 +2,7 @@ require "spec_helper"
 
 RSpec.describe Workspace::WorkflowGraph do
   let(:catalog) { Workspace::WorkflowCatalog.new(config: Workspace::Config.new) }
-  let(:presets) { %w[rpiv rpiv-auto-approve-v2 pr-feedback investigate explore bugfix] }
+  let(:presets) { %w[rpiv rpiv-auto-approve-v2 pr-feedback investigate explore bugfix deliver] }
 
   def graph_of(id)
     described_class.build(catalog.find(id).to_h).to_h
@@ -217,6 +217,11 @@ RSpec.describe Workspace::WorkflowGraph do
       expect(nodes.count { |node| node["kind"] == "fork" }).to be >= 1
       expect(nodes.count { |node| node["kind"] == "fork" }).to eq(nodes.count { |node| node["kind"] == "join" })
     end
+  end
+
+  it "draws deliver's verify and acceptance_check loops back to implement, each max 2" do
+    fails = edges_of(graph_of("deliver"), "fail")
+    expect(fails.map { |edge| edge.values_at("from", "to", "label") }).to include(%w[verify implement max\ 2], %w[acceptance_check implement max\ 2])
   end
 
   it "draws explore-parallel's read group: a fork, its siblings tagged, and a join into report" do

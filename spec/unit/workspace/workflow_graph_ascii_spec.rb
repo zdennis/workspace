@@ -66,11 +66,11 @@ RSpec.describe Workspace::WorkflowGraphAscii do
     {"id" => id, "group" => "g"}.merge(extra)
   end
 
-  {"rpiv-auto-approve" => "(Fan out:", "explore-parallel" => "(Fan out:", "rpiv" => "(Start)"}.each do |id, marker|
+  {"rpiv-auto-approve" => "(Fan out:", "explore-parallel" => "(Fan out:", "rpiv" => "(Start)", "deliver" => "(Start)"}.each do |id, marker|
     it "draws #{id}" do
       text = described_class.render(WorkflowGraphGolden.model(id))
       expect(text).to include("(Start)", "(End)", marker)
-      expect(text).to include("(Join:") unless id == "rpiv"
+      expect(text).to include("(Join:") unless %w[rpiv deliver].include?(id)
     end
   end
 end

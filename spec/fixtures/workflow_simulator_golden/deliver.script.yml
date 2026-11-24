@@ -1,0 +1,10 @@
+# The script the deliver golden plays: all three plan reviewers approve, acceptance_check fails once on AC2 and loops back
+# to implement, then verify and acceptance_check pass, all three code reviewers approve and the run goes on to open_pr.
+steps:
+  plan:
+    - reviews: {supportive: approve, skeptical: approve, implementer: approve}
+  acceptance_check:
+    - {check: fail, log: "AC2 FAIL"}
+    - {}
+  code_review:
+    - reviews: {correctness: approve, tests: approve, maintainability: approve}
