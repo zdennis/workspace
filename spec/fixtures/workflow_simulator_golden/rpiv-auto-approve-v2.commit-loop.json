@@ -43,19 +43,22 @@
               "reviewer": "supportive",
               "verdict": "approve",
               "counted": true,
-              "problem": null
+              "problem": null,
+              "prompt": "You review {{review.subject}}. No person will look at it, so this review is t..."
             },
             {
               "reviewer": "skeptical",
               "verdict": "approve",
               "counted": true,
-              "problem": null
+              "problem": null,
+              "prompt": "You review {{review.subject}}. No person will look at it. Assume it is wrong ..."
             },
             {
               "reviewer": "implementer",
               "verdict": "approve",
               "counted": true,
-              "problem": null
+              "problem": null,
+              "prompt": "You review {{review.subject}}. You will have to build it. Check each task is ..."
             }
           ]
         },
@@ -68,19 +71,22 @@
               "reviewer": "supportive",
               "verdict": "approve",
               "counted": true,
-              "problem": null
+              "problem": null,
+              "prompt": "You review {{review.subject}}. No person will look at it, so this review is t..."
             },
             {
               "reviewer": "skeptical",
               "verdict": "approve",
               "counted": true,
-              "problem": null
+              "problem": null,
+              "prompt": "You review {{review.subject}}. No person will look at it. Assume it is wrong ..."
             },
             {
               "reviewer": "implementer",
               "verdict": "approve",
               "counted": true,
-              "problem": null
+              "problem": null,
+              "prompt": "You review {{review.subject}}. You will have to build it. Check each task is ..."
             }
           ]
         }
