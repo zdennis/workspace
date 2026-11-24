@@ -285,19 +285,27 @@ module Workspace
       stopped = (outcome == "stopped") ? {"step" => run.current, "attempt" => run.step(run.current).last_attempt&.n, "reason" => run.reason_for(run.current)&.dig("code")} : nil
       {"workflow" => data["id"], "inputs" => run.inputs, "outcome" => outcome, "stopped" => stopped, "capped" => capped, "max_actions" => @max_actions, "actions" => actions,
        "run" => {"state" => run.state, "current" => run.current, "reason" => run.reason_for(run.current)&.dig("code"), "loops" => run.loops},
-       "steps" => data["steps"].map { |step| {"id" => step["id"], "state" => run.step(step["id"]).state, "attempts" => run.step(step["id"]).attempts.map { |each| attempt_row(each, panes) }} },
+       "steps" => data["steps"].map { |step| {"id" => step["id"], "state" => run.step(step["id"]).state, "attempts" => run.step(step["id"]).attempts.map { |each| attempt_row(each, panes, data["reviewers"]) }} },
        "budget" => WorkflowBudget.reading(run),
        "transitions" => events.map { |event| {"n" => event["n"], "at" => (Time.iso8601(event["ts"]) - START).round}.merge(event.except("n", "ts")) }}
     end
 
-    # An attempt as the report shows it; a reviewed one lists what each reviewer's verdict came to.
-    def attempt_row(attempt, panes)
+    # An attempt as the report shows it; a reviewed one lists what each reviewer's verdict came to, and the first line of the
+    # prompt the definition gives that reviewer (its own or an imported library step's), so a person sees which one judged.
+    def attempt_row(attempt, panes, reviewers = {})
       row = attempt.to_h.slice("n", "outcome", "code")
       fresh = panes.fresh_for(attempt.to_h["prompt_file"])
       row["fresh"] = fresh unless fresh.nil?
       reviews = attempt.to_h["reviews"] || Array(attempt.to_h["rounds"]).last&.dig("reviews")
-      row["reviews"] = reviews.map { |each| each.slice("reviewer", "verdict", "counted", "problem") } if reviews.is_a?(Array)
+      row["reviews"] = reviews.map { |each| each.slice("reviewer", "verdict", "counted", "problem").merge("prompt" => prompt_line(reviewers, each["reviewer"])) } if reviews.is_a?(Array)
       row
+    end
+
+    PROMPT_LINE_LIMIT = 80
+
+    def prompt_line(reviewers, name)
+      line = reviewers.to_h.dig(name, "prompt").to_s.lines.map(&:strip).find { |each| !each.empty? }.to_s
+      (line.length > PROMPT_LINE_LIMIT) ? "#{line[0, PROMPT_LINE_LIMIT - 3]}..." : line
     end
 
     # Simulated time: whole seconds, moving a second per agent turn and when a retry's wait is over.

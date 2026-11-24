@@ -622,6 +622,7 @@ Do not run the whole suite while working or before a commit. GitHub Actions runs
    - A file in `spec/support/`: every spec that uses the helper (grep its name).
    - A changed public method signature: `spec/unit/fake_contract_spec.rb`, which holds the spec fakes to the real classes' parameters.
    - A new or changed spec file: add `spec/unit/no_peeking_spec.rb`, which reads every spec as text.
+   - A re-recorded `spec/fixtures/workflow_simulator_golden/` file: grep the specs for its preset name and for `workflow_simulator_golden`, since some replay it against a real engine (`workflow_run_change_crash_spec.rb`).
    - `lib/library/play/`, `lib/workflows/`, `lib/templates/`: grep the specs for the pack, preset or template name. `lib/skills/`: also run `script/check-skills`.
    - A new, renamed or removed `lib/` file, or a change to `.claude/CLAUDE.md` or `docs/architecture/`: run `spec/unit/claude_md_size_spec.rb`.
    - Code that a spec runs in a separate `ruby` (or another program that loads gems): also run those system specs with the bundle in its own path, as CI does (`bundler-cache` installs to `vendor/bundle`), so a gem outside the Gemfile cannot load by luck: `BUNDLE_PATH=/tmp/ci-bundle bundle install && BUNDLE_PATH=/tmp/ci-bundle bundle exec rspec FILE...`.

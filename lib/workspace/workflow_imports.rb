@@ -17,7 +17,7 @@ module Workspace
   # be checked further, as with {WorkflowExtends#failure}.
   class WorkflowImports
     # The top-level keys a step library may hold.
-    LIBRARY_KEYS = %w[schema_version description steps].freeze
+    LIBRARY_KEYS = %w[schema_version description reviewers steps].freeze
 
     # Keys a library step may not hold, and why.
     LIBRARY_STEP_REFUSALS = {
@@ -35,27 +35,34 @@ module Workspace
     # shape and refused keys. The one check an import, `workflow validate` on a library and the source installer share.
     #
     # @param text [String] the library file's text
+    # @param dir [String, nil] the directory a reviewer's relative `prompt_file` is read against (the library file's)
     # @return [Array<String>] each fault, empty for a good library
-    def self.library_problems(text)
-      read_library(text).last
+    def self.library_problems(text, dir: nil)
+      read_library(text, dir: dir).last
     end
 
     # @param text [String]
-    # @return [Array(Hash, Array<String>)] the library's steps (step id to its mapping) and its faults
-    def self.read_library(text)
+    # @param dir [String, nil] the directory a reviewer's relative `prompt_file` is read against; nil only checks it is a path
+    # @return [Array(Hash, Hash, Array<String>)] the library's steps (step id to its mapping), its reviewers as written
+    #   (name to mapping) and its faults. Reviewers are checked by the rules a workflow's `reviewers:` follow; their
+    #   placeholders are left to the host that uses them.
+    def self.read_library(text, dir: nil)
       text = text.dup.force_encoding(Encoding::UTF_8)
-      return [{}, ["the file is not valid UTF-8 text"]] unless text.valid_encoding?
+      return [{}, {}, ["the file is not valid UTF-8 text"]] unless text.valid_encoding?
       raw = YAML.safe_load(text)
-      return [{}, ["the file must be a YAML mapping"]] unless raw.is_a?(Hash)
+      return [{}, {}, ["the file must be a YAML mapping"]] unless raw.is_a?(Hash)
       problems = []
       unknown = raw.keys.map(&:to_s) - LIBRARY_KEYS
       problems << "a step library has unknown key(s) #{unknown.join(", ")} (known: #{LIBRARY_KEYS.join(", ")})" if unknown.any?
       schema = raw.key?("schema_version") && schema_problem(raw, text)
       problems << schema if schema
+      reviewers = raw["reviewers"]
+      problems.concat(reviewer_problems(reviewers, dir)) if raw.key?("reviewers")
+      reviewers = {} unless reviewers.is_a?(Hash)
       steps = raw["steps"]
       unless steps.is_a?(Hash) && steps.any?
         problems << "a step library needs steps: a mapping of step id to step"
-        return [{}, problems]
+        return [{}, reviewers, problems]
       end
       steps.each do |step_id, step|
         unless IdPatterns::WORKFLOW_ID.match?(step_id.to_s)
@@ -68,9 +75,9 @@ module Workspace
         end
         LIBRARY_STEP_REFUSALS.each { |key, why| problems << "step #{step_id}: #{why}" if step.key?(key) }
       end
-      [steps.to_h { |step_id, step| [step_id.to_s, step] }, problems]
+      [steps.to_h { |step_id, step| [step_id.to_s, step] }, reviewers.to_h { |name, spec| [name.to_s, spec] }, problems]
     rescue Psych::Exception => e
-      [{}, ["the file is not valid YAML (#{e.message.lines.first.to_s.strip})"]]
+      [{}, {}, ["the file is not valid YAML (#{e.message.lines.first.to_s.strip})"]]
     end
 
     # The same `schema_version` rule as a workflow's: `0.1` (as written), legacy `1`, or no key.
@@ -92,7 +99,65 @@ module Workspace
       found = root.children.each_slice(2).select { |k, v| k.is_a?(Psych::Nodes::Scalar) && k.value == key && v.is_a?(Psych::Nodes::Scalar) }
       found.last&.last&.value
     end
-    private_class_method :schema_problem, :top_scalar_text
+
+    # The faults of a library's `reviewers:` by {WorkflowReviewSpec#reviewers}'s rules; its placeholder check does nothing,
+    # as the inputs a prompt may use are the host's.
+    def self.reviewer_problems(raw, dir)
+      found = []
+      noop = ->(*_args, **_kwargs) {}
+      text = ->(value, where) do
+        return nil if value.nil?
+        return value if value.is_a?(String) && !value.strip.empty?
+        found << "#{where} must be text, got #{value.inspect[0, 60]}"
+        nil
+      end
+      names = ->(value, where) do
+        return [] if value.nil?
+        return value if value.is_a?(Array) && value.all? { |name| name.is_a?(String) && !name.strip.empty? }
+        found << "#{where} must be a list of names, got #{value.inspect[0, 60]}"
+        []
+      end
+      WorkflowReviewSpec.new(
+        name_pattern: WorkflowDefinition::INPUT_PATTERN, report: ->(message) {
+          found << message
+          nil
+        },
+        prompt: ->(spec, where) { reviewer_prompt(spec, where, dir, found) }, placeholders: noop,
+        text: text, names: names, uses: noop, context: noop, duration: noop
+      ).reviewers(raw, {})
+      found
+    end
+
+    def self.reviewer_prompt(spec, where, dir, found)
+      if spec.key?("prompt") == spec.key?("prompt_file")
+        found << "#{where} needs exactly one of prompt and prompt_file"
+        return nil
+      end
+      if spec.key?("prompt")
+        value = spec["prompt"]
+        return value if value.is_a?(String) && !value.strip.empty?
+        found << "#{where}: prompt must be text, got #{value.nil? ? "nothing" : value.inspect[0, 60]}" unless value.nil?
+        return nil
+      end
+      file = spec["prompt_file"]
+      unless file.is_a?(String) && !file.strip.empty?
+        found << "#{where}: prompt_file must be a path"
+        return nil
+      end
+      return file unless dir
+      full = File.expand_path(file, dir)
+      content = File.read(full, encoding: Encoding::UTF_8)
+      unless content.valid_encoding?
+        found << "#{where}: prompt_file #{full} is not valid UTF-8 text"
+        return nil
+      end
+      found << "#{where}: prompt_file #{full} is empty" if content.strip.empty?
+      content
+    rescue SystemCallError => e
+      found << "#{where}: prompt_file #{full} can't be read (#{e.class})"
+      nil
+    end
+    private_class_method :schema_problem, :top_scalar_text, :reviewer_problems, :reviewer_prompt
 
     # @return [Array<String>] why an import can't be used, each naming the host step, the reference and the absolute path; empty when every import resolved
     attr_reader :failure
@@ -101,7 +166,10 @@ module Workspace
     #   "import" (the reference as written), "layer" (the layer the lookup found a bare name in; nil for a `PATH#NAME`),
     #   "path" (the library file, absolute), "overrides" (the keys the host set), "removes" (library keys gone from the
     #   result: a `KEY: null`, or a `prompt_file` a `prompt` override replaced, and the reverse), "shadows" (lower-layer
-    #   files of the same name the lookup passed over) and "sha256" (of the library step as written, as canonical JSON)
+    #   files of the same name the lookup passed over), "sha256" (of the library step as written, as canonical JSON; with the reviewers it brought in, as written, when there are any),
+    #   "reviewers" (the library reviewers the merged step's `review:` names, which the import added to the host's
+    #   `reviewers:`) and "reviewer_overrides" (the names it uses that the host's own `reviewers:` defines, which win);
+    #   both are empty when there are none
     attr_reader :imports
 
     # @return [Array<Hash{String=>String}>] things an import did that are probably a mistake, never an error, in the shape
@@ -130,6 +198,7 @@ module Workspace
       @unchecked = []
       @libraries = {}
       @nulled = {}
+      @brought = {}
     end
 
     # @param raw [Hash] the definition's YAML mapping
@@ -138,10 +207,13 @@ module Workspace
     #   `import` itself is dropped; a `fan_out` group and its siblings are left as written for the definition to judge
     def expand(raw)
       expanded = raw.dup
+      @host_reviewers = raw["reviewers"]
+      @added = {}
       %w[steps replace].each do |key|
         next unless raw[key].is_a?(Hash)
         expanded[key] = raw[key].to_h { |step_id, step| [step_id, expand_step(step_id.to_s, step)] }
       end
+      expanded["reviewers"] = (@host_reviewers || {}).merge(@added) if @added.any?
       expanded
     end
 
@@ -156,6 +228,15 @@ module Workspace
       set.empty? ? "(step imported from #{entry["import"]}, #{entry["path"]})" : "(step imported from #{entry["import"]}, #{entry["path"]}; the host sets #{set.uniq.join(", ")})"
     end
 
+    # The words every problem of a reviewer brought in from a library ends with.
+    #
+    # @param name [String] the reviewer's name
+    # @return [String, nil] "(reviewer imported from PATH)", or nil for a reviewer the host defines itself
+    def reviewer_provenance(name)
+      path = @brought[name]&.first
+      path && "(reviewer imported from #{path})"
+    end
+
     private
 
     def expand_step(step_id, step)
@@ -164,9 +245,9 @@ module Workspace
       found = resolve(step_id, reference)
       return step unless found
       path, layer, shadows = found
-      library_step = library_step(step_id, reference, path)
+      library_step, library_reviewers = library_step(step_id, reference, path)
       return step unless library_step
-      merge(step_id, reference, path, layer, shadows, library_step, step.except("import"))
+      merge(step_id, reference, path, layer, shadows, library_step, step.except("import"), library_reviewers)
     end
 
     # [path, layer, shadows] of the library file a reference names; nil, with {#failure} or {#unchecked} set, when there is none.
@@ -224,24 +305,24 @@ module Workspace
     end
 
     def library_step(step_id, reference, path)
-      steps, problems = @libraries[path] ||= read(path)
+      steps, reviewers, problems = @libraries[path] ||= read(path)
       if problems.any?
         @failure.concat(problems.map { |problem| "step #{step_id}: import #{reference} (#{path}): #{problem}" })
         return nil
       end
       name = reference.split("#").last
-      return steps[name] if steps.key?(name)
+      return [steps[name], reviewers] if steps.key?(name)
       @failure << "step #{step_id}: import #{reference} (#{path}): the file has no step #{name} (its steps: #{steps.keys.join(", ")})"
       nil
     end
 
     def read(path)
-      self.class.read_library(File.read(path))
+      self.class.read_library(File.read(path), dir: File.dirname(path))
     rescue SystemCallError => e
-      [{}, ["the file can't be read (#{e.message})"]]
+      [{}, {}, ["the file can't be read (#{e.message})"]]
     end
 
-    def merge(step_id, reference, path, layer, shadows, library_step, own)
+    def merge(step_id, reference, path, layer, shadows, library_step, own, library_reviewers)
       base = deep_copy(library_step)
       base["prompt_file"] = File.expand_path(base["prompt_file"], File.dirname(path)) if base["prompt_file"].is_a?(String)
       nulled = own.select { |_, value| value.nil? }.keys.map(&:to_s)
@@ -252,10 +333,90 @@ module Workspace
       note_dropped(step_id, reference, library_step, own, nulled)
       @nulled[step_id] = nulled
       merged = base.except(*removes).merge(own.reject { |_, value| value.nil? })
+      brought, overridden = bring_reviewers(step_id, reference, path, merged, library_reviewers)
+      digested = brought.empty? ? library_step : {"step" => library_step, "reviewers" => library_reviewers.slice(*brought)}
       @imports << {"step" => step_id, "import" => reference, "layer" => layer, "path" => path,
                    "overrides" => overrides, "removes" => removes, "shadows" => shadows,
-                   "sha256" => Digest::SHA256.hexdigest(JSON.generate(canonical(library_step)))}
+                   "sha256" => Digest::SHA256.hexdigest(JSON.generate(canonical(digested))),
+                   "reviewers" => brought, "reviewer_overrides" => overridden}
       merged
+    end
+
+    # Adds the library reviewers the merged step's `review:` names to the host's raw `reviewers`; returns the names
+    # brought in and the names the host defined itself. A host `reviewers:` that is not a mapping is left for build to report.
+    def bring_reviewers(step_id, reference, path, merged, library_reviewers)
+      brought = []
+      overridden = []
+      return [brought, overridden] unless @host_reviewers.nil? || @host_reviewers.is_a?(Hash)
+      review_names(merged["review"]).uniq.each do |name|
+        if @host_reviewers&.keys&.any? { |key| key.to_s == name }
+          overridden << name if library_reviewers.key?(name)
+          next
+        end
+        next unless library_reviewers.key?(name)
+        entry = deep_copy(library_reviewers[name])
+        if entry.is_a?(Hash) && entry["prompt_file"].is_a?(String)
+          anchored = anchor_reviewer_file(step_id, reference, path, name, entry["prompt_file"])
+          next unless anchored
+          entry["prompt_file"] = anchored
+        end
+        if clash?(step_id, reference, path, name, entry)
+          next
+        end
+        @added[name] = entry
+        brought << name
+      end
+      [brought, overridden]
+    end
+
+    # The reviewer's prompt file as an absolute path; for a confined host, the real path of a file inside the library's
+    # layer directory. nil, with {#failure} set, when that directory doesn't allow it.
+    def anchor_reviewer_file(step_id, reference, path, name, written)
+      file = File.expand_path(written, File.dirname(path))
+      return file unless @confine_dir
+      where = "step #{step_id}: import #{reference} (#{path}): reviewer #{name} prompt_file #{written}"
+      unless File.directory?(@confine_dir)
+        @failure << "#{where}: this workflow's directory #{@confine_dir} is missing, so it can't be checked"
+        return nil
+      end
+      root = library_root(path)
+      if written.start_with?("/", "~")
+        @failure << "#{where}: this workflow's imports must stay inside #{root}, not absolute or ~ paths"
+        return nil
+      end
+      real = File.realpath(file)
+      unless inside?(real, File.realpath(root))
+        @failure << "#{where}: the file is outside #{root} once links are followed"
+        return nil
+      end
+      real
+    rescue SystemCallError
+      file
+    end
+
+    # The directory a confined host's library reviewer must stay in: the host's own directory for a library inside it,
+    # else the layer directory a bare-name lookup found the library in (`<layer>/steps/NAME.yml`), such as the presets'.
+    def library_root(path)
+      return @confine_dir if inside?(File.realpath(path), File.realpath(@confine_dir))
+      File.dirname(File.dirname(path))
+    end
+
+    def clash?(step_id, reference, path, name, entry)
+      earlier_path, earlier = @brought[name]
+      if earlier_path.nil?
+        @brought[name] = [path, canonical(entry)]
+        return false
+      end
+      now = canonical(entry)
+      return false if earlier == now
+      differ = (earlier.is_a?(Hash) && now.is_a?(Hash)) ? " (#{(earlier.keys | now.keys).sort.reject { |key| earlier[key] == now[key] }.join(", ")} differ)" : ""
+      @failure << "step #{step_id}: import #{reference} (#{path}): reviewer #{name} is also brought in by #{earlier_path} with different content#{differ}"
+      true
+    end
+
+    def review_names(review)
+      names = review.is_a?(Hash) ? review["from"] : review
+      names.is_a?(Array) ? names.select { |name| name.is_a?(String) } : []
     end
 
     def note_dropped(step_id, reference, library_step, own, nulled)

@@ -733,6 +733,64 @@ RSpec.describe "workflow extends" do
       expect(definition.warnings.select { |each| each["step"] == "verify" }.map { |each| each["code"] }).to eq(["import_not_checked"])
     end
 
+    describe "library reviewers" do
+      let(:reviewed_library) do
+        <<~YAML
+          reviewers:
+            skeptic:
+              prompt: Library skeptic.
+          steps:
+            verify:
+              prompt: Verify
+              produces: [verify.md]
+              review: [skeptic]
+        YAML
+      end
+      let(:reviewed_parent) { "#{parent_yaml}  verify:\n    import: verify\n" }
+
+      def reviewer_prompt(definition, name)
+        definition.to_h.dig("reviewers", name, "prompt")
+      end
+
+      it "gives a child the reviewer of a reviewed step its parent imports" do
+        write(builtin_dir, "base", reviewed_parent)
+        library(builtin_dir, reviewed_library)
+        write(global_dir, "child", "extends: base\n")
+
+        definition = parse("child")
+
+        expect(reviewer_prompt(definition, "skeptic")).to eq("Library skeptic.")
+        expect(step_of(definition, "verify")["review"]).to include("from" => ["skeptic"])
+      end
+
+      it "lets a child that defines the same reviewer name override the inherited one" do
+        write(builtin_dir, "base", reviewed_parent)
+        library(builtin_dir, reviewed_library)
+        write(global_dir, "child", "extends: base\nreviewers:\n  skeptic:\n    prompt: Child skeptic.\n")
+
+        expect(reviewer_prompt(parse("child"), "skeptic")).to eq("Child skeptic.")
+      end
+
+      it "gives a child that imports a reviewed step the library's reviewer over its parent's of the same name" do
+        write(builtin_dir, "base", "reviewers:\n  skeptic:\n    prompt: Parent skeptic.\n#{parent_yaml}")
+        library(global_dir, reviewed_library)
+        write(global_dir, "child", "extends: base\nsteps:\n  verify:\n    import: verify\n    after: three\n")
+
+        expect(reviewer_prompt(parse("child"), "skeptic")).to eq("Library skeptic.")
+      end
+
+      it "changes the child's resolved_sha256 when the library reviewer's prompt changes" do
+        write(builtin_dir, "base", reviewed_parent)
+        library(builtin_dir, reviewed_library)
+        write(global_dir, "child", "extends: base\n")
+        before = parse("child").resolved_sha256
+
+        library(builtin_dir, reviewed_library.sub("Library skeptic.", "Stricter skeptic."))
+
+        expect(parse("child").resolved_sha256).not_to eq(before)
+      end
+    end
+
     describe "resolved_sha256 (R15)" do
       before do
         write(builtin_dir, "base", importing_parent)

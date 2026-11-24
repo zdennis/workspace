@@ -242,7 +242,7 @@ module Workspace
             path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain,
             import_lookup: @catalog.import_lookup(project, file_layer: layer), confine_dir: layer && @catalog.confine_dir(layer, project))
         rescue Workspace::Error => e
-          raise unless e.code == "invalid_workflow" && e.details["problems"] && WorkflowImports.library_problems(text).empty?
+          raise unless e.code == "invalid_workflow" && e.details["problems"] && WorkflowImports.library_problems(text, dir: nil).empty?
           problems = e.details["problems"] + [LIBRARY_OUTSIDE_STEPS]
           raise Workspace::Error.new(e.message + "\n  - #{LIBRARY_OUTSIDE_STEPS}", code: e.code, details: e.details.merge("problems" => problems))
         end
@@ -260,7 +260,7 @@ module Workspace
         end
       end
 
-      LIBRARY_OUTSIDE_STEPS = "this file has only a step library's keys (schema_version, description, steps), so it was read " \
+      LIBRARY_OUTSIDE_STEPS = "this file has only a step library's keys (schema_version, description, reviewers, steps), so it was read " \
         "as a workflow: a step library is checked as one only inside a layer's steps/ directory, such as " \
         "~/.config/workspace/workflows/steps/NAME.yml"
 
@@ -277,7 +277,7 @@ module Workspace
       #   document's "library" and "importers" in `details` (text: the results are printed first)
       def validate_library(path, text, scope, json)
         full = File.expand_path(path)
-        steps, problems = WorkflowImports.read_library(text)
+        steps, _reviewers, problems = WorkflowImports.read_library(text, dir: File.dirname(full))
         importers = @catalog.importers_of(full).map { |importer| importer_result(importer) }
         body = {"library" => {"path" => full, "scope" => scope, "valid" => problems.empty?, "steps" => steps.keys, "problems" => problems},
                 "importers" => importers}
@@ -1936,7 +1936,8 @@ module Workspace
       end
 
       # The `Imports:` block: each imported step, its reference and where it resolved, then the keys the host set, the
-      # library keys gone from the result and the lower-layer files of the same name it shadows.
+      # library keys gone from the result, the reviewers the library brought in or the host's own replaced, and the
+      # lower-layer files of the same name it shadows.
       def print_imports(imports)
         return if imports.empty?
         @output.puts "Imports:"
@@ -1944,6 +1945,8 @@ module Workspace
           @output.puts TerminalText.escape("  #{each["step"]}: #{each["import"]} (#{[each["layer"], each["path"]].compact.join(", ")})")
           @output.puts TerminalText.escape("    overrides: #{each["overrides"].join(", ")}") if each["overrides"].any?
           @output.puts TerminalText.escape("    removes: #{each["removes"].join(", ")}") if each["removes"].any?
+          @output.puts TerminalText.escape("    reviewers: #{each["reviewers"].join(", ")}") if each["reviewers"].any?
+          @output.puts TerminalText.escape("    reviewer overrides: #{each["reviewer_overrides"].join(", ")}") if each["reviewer_overrides"].any?
           each["shadows"].each { |path| @output.puts TerminalText.escape("    shadows: #{path}") }
         end
       end

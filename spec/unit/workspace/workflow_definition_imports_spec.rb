@@ -395,4 +395,105 @@ RSpec.describe Workspace::WorkflowDefinition do
   def minimal_steps
     "steps:\n  build:\n    prompt: Build it.\n    produces: [b.md]\n"
   end
+
+  describe "library reviewers" do
+    let(:reviewed_library) do
+      <<~YAML
+        reviewers:
+          skeptic:
+            prompt: Doubt {{review.subject}} of {{inputs.task}}.
+          unused:
+            prompt: Never used.
+        steps:
+          verify:
+            prompt: Run the tests.
+            produces: [verify.md]
+            review: [skeptic]
+      YAML
+    end
+
+    it "parses a host with no reviewers: that imports a reviewed step, holding only the used reviewers" do
+      library("verify", reviewed_library)
+      definition = parse(host("verify:\n  import: verify\n"))
+      expect(definition.to_h["reviewers"].keys).to eq(%w[skeptic])
+      expect(definition.to_h["reviewers"]["skeptic"]["prompt"]).to eq("Doubt {{review.subject}} of {{inputs.task}}.")
+      expect(step(definition, "verify")["review"]["from"]).to eq(%w[skeptic])
+      expect(definition.imports[0]).to include("reviewers" => ["skeptic"], "reviewer_overrides" => [])
+    end
+
+    it "lets the host's own reviewer of that name win" do
+      library("verify", reviewed_library)
+      yaml = "reviewers:\n  skeptic:\n    prompt: Mine.\n#{host("verify:\n  import: verify\n")}"
+      definition = parse(yaml)
+      expect(definition.to_h["reviewers"]["skeptic"]["prompt"]).to eq("Mine.")
+      expect(definition.imports[0]).to include("reviewers" => [], "reviewer_overrides" => ["skeptic"])
+    end
+
+    describe "problems of a reviewer" do
+      let(:missing_library) { reviewed_library.sub("{{inputs.task}}", "{{inputs.missing}}") }
+
+      it "names the library in a problem found in the host, once" do
+        path = library("verify", missing_library)
+        found = problems(host("verify:\n  import: verify\n")).select { |each| each.start_with?("reviewer skeptic") }
+        expect(found.size).to eq(1)
+        expect(found[0]).to include("missing").and end_with("(reviewer imported from #{path})")
+      end
+
+      it "adds nothing to a host-defined reviewer's problem" do
+        library("verify", reviewed_library)
+        yaml = "reviewers:\n  skeptic:\n    prompt: Doubt {{inputs.missing}}.\n#{host("verify:\n  import: verify\n")}"
+        found = problems(yaml).select { |each| each.start_with?("reviewer skeptic") }
+        expect(found.size).to eq(1)
+        expect(found[0]).not_to include("imported from")
+      end
+    end
+
+    describe "digest" do
+      let(:import_yaml) { host("verify:\n  import: verify\n") }
+
+      def canonical_json(value)
+        case value
+        when Hash then value.sort.to_h { |key, each| [key, canonical_json(each)] }
+        when Array then value.map { |each| canonical_json(each) }
+        else value
+        end
+      end
+
+      def resolved(text = reviewed_library, yaml = import_yaml)
+        library("verify", text)
+        parse(yaml).resolved_sha256
+      end
+
+      it "moves when a used library reviewer's prompt changes" do
+        before = resolved
+        expect(resolved(reviewed_library.sub("Doubt", "Question"))).not_to eq(before)
+      end
+
+      it "stays when an unused library reviewer changes" do
+        before = resolved
+        expect(resolved(reviewed_library.sub("Never used.", "Still unused."))).to eq(before)
+      end
+
+      it "stays when a reviewer the host overrides changes" do
+        yaml = "reviewers:\n  skeptic:\n    prompt: Mine.\n#{import_yaml}"
+        before = resolved(reviewed_library, yaml)
+        expect(resolved(reviewed_library.sub("Doubt", "Question"), yaml)).to eq(before)
+      end
+
+      it "hashes the step and its reviewers as written when it brings some in" do
+        library("verify", reviewed_library)
+        entry = parse(import_yaml).imports[0]
+        raw = YAML.safe_load(reviewed_library)
+        expected = {"step" => raw["steps"]["verify"], "reviewers" => raw["reviewers"].slice("skeptic")}
+        expect(entry["sha256"]).to eq(Digest::SHA256.hexdigest(JSON.generate(canonical_json(expected))))
+      end
+
+      it "keeps the plain step digest when no reviewers come in" do
+        library
+        entry = parse(host("check:\n  import: verify\n")).imports[0]
+        step = YAML.safe_load(verify_library)["steps"]["verify"]
+        expect(entry["sha256"]).to eq(Digest::SHA256.hexdigest(JSON.generate(canonical_json(step))))
+      end
+    end
+  end
 end

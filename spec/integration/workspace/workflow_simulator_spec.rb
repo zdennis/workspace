@@ -586,6 +586,24 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
       expect(reviews_of(result)).to eq([["skeptic", "approve", true], ["builder", "approve", true]])
     end
 
+    it "shows each reviewer's prompt as its first line, capped, and the imported library reviewer's prompt for a host that brings one in" do
+      base = Dir.mktmpdir("wf-lib")
+      library = File.join(base, "steps", "verify.yml")
+      FileUtils.mkdir_p(File.dirname(library))
+      File.write(library, "reviewers:\n  skeptic:\n    prompt: |\n      Doubt the tests of this change, and say plainly which claim in the write-up has no proof behind it at all.\n      Second line.\nsteps:\n  verify:\n    prompt: Run it.\n    produces: [verify.md]\n    review: [skeptic]\n")
+      lookup = ->(name, layer:) { {"path" => library, "layer" => "global", "searched" => [], "shadows" => []} if name == "verify" }
+      host = Workspace::WorkflowDefinition.parse("steps:\n  verify:\n    import: verify\n", id: "host", source: "global", path: File.join(base, "host.yml"), import_lookup: lookup)
+
+      result = play(host, "steps:\n  verify: [{reviews: {skeptic: approve}}]\n")
+      shown = result["steps"].first["attempts"].last["reviews"].first["prompt"]
+
+      FileUtils.rm_rf(base)
+      expect(shown).to eq("Doubt the tests of this change, and say plainly which claim in the write-up h...")
+      expect(shown.length).to eq(80)
+      expect(play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve, builder: approve}}]\n")["steps"].first["attempts"].last["reviews"].map { |each| each["prompt"] })
+        .to eq(["Find what is wrong.", "Check it can be built."])
+    end
+
     it "stops review_incomplete once the reruns the definition's redeliver allows leave a reviewer missing" do
       result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve}, reruns: #{Array.new(10) { {} }.to_json}}]\n")
 

@@ -5583,7 +5583,7 @@ RSpec.describe Workspace::Commands::Workflow do
       let(:host) { "title: Flow\nsteps:\n  look:\n    import: research\n    prompt: Look.\n    produces: [notes.md]\n" }
       let(:entry) do
         {"step" => "look", "import" => "research", "layer" => "global", "path" => library,
-         "overrides" => ["prompt", "produces"], "removes" => ["prompt_file"], "shadows" => [shadowed], "sha256" => a_string_matching(/\A\h{64}\z/)}
+         "overrides" => ["prompt", "produces"], "removes" => ["prompt_file"], "shadows" => [shadowed], "sha256" => a_string_matching(/\A\h{64}\z/), "reviewers" => [], "reviewer_overrides" => []}
       end
 
       before do
@@ -5618,6 +5618,40 @@ RSpec.describe Workspace::Commands::Workflow do
 
         expect(output.string).to start_with("flow: valid (1 steps), in the global definitions\nImports:\n  look: research (global, #{library})\n")
         expect(output.string).to include("warning: step look: produces replaces the produces of imported step research whole and drops sources.md")
+      end
+
+      context "when the imported step names reviewers" do
+        let(:library) { File.join(global_dir, "steps", "verify.yml") }
+
+        before do
+          File.write(library, "reviewers:\n  skeptic:\n    prompt: Doubt it.\n  tidy:\n    prompt: Tidy.\nsteps:\n  verify:\n    prompt: Run.\n    produces: [v.md]\n    review: [skeptic, tidy]\n")
+          File.write(target, "title: Flow\nreviewers:\n  tidy:\n    prompt: Mine.\nsteps:\n  check:\n    import: verify\n")
+        end
+
+        it "show prints the reviewers brought in and the ones the host overrides" do
+          command.show(id: "flow")
+
+          expect(output.string).to include("  check: verify (global, #{library})\n    reviewers: skeptic\n    reviewer overrides: tidy\n")
+        end
+
+        it "validate prints the reviewers brought in and the ones the host overrides" do
+          command.validate(path: target)
+
+          expect(output.string).to include("  check: verify (global, #{library})\n    reviewers: skeptic\n    reviewer overrides: tidy\n")
+        end
+
+        it "show --json carries both lists" do
+          command.show(id: "flow", json: true)
+
+          expect(json["workflow"]["imports"][0]).to include("reviewers" => ["skeptic"], "reviewer_overrides" => ["tidy"])
+        end
+      end
+
+      it "prints no reviewer lines for an import with none" do
+        command.show(id: "flow")
+
+        expect(output.string).not_to include("reviewers:")
+        expect(output.string).not_to include("reviewer overrides:")
       end
 
       it "a definition with no import has no imports field and no Imports block" do
@@ -5713,6 +5747,15 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to end_with("No workflow imports it.\n")
     end
 
+    it "refuses a library whose reviewer is bad, reading a prompt_file against the library's directory" do
+      File.write(library, "reviewers:\n  sec:\n    prompt_file: missing.md\nsteps:\n  research:\n    prompt: p\n")
+
+      expect { command.validate(path: library) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_step_library")
+        expect(e.details["library"]["problems"]).to match([a_string_starting_with("reviewer sec: prompt_file #{File.join(File.dirname(library), "missing.md")} can't be read")])
+      }
+    end
+
     it "passes a good library that nothing imports" do
       command.validate(path: library)
 
@@ -5727,6 +5770,15 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(e.code).to eq("invalid_workflow")
         expect(e.details["problems"]).to include(include("{{inputs.task}}"), include("only inside a layer's steps/ directory"))
         expect(e.message).to include("  - this file has only a step library's keys")
+      }
+    end
+
+    it "names the steps/ rule for a library-shaped file whose reviewer prompt_file is missing, as the rule is about its keys" do
+      path = File.join(dir, "research.yml")
+      File.write(path, "reviewers:\n  fan:\n    prompt_file: missing.md\nsteps:\n  research:\n    prompt: Research.\n    review: [fan]\n")
+
+      expect { command.validate(path: path) }.to raise_error(Workspace::Error) { |e|
+        expect(e.details["problems"]).to include(include("only inside a layer's steps/ directory"))
       }
     end
 

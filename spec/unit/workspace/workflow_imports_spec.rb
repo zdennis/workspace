@@ -331,6 +331,7 @@ RSpec.describe Workspace::WorkflowImports do
 
       expect(importer.imports).to eq([{"step" => "verify", "import" => "verify", "layer" => "global", "path" => path,
                                        "overrides" => %w[prompt_file], "removes" => %w[uses prompt], "shadows" => [],
+                                       "reviewers" => [], "reviewer_overrides" => [],
                                        "sha256" => importer.imports.first["sha256"]}])
       expect(importer.imports.first["sha256"]).to match(/\A[0-9a-f]{64}\z/)
     end
@@ -419,7 +420,7 @@ RSpec.describe Workspace::WorkflowImports do
 
     it "refuses another schema_version and an unknown top-level key" do
       expect(described_class.library_problems("schema_version: 2\nid: x\nsteps:\n  a:\n    prompt: p\n")).to eq([
-        "a step library has unknown key(s) id (known: schema_version, description, steps)",
+        "a step library has unknown key(s) id (known: schema_version, description, reviewers, steps)",
         "schema_version must be one of 0.1, got 2"
       ])
       expect(described_class.library_problems("schema_version: 0.10\nsteps:\n  a:\n    prompt: p\n")).to eq(["schema_version must be one of 0.1, got 0.10"])
@@ -434,6 +435,49 @@ RSpec.describe Workspace::WorkflowImports do
       ])
     end
 
+    describe "reviewers:" do
+      def reviewed(reviewers, dir: nil)
+        described_class.library_problems("reviewers:\n#{reviewers.gsub(/^/, "  ")}steps:\n  a:\n    prompt: p\n", dir: dir)
+      end
+
+      it "accepts good reviewers, with placeholders left to the host" do
+        write("global/steps/rev.md", "Check {{inputs.anything}}.")
+        text = "security:\n  prompt: Look at {{inputs.missing}}\n  scope: \"{{inputs.nope}} only\"\n  include: [x]\nstyle:\n  prompt_file: rev.md\n"
+        expect(reviewed(text, dir: File.join(@dir, "global/steps"))).to eq([])
+        expect(reviewed(text)).to eq([])
+      end
+
+      it "returns the reviewers as written" do
+        _steps, reviewers, problems = described_class.read_library("reviewers:\n  sec:\n    prompt: p\nsteps:\n  a:\n    prompt: p\n")
+        expect(problems).to eq([])
+        expect(reviewers).to eq("sec" => {"prompt" => "p"})
+      end
+
+      it "reports each of these as one problem" do
+        {
+          "sec:\n  prompt: p\n  nope: 1\n" => "reviewer sec has unknown key nope",
+          "summary:\n  prompt: p\n" => "reviewer name summary is reserved",
+          "Bad-Name:\n  prompt: p\n" => "reviewer name \"Bad-Name\" must be lowercase",
+          "sec:\n  prompt: p\n  prompt_file: f.md\n" => "reviewer sec needs exactly one of prompt and prompt_file",
+          "sec:\n  title: T\n" => "reviewer sec needs exactly one of prompt and prompt_file",
+          "sec:\n  prompt_file: gone.md\n" => "reviewer sec: prompt_file #{File.join(@dir, "global/steps/gone.md")} can't be read"
+        }.each do |text, message|
+          expect(reviewed(text, dir: File.join(@dir, "global/steps"))).to match([a_string_starting_with(message)]), text
+        end
+      end
+
+      it "reports a reviewers: that is not a mapping" do
+        expect(described_class.library_problems("reviewers: [a]\nsteps:\n  a:\n    prompt: p\n")).to eq(["reviewers must be a mapping of reviewer name to its prompt"])
+      end
+
+      it "fails an import through a library with a bad reviewer, naming the library path" do
+        path = library_at("global/steps/verify.yml", "reviewers:\n  sec:\n    prompt: p\n    nope: 1\n" + verify_library)
+        importer = imports
+        importer.expand({"steps" => {"verify" => {"import" => "verify"}}})
+        expect(importer.failure).to match([a_string_starting_with("step verify: import verify (#{path}): reviewer sec has unknown key nope")])
+      end
+    end
+
     it "refuses an empty steps mapping" do
       expect(described_class.library_problems("steps: {}\n")).to eq(["a step library needs steps: a mapping of step id to step"])
     end
@@ -443,6 +487,190 @@ RSpec.describe Workspace::WorkflowImports do
       importer = imports
       importer.expand({"steps" => {"verify" => {"import" => "verify"}}})
       expect(importer.failure).to eq(["step verify: import verify (#{path}): step \"Not_An-Id!\": a step id must be #{Workspace::IdPatterns::WORKFLOW_ID_RULE}"])
+    end
+  end
+
+  describe "library reviewers an imported step names" do
+    let(:reviewed_library) do
+      <<~YAML
+        reviewers:
+          skeptic:
+            prompt: Doubt it.
+          fan:
+            prompt_file: prompts/fan.md
+          unused:
+            prompt: Never used.
+        steps:
+          verify:
+            prompt: Run the tests.
+            review: [skeptic]
+          mapped:
+            prompt: Mapped.
+            review: {from: [skeptic, fan, missing], must: [fan]}
+          plain:
+            prompt: Plain.
+      YAML
+    end
+
+    before { write("global/prompts/fan.md", "Like it.") }
+
+    def expand(steps, host_reviewers: nil, library: reviewed_library, file: "lib.yml")
+      write("global/#{file}", library)
+      importer = imports
+      raw = {"steps" => steps}
+      raw["reviewers"] = host_reviewers unless host_reviewers.nil?
+      [importer, importer.expand(raw)]
+    end
+
+    it "adds the reviewers a list review: names and not the unused ones" do
+      importer, raw = expand({"v" => {"import" => "lib.yml#verify"}})
+      expect(importer.failure).to eq([])
+      expect(raw["reviewers"]).to eq("skeptic" => {"prompt" => "Doubt it."})
+      expect(importer.imports[0]).to include("reviewers" => ["skeptic"], "reviewer_overrides" => [])
+    end
+
+    it "reads a mapping's from, ignores must, and leaves an unknown name for later checks" do
+      importer, raw = expand({"m" => {"import" => "lib.yml#mapped"}})
+      expect(importer.failure).to eq([])
+      expect(raw["reviewers"].keys).to eq(%w[skeptic fan])
+      expect(importer.imports[0]["reviewers"]).to eq(%w[skeptic fan])
+    end
+
+    it "anchors a relative prompt_file against the library's directory" do
+      _importer, raw = expand({"m" => {"import" => "lib.yml#mapped"}})
+      expect(raw["reviewers"]["fan"]).to eq("prompt_file" => File.join(host_dir, "prompts/fan.md"))
+    end
+
+    it "gives an import with no review: empty lists and adds no reviewers key" do
+      importer, raw = expand({"p" => {"import" => "lib.yml#plain"}})
+      expect(raw).not_to have_key("reviewers")
+      expect(importer.imports[0]).to include("reviewers" => [], "reviewer_overrides" => [])
+    end
+
+    it "keeps the host's own reviewer, records the override and adds the rest" do
+      importer, raw = expand({"m" => {"import" => "lib.yml#mapped"}}, host_reviewers: {"skeptic" => {"prompt" => "Mine."}})
+      expect(raw["reviewers"]["skeptic"]).to eq("prompt" => "Mine.")
+      expect(raw["reviewers"].keys).to eq(%w[skeptic fan])
+      expect(importer.imports[0]).to include("reviewers" => ["fan"], "reviewer_overrides" => ["skeptic"])
+    end
+
+    it "takes the names from the host's review: override" do
+      importer, raw = expand({"m" => {"import" => "lib.yml#mapped", "review" => ["fan"]}})
+      expect(raw["reviewers"].keys).to eq(%w[fan])
+      expect(importer.imports[0]["reviewers"]).to eq(["fan"])
+    end
+
+    it "brings reviewers for a replace: step too" do
+      write("global/lib.yml", reviewed_library)
+      importer = imports
+      raw = importer.expand({"replace" => {"v" => {"import" => "lib.yml#verify"}}})
+      expect(raw["reviewers"].keys).to eq(%w[skeptic])
+      expect(importer.imports[0]["reviewers"]).to eq(["skeptic"])
+    end
+
+    it "leaves a host reviewers: that is not a mapping alone" do
+      importer, raw = expand({"v" => {"import" => "lib.yml#verify"}}, host_reviewers: ["skeptic"])
+      expect(raw["reviewers"]).to eq(["skeptic"])
+      expect(importer.imports[0]["reviewers"]).to eq([])
+    end
+
+    it "refuses the same name from two files with different content, naming both paths" do
+      first = write("global/one.yml", reviewed_library)
+      second = write("global/two.yml", reviewed_library.sub("Doubt it.", "Doubt it harder."))
+      importer = imports
+      importer.expand({"steps" => {"a" => {"import" => "one.yml#verify"}, "b" => {"import" => "two.yml#verify"}}})
+      expect(importer.failure).to eq(["step b: import two.yml#verify (#{second}): reviewer skeptic is also brought in by #{first} with different content (prompt differ)"])
+    end
+
+    it "names prompt_file when two files' reviewers point at their own copies of one relative path" do
+      first = write("global/one.yml", "reviewers:\n  fan:\n    prompt_file: fan.md\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n")
+      write("global/fan.md", "Doubt it.\n")
+      second = write("global/sub/two.yml", "reviewers:\n  fan:\n    prompt_file: fan.md\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n")
+      write("global/sub/fan.md", "Doubt it.\n")
+      importer = imports
+      importer.expand({"steps" => {"a" => {"import" => "one.yml#verify"}, "b" => {"import" => "sub/two.yml#verify"}}})
+      expect(importer.failure).to eq(["step b: import sub/two.yml#verify (#{second}): reviewer fan is also brought in by #{first} with different content (prompt_file differ)"])
+    end
+
+    it "accepts the same name with equal content from two files" do
+      write("global/one.yml", reviewed_library)
+      write("global/two.yml", reviewed_library)
+      importer = imports
+      raw = importer.expand({"steps" => {"a" => {"import" => "one.yml#verify"}, "b" => {"import" => "two.yml#verify"}}})
+      expect(importer.failure).to eq([])
+      expect(raw["reviewers"].keys).to eq(%w[skeptic])
+    end
+
+    describe "prompt_file in a confined host" do
+      let(:layer_dir) { File.join(@dir, "builtin") }
+
+      def confined(prompt_file)
+        write("builtin/lib.yml", "reviewers:\n  fan:\n    prompt_file: #{prompt_file}\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n")
+        importer = imports(base_dir: layer_dir, confine_dir: layer_dir)
+        raw = importer.expand({"steps" => {"v" => {"import" => "lib.yml#verify"}}})
+        [importer, raw]
+      end
+
+      it "accepts a file inside the directory, anchored by its real path" do
+        write("builtin/prompts/fan.md", "Like it.")
+        importer, raw = confined("prompts/fan.md")
+        expect(importer.failure).to eq([])
+        expect(raw["reviewers"]["fan"]).to eq("prompt_file" => File.realpath(File.join(layer_dir, "prompts/fan.md")))
+      end
+
+      it "refuses an absolute path" do
+        path = write("builtin/prompts/fan.md", "Like it.")
+        importer, = confined(path)
+        expect(importer.failure).to eq(["step v: import lib.yml#verify (#{File.join(layer_dir, "lib.yml")}): reviewer fan prompt_file #{path}: this workflow's imports must stay inside #{layer_dir}, not absolute or ~ paths"])
+      end
+
+      it "refuses a ~ path" do
+        write("home/fan.md", "Like it.")
+        old_home = ENV["HOME"]
+        ENV["HOME"] = File.join(@dir, "home")
+        importer, = begin
+          confined("~/fan.md")
+        ensure
+          ENV["HOME"] = old_home
+        end
+        expect(importer.failure).to match([a_string_including("reviewer fan prompt_file ~/fan.md: this workflow's imports must stay inside")])
+      end
+
+      it "refuses a link that leads out of the directory" do
+        write("outside/fan.md", "Like it.")
+        FileUtils.mkdir_p(File.join(layer_dir, "prompts"))
+        File.symlink(File.join(@dir, "outside/fan.md"), File.join(layer_dir, "prompts/fan.md"))
+        importer, = confined("prompts/fan.md")
+        expect(importer.failure).to match([a_string_including("reviewer fan prompt_file prompts/fan.md: the file is outside #{layer_dir} once links are followed")])
+      end
+
+      it "holds a library a bare name found in a lower layer to that layer's directory, not the host's" do
+        lower = File.join(@dir, "presets")
+        write("presets/prompts/fan.md", "Like it.")
+        library_at("presets/steps/verify.yml", "reviewers:\n  fan:\n    prompt_file: ../prompts/fan.md\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n", layer: "builtin")
+        importer = imports(base_dir: layer_dir, confine_dir: FileUtils.mkdir_p(layer_dir).first)
+        raw = importer.expand({"steps" => {"v" => {"import" => "verify"}}})
+        expect(importer.failure).to eq([])
+        expect(raw["reviewers"]["fan"]).to eq("prompt_file" => File.realpath(File.join(lower, "prompts/fan.md")))
+      end
+
+      it "refuses a lower layer's library reviewer that leaves that layer's directory" do
+        lower = File.join(@dir, "presets")
+        write("outside/fan.md", "Like it.")
+        library_at("presets/steps/verify.yml", "reviewers:\n  fan:\n    prompt_file: ../../outside/fan.md\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n", layer: "builtin")
+        importer = imports(base_dir: layer_dir, confine_dir: FileUtils.mkdir_p(layer_dir).first)
+        importer.expand({"steps" => {"v" => {"import" => "verify"}}})
+        expect(importer.failure).to match([a_string_including("reviewer fan prompt_file ../../outside/fan.md: the file is outside #{lower} once links are followed")])
+      end
+
+      it "leaves an unconfined host as before" do
+        path = write("outside/fan.md", "Like it.")
+        write("global/lib.yml", "reviewers:\n  fan:\n    prompt_file: #{path}\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n")
+        importer = imports
+        raw = importer.expand({"steps" => {"v" => {"import" => "lib.yml#verify"}}})
+        expect(importer.failure).to eq([])
+        expect(raw["reviewers"]["fan"]).to eq("prompt_file" => path)
+      end
     end
   end
 end
