@@ -428,5 +428,53 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(definition.to_h["reviewers"]["skeptic"]["prompt"]).to eq("Mine.")
       expect(definition.imports[0]).to include("reviewers" => [], "reviewer_overrides" => ["skeptic"])
     end
+
+    describe "digest" do
+      let(:import_yaml) { host("verify:\n  import: verify\n") }
+
+      def canonical_json(value)
+        case value
+        when Hash then value.sort.to_h { |key, each| [key, canonical_json(each)] }
+        when Array then value.map { |each| canonical_json(each) }
+        else value
+        end
+      end
+
+      def resolved(text = reviewed_library, yaml = import_yaml)
+        library("verify", text)
+        parse(yaml).resolved_sha256
+      end
+
+      it "moves when a used library reviewer's prompt changes" do
+        before = resolved
+        expect(resolved(reviewed_library.sub("Doubt", "Question"))).not_to eq(before)
+      end
+
+      it "stays when an unused library reviewer changes" do
+        before = resolved
+        expect(resolved(reviewed_library.sub("Never used.", "Still unused."))).to eq(before)
+      end
+
+      it "stays when a reviewer the host overrides changes" do
+        yaml = "reviewers:\n  skeptic:\n    prompt: Mine.\n#{import_yaml}"
+        before = resolved(reviewed_library, yaml)
+        expect(resolved(reviewed_library.sub("Doubt", "Question"), yaml)).to eq(before)
+      end
+
+      it "hashes the step and its reviewers as written when it brings some in" do
+        library("verify", reviewed_library)
+        entry = parse(import_yaml).imports[0]
+        raw = YAML.safe_load(reviewed_library)
+        expected = {"step" => raw["steps"]["verify"], "reviewers" => raw["reviewers"].slice("skeptic")}
+        expect(entry["sha256"]).to eq(Digest::SHA256.hexdigest(JSON.generate(canonical_json(expected))))
+      end
+
+      it "keeps the plain step digest when no reviewers come in" do
+        library
+        entry = parse(host("check:\n  import: verify\n")).imports[0]
+        step = YAML.safe_load(verify_library)["steps"]["verify"]
+        expect(entry["sha256"]).to eq(Digest::SHA256.hexdigest(JSON.generate(canonical_json(step))))
+      end
+    end
   end
 end

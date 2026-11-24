@@ -166,7 +166,7 @@ module Workspace
     #   "import" (the reference as written), "layer" (the layer the lookup found a bare name in; nil for a `PATH#NAME`),
     #   "path" (the library file, absolute), "overrides" (the keys the host set), "removes" (library keys gone from the
     #   result: a `KEY: null`, or a `prompt_file` a `prompt` override replaced, and the reverse), "shadows" (lower-layer
-    #   files of the same name the lookup passed over), "sha256" (of the library step as written, as canonical JSON),
+    #   files of the same name the lookup passed over), "sha256" (of the library step as written, as canonical JSON; with the reviewers it brought in, as written, when there are any),
     #   "reviewers" (the library reviewers the merged step's `review:` names, which the import added to the host's
     #   `reviewers:`) and "reviewer_overrides" (the names it uses that the host's own `reviewers:` defines, which win);
     #   both are empty when there are none
@@ -325,9 +325,10 @@ module Workspace
       @nulled[step_id] = nulled
       merged = base.except(*removes).merge(own.reject { |_, value| value.nil? })
       brought, overridden = bring_reviewers(step_id, reference, path, merged, library_reviewers)
+      digested = brought.empty? ? library_step : {"step" => library_step, "reviewers" => library_reviewers.slice(*brought)}
       @imports << {"step" => step_id, "import" => reference, "layer" => layer, "path" => path,
                    "overrides" => overrides, "removes" => removes, "shadows" => shadows,
-                   "sha256" => Digest::SHA256.hexdigest(JSON.generate(canonical(library_step))),
+                   "sha256" => Digest::SHA256.hexdigest(JSON.generate(canonical(digested))),
                    "reviewers" => brought, "reviewer_overrides" => overridden}
       merged
     end
