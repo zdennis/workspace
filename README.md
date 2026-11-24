@@ -153,7 +153,7 @@ workspace <subcommand> [options]
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
 | statusline | [README](docs/README.statusline.md) | Render Claude Code's status line (install as its statusLine command) |
-| step | [README](docs/README.workflow.md) | For the agent on a workflow step: report on it (`done`) or see what it is (`status`) |
+| step | [README](docs/README.workflow.md) | For the agent on a workflow step: report on it (`done`), see what it is (`status`), or run a trusted proof (`expect-fail`, `check-ids`) |
 | stop | [README](docs/README.stop.md) | Stop a workspace and its tmux session (default: the one you are in; `--all` for every active one) |
 | template | [README](docs/README.template.md) | Choose, check and re-render the tmuxinator templates that new configs are written from: `list`, `show`, `path`, `variables`, `render`, `validate`, `diff`, `new`, `edit`, `use`, `export` and `import` for sets; `status`, `apply`, `adopt`, `backup`, `backups list|prune` and `restore` to bring existing configs along, with a backup before every write |
 | tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
