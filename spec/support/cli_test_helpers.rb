@@ -1006,6 +1006,11 @@ module CLITestHelpers
       {exit_code: 0}
     end
 
+    def step_check_ids(**kw)
+      @calls << [:step_check_ids, kw]
+      {exit_code: 0}
+    end
+
     def recover(dry_run: false, &launch)
       @calls << [:recover, {dry_run: dry_run, launch: launch}]
       raise @error if @error

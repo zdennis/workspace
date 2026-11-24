@@ -598,6 +598,74 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(workflow_command.calls).to be_empty
     end
 
+    describe "check-ids" do
+      let(:base) { %w[check-ids --prefix R --defined req.md] }
+
+      it "hands the parsed values to the command, relative paths against the working directory" do
+        expect(run(*base, "--covered", "plan.md", "--allow-missing", "--json", verb: "step")).to be_nil
+
+        expect(workflow_command.calls).to eq([[:step_check_ids, {prefixes: ["R"], defined: "req.md", covered: "plan.md", plan_details_for: nil, line_regex: nil, allow_missing: true, base_dir: "/src/app", json: true}]])
+      end
+
+      it "splits and repeats prefixes, and compiles --each-line-matches" do
+        run("check-ids", "--prefix", "R,AC", "--prefix", "X", "--defined", "d", "--covered", "c", "--each-line-matches", "PASS", verb: "step")
+
+        keywords = workflow_command.calls.first.last
+        expect(keywords).to include(prefixes: %w[R AC X], line_regex: /PASS/)
+      end
+
+      it "uses WORKSPACE_RUN_ARTIFACTS as the base directory when set and not empty" do
+        env_invocation = Workspace::CLI::Invocation.new(output: out, error_output: err, exit_handler: FakeExitHandler, help_asked: false, quiet: false, env: {"WORKSPACE_RUN_ARTIFACTS" => "/art"})
+        family.call("step", [*base, "--covered", "c"], env_invocation)
+        blank_invocation = Workspace::CLI::Invocation.new(output: out, error_output: err, exit_handler: FakeExitHandler, help_asked: false, quiet: false, env: {"WORKSPACE_RUN_ARTIFACTS" => ""})
+        family.call("step", [*base, "--covered", "c"], blank_invocation)
+
+        expect(workflow_command.calls.map { |_, keywords| keywords[:base_dir] }).to eq(["/art", "/src/app"])
+      end
+
+      it "reads the plan of the current workspace, or of --name, for --plan-details" do
+        run(*base, "--plan-details", verb: "step")
+        run(*base, "--plan-details", "--name", "web", verb: "step")
+
+        expect(workflow_command.calls.map { |_, keywords| keywords.values_at(:covered, :plan_details_for) }).to eq([[nil, "app"], [nil, "web"]])
+      end
+
+      it "refuses --plan-details outside any workspace" do
+        expect { run(*base, "--plan-details", verb: "step", workflow_project: RecordingWorkflowProject.new(workspace: nil, projects: {})) }.to raise_error(Workspace::Error, /No workspace found/) { |e| expect(e.code).to eq("not_in_workspace") }
+      end
+
+      it "exits with the code the command answers" do
+        command = double("workflow command", step_check_ids: {exit_code: 1})
+
+        expect(run(*base, "--covered", "c", verb: "step", workflow_command: command)).to eq(1)
+      end
+
+      it "refuses bad usage and calls nothing" do
+        {
+          %w[check-ids --defined d --covered c] => /needs --prefix/,
+          %w[check-ids --prefix R1 --defined d --covered c] => /letters only/,
+          %w[check-ids --prefix R --covered c] => /needs --defined/,
+          %w[check-ids --prefix R --defined d] => /one of --covered FILE and --plan-details/,
+          %w[check-ids --prefix R --defined d --covered c --plan-details] => /can not be used together/,
+          %w[check-ids --prefix R --defined d --covered c --each-line-matches (] => /not a valid regular expression/,
+          %w[check-ids --prefix R --defined d --plan-details --each-line-matches x] => /goes with --covered/,
+          %w[check-ids --prefix R --defined d --covered c extra] => /Unexpected argument: extra/
+        }.each do |argv, message|
+          expect { run(*argv, verb: "step") }.to raise_error(Workspace::UsageError, message)
+        end
+        expect(workflow_command.calls).to be_empty
+      end
+
+      it "refuses the flags of the other verbs, both ways" do
+        expect { run(*base, "--covered", "c", "--status", "pass", verb: "step") }.to raise_error(Workspace::UsageError, "--status is not for `step check-ids`.")
+        expect { run(*base, "--covered", "c", "--timeout", "5", verb: "step") }.to raise_error(Workspace::UsageError, "--timeout is not for `step check-ids`.")
+        expect { run("done", "--prefix", "R", verb: "step") }.to raise_error(Workspace::UsageError, "--prefix is only for `step check-ids`.")
+        expect { run("status", "--covered", "c", verb: "step") }.to raise_error(Workspace::UsageError, "--covered is only for `step check-ids`.")
+        expect { run("expect-fail", "--allow-missing", "a", verb: "step") }.to raise_error(Workspace::UsageError, "--allow-missing is only for `step check-ids`.")
+        expect(workflow_command.calls).to be_empty
+      end
+    end
+
     it "records a step's end for the pane" do
       run("done", "--status", "fail", "--summary", "Two specs fail.", "--code", "specs_fail", verb: "step")
 
@@ -619,7 +687,7 @@ RSpec.describe Workspace::CLI::Workflow do
     end
 
     it "names its verbs when none is given" do
-      expect { run(verb: "step") }.to raise_error(Workspace::UsageError, /\AMissing subcommand: done, status or expect-fail\./)
+      expect { run(verb: "step") }.to raise_error(Workspace::UsageError, /\AMissing subcommand: done, status, expect-fail or check-ids\./)
     end
 
     it "answers a usage error with --json as one error document" do

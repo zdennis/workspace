@@ -1137,6 +1137,7 @@ module Workspace
     workflow_infra_retry = WorkflowInfraRetry.new(engine: workflow_engine, store: workflow_store, dispatch: pane_dispatch, lock_holder: lock_holder, agent_commands: agent_commands)
     workflow_reflect_command = Commands::WorkflowReflect.new(store: workflow_store, reflection: WorkflowReflection.new, panes: pane_dispatch, binder: binding_command,
       bindings: pane_bindings, main_agent: main_agent, evidence_dir: config.workflow_evidence_dir, output: output)
+    plan_access = PlanAccess.new(notes: notes_command, tmux: tmux, event_log: event_log)
     watch_loop = WatchLoop.new(output: output, sleeper: Kernel.method(:sleep))
     workflow_command = Commands::Workflow.new(
       watch_loop: watch_loop,
@@ -1164,6 +1165,7 @@ module Workspace
       step_check: WorkflowStepCheck.new(engine: workflow_engine, checker: workflow_checker),
       simulator: WorkflowSimulator.new(engine_factory: ->(**parts) { build_workflow_engine(**parts) }),
       expect_fail: WorkflowExpectFail.new(lineage: lineage, commands_config: commands_config, checker: workflow_checker),
+      check_ids: WorkflowCheckIds.new(plans: plan_access),
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,
@@ -1196,7 +1198,6 @@ module Workspace
     hooks_config = HooksConfig.new(config_resolver: config_resolver, error_output: error_output)
     plan_config = PlanConfig.new(config_resolver: config_resolver, error_output: error_output)
     plan_state = PlanState.new
-    plan_access = PlanAccess.new(notes: notes_command, tmux: tmux, event_log: event_log)
     plan_dispatch_command = Commands::PlanDispatch.new(access: plan_access, panes: pane_dispatch, library: library, output: output)
     spine_start_command = Commands::SpineStart.new(spine: spine_command, panes: pane_dispatch, library: library, composer: instruction_composer,
       notes: notes_command, main_agent: main_agent, output: output)
