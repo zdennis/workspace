@@ -90,7 +90,7 @@ If tmuxinator can't start a project's session, `launch` prints `Error: could not
 
 Before each agent pane starts, `launch` installs the session hooks and status line of every hook-capable agent (for example Claude Code) whose executable is on PATH into the checkout's untracked `.claude/settings.local.json`, which is kept out of `git status`, so the agent's `SessionStart` reaches the daemon. Nothing is written when they are current, and `start` and `add` do the same install. A stale entry in that file is replaced; a stale tracked `.claude/settings.json` is not rewritten. `codex.hooks.install` still governs whether Codex's `~/.codex/hooks.json` is written. Any notes go to stderr.
 
-When an agent still holds no current hooks after that (the install failed, `codex.hooks.install` is off for it, or a tracked file is stale), `launch` prints one `Note:` line naming it and the remedy, and launches anyway. `relaunch`, `restore`, `workflow recover`, `plan start`, `spine start` and `promote --launch` launch the same way.
+When an agent still holds no current hooks after that (the install failed), `launch` prints the failure and a `Note:` line naming the remedy, and launches anyway. A failed status-line routing prints its failure too. A stale tracked `.claude/settings.json` gets `start`'s own Note, which names `workspace init --install-hooks` to refresh it. `relaunch`, `restore`, `workflow recover`, `plan start`, `spine start` and `promote --launch` launch the same way.
 
 `--reattach` uses `tmux -CC attach` which may trigger an iTerm dialog. To suppress it, set iTerm > Settings > General > tmux > "When attaching, restore windows" to "Always".
 

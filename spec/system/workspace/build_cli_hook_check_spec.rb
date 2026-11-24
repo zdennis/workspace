@@ -83,4 +83,36 @@ RSpec.describe "Workspace.build_cli wiring" do
     expect(File).to exist(File.join(checkout, ".claude", "settings.local.json"))
     expect(JSON.parse(out.string)).to include("action" => "launch")
   end
+
+  it "prints start's stale-hooks Note on launch and leaves the tracked settings.json alone" do
+    checkout = File.join(@home, "src", "proj")
+    FileUtils.mkdir_p(File.join(checkout, ".claude"))
+    claude = Workspace::AgentProvider.all.find { |p| p.label == "Claude Code" }
+    tracked = File.join(checkout, ".claude", "settings.json")
+    stale = {"hooks" => {"PreToolUse" => [{"matcher" => "Task", "hooks" => [{"type" => "command", "command" => claude.hook_command("workspace session-event")}]}]}}
+    File.write(tracked, JSON.pretty_generate(stale))
+    before = File.read(tracked)
+    tmux = Class.new(FakeTmux) do
+      def start_headless(name)
+        @started = session_name_for(name)
+        nil
+      end
+
+      def sessions(**) = [@started].compact
+    end.new
+    ensurer = Class.new do
+      def call(name:, wc_socket: nil) = Struct.new(:status, :detail) { def ok? = true }.new(:ok, nil)
+    end.new
+    allow(Workspace::Commands::EnsureAgent).to receive(:new).and_return(ensurer)
+
+    build(tmux: tmux).run(["launch", "--json", "--headless", checkout])
+
+    local = JSON.parse(File.read(File.join(checkout, ".claude", "settings.local.json")))
+    expect(File.read(tracked)).to eq(before)
+    expect(local).to have_key("statusLine")
+    expect(local).not_to have_key("hooks")
+    expect(err.string).to include("Note: #{Workspace::HookInstaller.new(backup: nil, output: StringIO.new).stale_message(claude, checkout, Workspace::HookInstaller::HOOK_COMMAND)}")
+    expect(err.string).not_to include("missing or stale for this checkout")
+    expect(JSON.parse(out.string)).to include("action" => "launch")
+  end
 end

@@ -80,7 +80,7 @@ RSpec.describe Workspace::AgentHookSetup do
     expect(installer.stale_tracked_hooks?(claude, tmpdir, Workspace::HookInstaller::HOOK_COMMAND)).to be(false)
   end
 
-  it "leaves a stale tracked settings.json alone and reports it as a leftover" do
+  it "leaves a stale tracked settings.json alone and reports it as a stale note and a leftover" do
     stale = {"hooks" => {"PreToolUse" => [{"matcher" => "Task", "hooks" => [{"type" => "command", "command" => claude.hook_command("workspace session-event")}]}]}}
     write_json(tracked_path, stale)
     tracked_before = File.read(tracked_path)
@@ -89,7 +89,7 @@ RSpec.describe Workspace::AgentHookSetup do
     result = setup.install(tmpdir, "proj", quiet: true)
 
     expect(File.read(tracked_path)).to eq(tracked_before)
-    note = result.notes.find { |n| n.kind == :leftover }
+    note = result.notes.find { |n| n.kind == :stale }
     expect(note.provider).to eq(claude)
     expect(note.text).to eq("Note: #{installer.stale_message(claude, tmpdir, Workspace::HookInstaller::HOOK_COMMAND)}.")
     expect(result.leftovers).to eq([claude])

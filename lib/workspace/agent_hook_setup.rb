@@ -11,7 +11,7 @@ module Workspace
     #
     # @!attribute provider [r] the {AgentProvider} the note is about
     # @!attribute text [r] the note, with its `Note: ` prefix
-    # @!attribute kind [r] `:info`, `:refused` (the person's config says not to install) or `:leftover` (hooks are still not current)
+    # @!attribute kind [r] `:info`, `:refused` (the person's config says not to install), `:stale` (tracked hooks are out of date; the note names `workspace init --install-hooks`) or `:leftover` (an install failed)
     Note = Data.define(:provider, :text, :kind)
 
     # What one {#install} did.
@@ -81,7 +81,7 @@ module Workspace
       changed = @hook_installer.install(provider, path, HookInstaller::HOOK_COMMAND, quiet: quiet, local: true)
       notes << Note.new(provider, "Note: #{provider.hook_trust_hint}.", :info) if changed && quiet && provider.hook_trust_hint
       if !changed && !provider.user_scoped? && @hook_installer.stale_tracked_hooks?(provider, path, HookInstaller::HOOK_COMMAND)
-        notes << Note.new(provider, "Note: #{@hook_installer.stale_message(provider, path, HookInstaller::HOOK_COMMAND)}.", :leftover)
+        notes << Note.new(provider, "Note: #{@hook_installer.stale_message(provider, path, HookInstaller::HOOK_COMMAND)}.", :stale)
         leftovers << provider
       end
     rescue Workspace::Error, SystemCallError => e

@@ -137,7 +137,7 @@ RSpec.describe Workspace::CLI::Launcher do
       let(:hook_setup) { hook_setup_class.new(Workspace::AgentHookSetup::Result.new(notes: notes, leftovers: leftovers), order) }
       let(:installs) { hook_setup.installs }
 
-      def note(text, kind) = Workspace::AgentHookSetup::Note.new(nil, text, kind)
+      def note(text, kind, provider = nil) = Workspace::AgentHookSetup::Note.new(provider, text, kind)
 
       def run_launch(args)
         inv = Workspace::CLI::Invocation.new(output: out, error_output: err, exit_handler: FakeExitHandler, help_asked: false, quiet: false, env: {})
@@ -167,12 +167,26 @@ RSpec.describe Workspace::CLI::Launcher do
         expect(hook_check.calls).to be_empty
       end
 
-      it "checks only the leftover providers on the error output" do
-        leftovers << Workspace::AgentProvider.all.first
+      it "prints a failed install's note and checks only its provider on the error output" do
+        provider = Workspace::AgentProvider.all.first
+        leftovers << provider
+        notes << note("Note: failed", :leftover, provider)
 
         run_launch(["app"])
 
-        expect(hook_check.calls).to eq([{root: "/src/app", io: err, only: leftovers}])
+        expect(err.string).to include("Note: failed")
+        expect(hook_check.calls).to eq([{root: "/src/app", io: err, only: [provider]}])
+      end
+
+      it "prints a stale note and does not run the check for it" do
+        provider = Workspace::AgentProvider.all.first
+        leftovers << provider
+        notes << note("Note: stale tracked", :stale, provider)
+
+        run_launch(["app"])
+
+        expect(err.string).to include("Note: stale tracked")
+        expect(hook_check.calls).to be_empty
       end
 
       it "installs nothing for a workspace whose root cannot be resolved" do

@@ -163,8 +163,9 @@ module Workspace
         return @hook_check&.check(root, io: invocation.error_output) unless @hook_setup
 
         result = @hook_setup.install(root, project, quiet: true)
-        result.notes.each { |note| invocation.error_output.puts note.text if note.kind == :info }
-        @hook_check&.check(root, io: invocation.error_output, only: result.leftovers) if result.leftovers.any?
+        result.notes.each { |note| invocation.error_output.puts note.text unless note.kind == :refused }
+        failed = result.notes.select { |note| note.kind == :leftover }.map(&:provider).uniq
+        @hook_check&.check(root, io: invocation.error_output, only: failed) if failed.any?
       end
 
       # The lowercase name once a mixed-case workspace is renamed; the name as
