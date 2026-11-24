@@ -878,7 +878,7 @@ module Workspace
     binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output, runs: workflow_store)
     main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
     lineage = WorkspaceLineage.new(rev_parse: git.method(:path_of))
-    claude_trust_config = ClaudeTrustConfig.new(config_resolver: config_resolver, project_config: project_config, lineage: lineage, error_output: error_output)
+    claude_trust_config = ClaudeTrustConfig.new(config_resolver: config_resolver, error_output: error_output)
     home_dir = env["HOME"].to_s.empty? ? Dir.home : env["HOME"]
     claude_trust = ClaudeTrust.new(env: env, home: home_dir, trust_config: claude_trust_config, main_agent: main_agent, error_output: error_output)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, claude_trust: claude_trust, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
