@@ -181,16 +181,16 @@ RSpec.describe "the shipped workflow presets" do
 
     it "pins the sha256 of rpiv.yml and rpiv-auto-approve.yml, so an edit to either is made on purpose" do
       sha = ->(id) { Digest::SHA256.file(File.join(config.builtin_workflows_dir, "#{id}.yml")).hexdigest }
-      expect(sha.call("rpiv")).to eq("d213a87f75099f5fccdfbd44020e6d47f0455e5e049aaa31e3b8c1df0edd4403")
-      expect(sha.call("rpiv-auto-approve")).to eq("f8a1a4764e580d9d60cace77807c8b135057d8206dc0e4566185a25f2a4c0983")
+      expect(sha.call("rpiv")).to eq("69edfbfa525406b80090106941b15d9020f4217099a7e66c99241a1134ece3b0")
+      expect(sha.call("rpiv-auto-approve")).to eq("0e658ea5efb2b2df984f814c4b06e98c6b717852fde9a039d9d92ecbbd31adb8")
     end
 
-    it "imports research and implement from lib/workflows/steps/ in rpiv and rpiv-auto-approve, each equal to the library step" do
+    it "imports research, implement and verify from lib/workflows/steps/ in rpiv and rpiv-auto-approve, each equal to the library step" do
       %w[rpiv rpiv-auto-approve].each do |id|
         path = File.join(config.builtin_workflows_dir, "#{id}.yml")
         raw = YAML.safe_load_file(path)
         inline = raw.merge("steps" => raw["steps"].to_h do |step_id, step|
-          next [step_id, step] unless %w[research implement].include?(step_id)
+          next [step_id, step] unless %w[research implement verify].include?(step_id)
           expect(step).to eq("import" => step_id), "#{id}/#{step_id} is not a bare import"
           library = YAML.safe_load_file(File.join(config.builtin_workflows_dir, "steps", "#{step_id}.yml"))
           [step_id, library["steps"].fetch(step_id)]
@@ -198,7 +198,7 @@ RSpec.describe "the shipped workflow presets" do
         written_out = Workspace::WorkflowDefinition.parse(YAML.dump(inline), id: id, source: "builtin", path: path)
         imported = catalog.find(id)
 
-        %w[research implement].each do |step_id|
+        %w[research implement verify].each do |step_id|
           step = ->(definition) { definition.to_h["steps"].find { |each| each["id"] == step_id } }
           expect(step.call(imported)).to eq(step.call(written_out)), "#{id}/#{step_id} differs from steps/#{step_id}.yml"
         end
