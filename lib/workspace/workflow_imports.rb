@@ -346,7 +346,11 @@ module Workspace
         end
         next unless library_reviewers.key?(name)
         entry = deep_copy(library_reviewers[name])
-        entry["prompt_file"] = File.expand_path(entry["prompt_file"], File.dirname(path)) if entry.is_a?(Hash) && entry["prompt_file"].is_a?(String)
+        if entry.is_a?(Hash) && entry["prompt_file"].is_a?(String)
+          anchored = anchor_reviewer_file(step_id, reference, path, name, entry["prompt_file"])
+          next unless anchored
+          entry["prompt_file"] = anchored
+        end
         if clash?(step_id, reference, path, name, entry)
           next
         end
@@ -354,6 +358,30 @@ module Workspace
         brought << name
       end
       [brought, overridden]
+    end
+
+    # The reviewer's prompt file as an absolute path; for a confined host, the real path of a file inside its directory.
+    # nil, with {#failure} set, when the host's directory doesn't allow it.
+    def anchor_reviewer_file(step_id, reference, path, name, written)
+      file = File.expand_path(written, File.dirname(path))
+      return file unless @confine_dir
+      where = "step #{step_id}: import #{reference} (#{path}): reviewer #{name} prompt_file #{written}"
+      if written.start_with?("/", "~")
+        @failure << "#{where}: this workflow's imports must stay inside its own directory #{@confine_dir}, not absolute or ~ paths"
+        return nil
+      end
+      unless File.directory?(@confine_dir)
+        @failure << "#{where}: this workflow's directory #{@confine_dir} is missing, so it can't be checked"
+        return nil
+      end
+      real = File.realpath(file)
+      unless inside?(real, File.realpath(@confine_dir))
+        @failure << "#{where}: the file is outside this workflow's directory #{@confine_dir} once links are followed"
+        return nil
+      end
+      real
+    rescue SystemCallError
+      file
     end
 
     def clash?(step_id, reference, path, name, entry)

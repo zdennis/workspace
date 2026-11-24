@@ -178,6 +178,16 @@ RSpec.describe "workflow install over a real cache directory" do
       expect(problems.first["file"]).to eq("steps/research.yml")
     end
 
+    it "refuses a library file whose reviewers: entry is malformed, against that file" do
+      write(local("src"), "ship", step_yaml)
+      library("reviewers:\n  sec:\n    prompt: p\n    nope: 1\nsteps:\n  research:\n    prompt: R\n")
+
+      problems = command.install["sources"].first["problems"]
+
+      expect(problems.map { |p| p["file"] }).to eq(["steps/research.yml"])
+      expect(problems.first["message"]).to include("reviewer sec has unknown key nope")
+    end
+
     it "refuses a symlinked file in steps/" do
       write(local("src"), "ship", step_yaml)
       write(File.join(@dir, "elsewhere"), "outside", "steps:\n  outside:\n    prompt: O\n")

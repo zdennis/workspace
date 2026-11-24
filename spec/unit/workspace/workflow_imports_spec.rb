@@ -590,5 +590,58 @@ RSpec.describe Workspace::WorkflowImports do
       expect(importer.failure).to eq([])
       expect(raw["reviewers"].keys).to eq(%w[skeptic])
     end
+
+    describe "prompt_file in a confined host" do
+      let(:layer_dir) { File.join(@dir, "builtin") }
+
+      def confined(prompt_file)
+        write("builtin/lib.yml", "reviewers:\n  fan:\n    prompt_file: #{prompt_file}\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n")
+        importer = imports(base_dir: layer_dir, confine_dir: layer_dir)
+        raw = importer.expand({"steps" => {"v" => {"import" => "lib.yml#verify"}}})
+        [importer, raw]
+      end
+
+      it "accepts a file inside the directory, anchored by its real path" do
+        write("builtin/prompts/fan.md", "Like it.")
+        importer, raw = confined("prompts/fan.md")
+        expect(importer.failure).to eq([])
+        expect(raw["reviewers"]["fan"]).to eq("prompt_file" => File.realpath(File.join(layer_dir, "prompts/fan.md")))
+      end
+
+      it "refuses an absolute path" do
+        path = write("builtin/prompts/fan.md", "Like it.")
+        importer, = confined(path)
+        expect(importer.failure).to eq(["step v: import lib.yml#verify (#{File.join(layer_dir, "lib.yml")}): reviewer fan prompt_file #{path}: this workflow's imports must stay inside its own directory #{layer_dir}, not absolute or ~ paths"])
+      end
+
+      it "refuses a ~ path" do
+        write("home/fan.md", "Like it.")
+        old_home = ENV["HOME"]
+        ENV["HOME"] = File.join(@dir, "home")
+        importer, = begin
+          confined("~/fan.md")
+        ensure
+          ENV["HOME"] = old_home
+        end
+        expect(importer.failure).to match([a_string_including("reviewer fan prompt_file ~/fan.md: this workflow's imports must stay inside")])
+      end
+
+      it "refuses a link that leads out of the directory" do
+        write("outside/fan.md", "Like it.")
+        FileUtils.mkdir_p(File.join(layer_dir, "prompts"))
+        File.symlink(File.join(@dir, "outside/fan.md"), File.join(layer_dir, "prompts/fan.md"))
+        importer, = confined("prompts/fan.md")
+        expect(importer.failure).to match([a_string_including("reviewer fan prompt_file prompts/fan.md: the file is outside this workflow's directory #{layer_dir} once links are followed")])
+      end
+
+      it "leaves an unconfined host as before" do
+        path = write("outside/fan.md", "Like it.")
+        write("global/lib.yml", "reviewers:\n  fan:\n    prompt_file: #{path}\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n")
+        importer = imports
+        raw = importer.expand({"steps" => {"v" => {"import" => "lib.yml#verify"}}})
+        expect(importer.failure).to eq([])
+        expect(raw["reviewers"]["fan"]).to eq("prompt_file" => path)
+      end
+    end
   end
 end
