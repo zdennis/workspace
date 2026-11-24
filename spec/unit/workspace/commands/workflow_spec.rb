@@ -5634,6 +5634,12 @@ RSpec.describe Workspace::Commands::Workflow do
           expect(output.string).to include("  check: verify (global, #{library})\n    reviewers: skeptic\n    reviewer overrides: tidy\n")
         end
 
+        it "validate prints the reviewers brought in and the ones the host overrides" do
+          command.validate(path: target)
+
+          expect(output.string).to include("  check: verify (global, #{library})\n    reviewers: skeptic\n    reviewer overrides: tidy\n")
+        end
+
         it "show --json carries both lists" do
           command.show(id: "flow", json: true)
 
