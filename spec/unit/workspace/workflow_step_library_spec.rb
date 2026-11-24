@@ -6,7 +6,7 @@ RSpec.describe "the shipped step library" do
   names = Dir[File.join(steps_dir, "*.yml")].map { |path| File.basename(path, ".yml") }.sort
 
   # The delivery chain, in order. A step that joins the library adds one name here.
-  chain = %w[goals design tests_first implement verify acceptance_check docs_update]
+  chain = %w[goals design tests_first implement verify acceptance_check docs_update code_review]
 
   def parse(yaml)
     Dir.mktmpdir("step-library") do |dir|
@@ -74,6 +74,29 @@ RSpec.describe "the shipped step library" do
   it "warns of a guard looping back when tests_first has no on_fail of its own" do
     definition = parse(host_for(chain).sub("    on_fail: stop\n", ""))
     expect(definition.warnings.map { |each| each["code"] }).to include("guard_unchanged_loop_back")
+  end
+
+  describe "code_review's reviewers" do
+    let(:imported) { parse("max_attempts: 12\ninputs:\n  task: {description: The task}\nsteps:\n  implement:\n    prompt: Implement it.\n    produces: [implement.md]\n  code_review:\n    import: code_review\n") }
+
+    it "brings correctness, tests and maintainability to a host with no reviewers" do
+      expect(imported.warnings).to eq([])
+      expect(imported.to_h["reviewers"].keys).to match_array(%w[correctness tests maintainability])
+      review = imported.steps.find { |step| step["id"] == "code_review" }["review"]
+      expect(review).to include("from" => %w[correctness tests maintainability], "need" => 2, "must" => %w[correctness], "max_rounds" => 3)
+      expect(review["revision"]).to eq("git rev-parse HEAD 'HEAD^{tree}'")
+    end
+
+    it "keeps a host reviewer of the same name instead" do
+      host = "max_attempts: 12\ninputs:\n  task: {description: The task}\nreviewers:\n  correctness:\n    prompt: The host's own correctness prompt.\nsteps:\n  implement:\n    prompt: Implement it.\n    produces: [implement.md]\n  code_review:\n    import: code_review\n"
+      definition = parse(host)
+      expect(definition.to_h["reviewers"]["correctness"]["prompt"]).to include("The host's own correctness prompt.")
+      expect(definition.to_h["reviewers"].keys).to match_array(%w[correctness tests maintainability])
+      library = YAML.safe_load_file(File.join(steps_dir, "code_review.yml"))["reviewers"]
+      expect(definition.to_h["reviewers"]["maintainability"]["prompt"]).to eq(library["maintainability"]["prompt"])
+      expect(definition.to_h["reviewers"]["tests"]["prompt"]).to eq(library["tests"]["prompt"])
+      expect(definition.steps.find { |step| step["id"] == "code_review" }["review"]["from"]).to eq(%w[correctness tests maintainability])
+    end
   end
 
   describe "goals' acceptance check" do
