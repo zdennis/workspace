@@ -166,7 +166,10 @@ module Workspace
     #   "import" (the reference as written), "layer" (the layer the lookup found a bare name in; nil for a `PATH#NAME`),
     #   "path" (the library file, absolute), "overrides" (the keys the host set), "removes" (library keys gone from the
     #   result: a `KEY: null`, or a `prompt_file` a `prompt` override replaced, and the reverse), "shadows" (lower-layer
-    #   files of the same name the lookup passed over) and "sha256" (of the library step as written, as canonical JSON)
+    #   files of the same name the lookup passed over), "sha256" (of the library step as written, as canonical JSON),
+    #   "reviewers" (the library reviewers the merged step's `review:` names, which the import added to the host's
+    #   `reviewers:`) and "reviewer_overrides" (the names it uses that the host's own `reviewers:` defines, which win);
+    #   both are empty when there are none
     attr_reader :imports
 
     # @return [Array<Hash{String=>String}>] things an import did that are probably a mistake, never an error, in the shape
@@ -195,6 +198,7 @@ module Workspace
       @unchecked = []
       @libraries = {}
       @nulled = {}
+      @brought = {}
     end
 
     # @param raw [Hash] the definition's YAML mapping
@@ -203,10 +207,13 @@ module Workspace
     #   `import` itself is dropped; a `fan_out` group and its siblings are left as written for the definition to judge
     def expand(raw)
       expanded = raw.dup
+      @host_reviewers = raw["reviewers"]
+      @added = {}
       %w[steps replace].each do |key|
         next unless raw[key].is_a?(Hash)
         expanded[key] = raw[key].to_h { |step_id, step| [step_id, expand_step(step_id.to_s, step)] }
       end
+      expanded["reviewers"] = (@host_reviewers || {}).merge(@added) if @added.any?
       expanded
     end
 
@@ -229,9 +236,9 @@ module Workspace
       found = resolve(step_id, reference)
       return step unless found
       path, layer, shadows = found
-      library_step = library_step(step_id, reference, path)
+      library_step, library_reviewers = library_step(step_id, reference, path)
       return step unless library_step
-      merge(step_id, reference, path, layer, shadows, library_step, step.except("import"))
+      merge(step_id, reference, path, layer, shadows, library_step, step.except("import"), library_reviewers)
     end
 
     # [path, layer, shadows] of the library file a reference names; nil, with {#failure} or {#unchecked} set, when there is none.
@@ -289,13 +296,13 @@ module Workspace
     end
 
     def library_step(step_id, reference, path)
-      steps, _reviewers, problems = @libraries[path] ||= read(path)
+      steps, reviewers, problems = @libraries[path] ||= read(path)
       if problems.any?
         @failure.concat(problems.map { |problem| "step #{step_id}: import #{reference} (#{path}): #{problem}" })
         return nil
       end
       name = reference.split("#").last
-      return steps[name] if steps.key?(name)
+      return [steps[name], reviewers] if steps.key?(name)
       @failure << "step #{step_id}: import #{reference} (#{path}): the file has no step #{name} (its steps: #{steps.keys.join(", ")})"
       nil
     end
@@ -306,7 +313,7 @@ module Workspace
       [{}, {}, ["the file can't be read (#{e.message})"]]
     end
 
-    def merge(step_id, reference, path, layer, shadows, library_step, own)
+    def merge(step_id, reference, path, layer, shadows, library_step, own, library_reviewers)
       base = deep_copy(library_step)
       base["prompt_file"] = File.expand_path(base["prompt_file"], File.dirname(path)) if base["prompt_file"].is_a?(String)
       nulled = own.select { |_, value| value.nil? }.keys.map(&:to_s)
@@ -317,10 +324,51 @@ module Workspace
       note_dropped(step_id, reference, library_step, own, nulled)
       @nulled[step_id] = nulled
       merged = base.except(*removes).merge(own.reject { |_, value| value.nil? })
+      brought, overridden = bring_reviewers(step_id, reference, path, merged, library_reviewers)
       @imports << {"step" => step_id, "import" => reference, "layer" => layer, "path" => path,
                    "overrides" => overrides, "removes" => removes, "shadows" => shadows,
-                   "sha256" => Digest::SHA256.hexdigest(JSON.generate(canonical(library_step)))}
+                   "sha256" => Digest::SHA256.hexdigest(JSON.generate(canonical(library_step))),
+                   "reviewers" => brought, "reviewer_overrides" => overridden}
       merged
+    end
+
+    # Adds the library reviewers the merged step's `review:` names to the host's raw `reviewers`; returns the names
+    # brought in and the names the host defined itself. A host `reviewers:` that is not a mapping is left for build to report.
+    def bring_reviewers(step_id, reference, path, merged, library_reviewers)
+      brought = []
+      overridden = []
+      return [brought, overridden] unless @host_reviewers.nil? || @host_reviewers.is_a?(Hash)
+      review_names(merged["review"]).uniq.each do |name|
+        if @host_reviewers&.keys&.any? { |key| key.to_s == name }
+          overridden << name if library_reviewers.key?(name)
+          next
+        end
+        next unless library_reviewers.key?(name)
+        entry = deep_copy(library_reviewers[name])
+        entry["prompt_file"] = File.expand_path(entry["prompt_file"], File.dirname(path)) if entry.is_a?(Hash) && entry["prompt_file"].is_a?(String)
+        if clash?(step_id, reference, path, name, entry)
+          next
+        end
+        @added[name] = entry
+        brought << name
+      end
+      [brought, overridden]
+    end
+
+    def clash?(step_id, reference, path, name, entry)
+      earlier_path, earlier = @brought[name]
+      if earlier_path.nil?
+        @brought[name] = [path, canonical(entry)]
+        return false
+      end
+      return false if earlier == canonical(entry)
+      @failure << "step #{step_id}: import #{reference} (#{path}): reviewer #{name} is also brought in by #{earlier_path} with different content"
+      true
+    end
+
+    def review_names(review)
+      names = review.is_a?(Hash) ? review["from"] : review
+      names.is_a?(Array) ? names.select { |name| name.is_a?(String) } : []
     end
 
     def note_dropped(step_id, reference, library_step, own, nulled)

@@ -5583,7 +5583,7 @@ RSpec.describe Workspace::Commands::Workflow do
       let(:host) { "title: Flow\nsteps:\n  look:\n    import: research\n    prompt: Look.\n    produces: [notes.md]\n" }
       let(:entry) do
         {"step" => "look", "import" => "research", "layer" => "global", "path" => library,
-         "overrides" => ["prompt", "produces"], "removes" => ["prompt_file"], "shadows" => [shadowed], "sha256" => a_string_matching(/\A\h{64}\z/)}
+         "overrides" => ["prompt", "produces"], "removes" => ["prompt_file"], "shadows" => [shadowed], "sha256" => a_string_matching(/\A\h{64}\z/), "reviewers" => [], "reviewer_overrides" => []}
       end
 
       before do

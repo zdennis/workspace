@@ -395,4 +395,38 @@ RSpec.describe Workspace::WorkflowDefinition do
   def minimal_steps
     "steps:\n  build:\n    prompt: Build it.\n    produces: [b.md]\n"
   end
+
+  describe "library reviewers" do
+    let(:reviewed_library) do
+      <<~YAML
+        reviewers:
+          skeptic:
+            prompt: Doubt {{review.subject}} of {{inputs.task}}.
+          unused:
+            prompt: Never used.
+        steps:
+          verify:
+            prompt: Run the tests.
+            produces: [verify.md]
+            review: [skeptic]
+      YAML
+    end
+
+    it "parses a host with no reviewers: that imports a reviewed step, holding only the used reviewers" do
+      library("verify", reviewed_library)
+      definition = parse(host("verify:\n  import: verify\n"))
+      expect(definition.to_h["reviewers"].keys).to eq(%w[skeptic])
+      expect(definition.to_h["reviewers"]["skeptic"]["prompt"]).to eq("Doubt {{review.subject}} of {{inputs.task}}.")
+      expect(step(definition, "verify")["review"]["from"]).to eq(%w[skeptic])
+      expect(definition.imports[0]).to include("reviewers" => ["skeptic"], "reviewer_overrides" => [])
+    end
+
+    it "lets the host's own reviewer of that name win" do
+      library("verify", reviewed_library)
+      yaml = "reviewers:\n  skeptic:\n    prompt: Mine.\n#{host("verify:\n  import: verify\n")}"
+      definition = parse(yaml)
+      expect(definition.to_h["reviewers"]["skeptic"]["prompt"]).to eq("Mine.")
+      expect(definition.imports[0]).to include("reviewers" => [], "reviewer_overrides" => ["skeptic"])
+    end
+  end
 end

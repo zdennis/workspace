@@ -331,6 +331,7 @@ RSpec.describe Workspace::WorkflowImports do
 
       expect(importer.imports).to eq([{"step" => "verify", "import" => "verify", "layer" => "global", "path" => path,
                                        "overrides" => %w[prompt_file], "removes" => %w[uses prompt], "shadows" => [],
+                                       "reviewers" => [], "reviewer_overrides" => [],
                                        "sha256" => importer.imports.first["sha256"]}])
       expect(importer.imports.first["sha256"]).to match(/\A[0-9a-f]{64}\z/)
     end
@@ -486,6 +487,108 @@ RSpec.describe Workspace::WorkflowImports do
       importer = imports
       importer.expand({"steps" => {"verify" => {"import" => "verify"}}})
       expect(importer.failure).to eq(["step verify: import verify (#{path}): step \"Not_An-Id!\": a step id must be #{Workspace::IdPatterns::WORKFLOW_ID_RULE}"])
+    end
+  end
+
+  describe "library reviewers an imported step names" do
+    let(:reviewed_library) do
+      <<~YAML
+        reviewers:
+          skeptic:
+            prompt: Doubt it.
+          fan:
+            prompt_file: prompts/fan.md
+          unused:
+            prompt: Never used.
+        steps:
+          verify:
+            prompt: Run the tests.
+            review: [skeptic]
+          mapped:
+            prompt: Mapped.
+            review: {from: [skeptic, fan, missing], must: [fan]}
+          plain:
+            prompt: Plain.
+      YAML
+    end
+
+    before { write("global/prompts/fan.md", "Like it.") }
+
+    def expand(steps, host_reviewers: nil, library: reviewed_library, file: "lib.yml")
+      write("global/#{file}", library)
+      importer = imports
+      raw = {"steps" => steps}
+      raw["reviewers"] = host_reviewers unless host_reviewers.nil?
+      [importer, importer.expand(raw)]
+    end
+
+    it "adds the reviewers a list review: names and not the unused ones" do
+      importer, raw = expand({"v" => {"import" => "lib.yml#verify"}})
+      expect(importer.failure).to eq([])
+      expect(raw["reviewers"]).to eq("skeptic" => {"prompt" => "Doubt it."})
+      expect(importer.imports[0]).to include("reviewers" => ["skeptic"], "reviewer_overrides" => [])
+    end
+
+    it "reads a mapping's from, ignores must, and leaves an unknown name for later checks" do
+      importer, raw = expand({"m" => {"import" => "lib.yml#mapped"}})
+      expect(importer.failure).to eq([])
+      expect(raw["reviewers"].keys).to eq(%w[skeptic fan])
+      expect(importer.imports[0]["reviewers"]).to eq(%w[skeptic fan])
+    end
+
+    it "anchors a relative prompt_file against the library's directory" do
+      _importer, raw = expand({"m" => {"import" => "lib.yml#mapped"}})
+      expect(raw["reviewers"]["fan"]).to eq("prompt_file" => File.join(host_dir, "prompts/fan.md"))
+    end
+
+    it "gives an import with no review: empty lists and adds no reviewers key" do
+      importer, raw = expand({"p" => {"import" => "lib.yml#plain"}})
+      expect(raw).not_to have_key("reviewers")
+      expect(importer.imports[0]).to include("reviewers" => [], "reviewer_overrides" => [])
+    end
+
+    it "keeps the host's own reviewer, records the override and adds the rest" do
+      importer, raw = expand({"m" => {"import" => "lib.yml#mapped"}}, host_reviewers: {"skeptic" => {"prompt" => "Mine."}})
+      expect(raw["reviewers"]["skeptic"]).to eq("prompt" => "Mine.")
+      expect(raw["reviewers"].keys).to eq(%w[skeptic fan])
+      expect(importer.imports[0]).to include("reviewers" => ["fan"], "reviewer_overrides" => ["skeptic"])
+    end
+
+    it "takes the names from the host's review: override" do
+      importer, raw = expand({"m" => {"import" => "lib.yml#mapped", "review" => ["fan"]}})
+      expect(raw["reviewers"].keys).to eq(%w[fan])
+      expect(importer.imports[0]["reviewers"]).to eq(["fan"])
+    end
+
+    it "brings reviewers for a replace: step too" do
+      write("global/lib.yml", reviewed_library)
+      importer = imports
+      raw = importer.expand({"replace" => {"v" => {"import" => "lib.yml#verify"}}})
+      expect(raw["reviewers"].keys).to eq(%w[skeptic])
+      expect(importer.imports[0]["reviewers"]).to eq(["skeptic"])
+    end
+
+    it "leaves a host reviewers: that is not a mapping alone" do
+      importer, raw = expand({"v" => {"import" => "lib.yml#verify"}}, host_reviewers: ["skeptic"])
+      expect(raw["reviewers"]).to eq(["skeptic"])
+      expect(importer.imports[0]["reviewers"]).to eq([])
+    end
+
+    it "refuses the same name from two files with different content, naming both paths" do
+      first = write("global/one.yml", reviewed_library)
+      second = write("global/two.yml", reviewed_library.sub("Doubt it.", "Doubt it harder."))
+      importer = imports
+      importer.expand({"steps" => {"a" => {"import" => "one.yml#verify"}, "b" => {"import" => "two.yml#verify"}}})
+      expect(importer.failure).to eq(["step b: import two.yml#verify (#{second}): reviewer skeptic is also brought in by #{first} with different content"])
+    end
+
+    it "accepts the same name with equal content from two files" do
+      write("global/one.yml", reviewed_library)
+      write("global/two.yml", reviewed_library)
+      importer = imports
+      raw = importer.expand({"steps" => {"a" => {"import" => "one.yml#verify"}, "b" => {"import" => "two.yml#verify"}}})
+      expect(importer.failure).to eq([])
+      expect(raw["reviewers"].keys).to eq(%w[skeptic])
     end
   end
 end
