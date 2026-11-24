@@ -228,6 +228,15 @@ module Workspace
       set.empty? ? "(step imported from #{entry["import"]}, #{entry["path"]})" : "(step imported from #{entry["import"]}, #{entry["path"]}; the host sets #{set.uniq.join(", ")})"
     end
 
+    # The words every problem of a reviewer brought in from a library ends with.
+    #
+    # @param name [String] the reviewer's name
+    # @return [String, nil] "(reviewer imported from PATH)", or nil for a reviewer the host defines itself
+    def reviewer_provenance(name)
+      path = @brought[name]&.first
+      path && "(reviewer imported from #{path})"
+    end
+
     private
 
     def expand_step(step_id, step)

@@ -429,6 +429,25 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(definition.imports[0]).to include("reviewers" => [], "reviewer_overrides" => ["skeptic"])
     end
 
+    describe "problems of a reviewer" do
+      let(:missing_library) { reviewed_library.sub("{{inputs.task}}", "{{inputs.missing}}") }
+
+      it "names the library in a problem found in the host, once" do
+        path = library("verify", missing_library)
+        found = problems(host("verify:\n  import: verify\n")).select { |each| each.start_with?("reviewer skeptic") }
+        expect(found.size).to eq(1)
+        expect(found[0]).to include("missing").and end_with("(reviewer imported from #{path})")
+      end
+
+      it "adds nothing to a host-defined reviewer's problem" do
+        library("verify", reviewed_library)
+        yaml = "reviewers:\n  skeptic:\n    prompt: Doubt {{inputs.missing}}.\n#{host("verify:\n  import: verify\n")}"
+        found = problems(yaml).select { |each| each.start_with?("reviewer skeptic") }
+        expect(found.size).to eq(1)
+        expect(found[0]).not_to include("imported from")
+      end
+    end
+
     describe "digest" do
       let(:import_yaml) { host("verify:\n  import: verify\n") }
 

@@ -688,9 +688,15 @@ module Workspace
     # and one of a step whose import couldn't be checked here is dropped: that step was never read.
     def problem(message)
       return nil if @current_step && @unchecked.include?(@current_step)
-      suffix = @current_step && @step_imports.provenance(@current_step)
+      suffix = @current_step ? @step_imports.provenance(@current_step) : reviewer_suffix(message)
       @problems << (suffix ? "#{message} #{suffix}" : message)
       nil
+    end
+
+    # A problem that starts `reviewer NAME` for a reviewer a library brought in ends with that library's path.
+    def reviewer_suffix(message)
+      name = message[/\Areviewer ([^\s:]+)/, 1]
+      name && @step_imports.reviewer_provenance(name)
     end
 
     def for_step(step_id)
