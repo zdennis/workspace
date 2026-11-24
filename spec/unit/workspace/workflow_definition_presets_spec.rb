@@ -12,9 +12,9 @@ RSpec.describe Workspace::WorkflowDefinition do
     "explore" => {sha256: "0c9103d9fd3a39c92cafb2a04b11b801793ed3941f810538ba4be1a9fa02f3ae", resolved_sha256: "0c9103d9fd3a39c92cafb2a04b11b801793ed3941f810538ba4be1a9fa02f3ae", to_h: "546c52d5747ccba4ba40c3219df144c0b4ad771e89f1c0d736f2ce42fbacb17e"},
     "investigate" => {sha256: "d8f97197f6618be2d906398c9b56ddb602140d1073aa45de54f1840f3261c71f", resolved_sha256: "d8f97197f6618be2d906398c9b56ddb602140d1073aa45de54f1840f3261c71f", to_h: "2e7f41928cd67fe6de2a63b94091fb7e065cf100d151c4bdd462156746155269"},
     "pr-feedback" => {sha256: "7deb5a59a8dadad680ad126978028368380ae33236f1e7b9378c26b4066a1e9b", resolved_sha256: "7deb5a59a8dadad680ad126978028368380ae33236f1e7b9378c26b4066a1e9b", to_h: "4df5458de814383fa9ec87bc5ecdab9d3693c9ca2b4d3230a565c3cd658d6ab5"},
-    "rpiv-auto-approve-v2" => {sha256: "e621f9b2e619be47fe707b424736ff5ab8a35f23adca5bafaba6f75087671cd3", resolved_sha256: "abd0dbd3e9d38ebf60dd97debbf233f807648bdf893f89fb16dde17e7cbe3361", to_h: "c83069b35d56346ae707e40635da569cd26658bb96be225760f86f9ab2338666"},
-    "rpiv-auto-approve" => {sha256: "780c2a6d29da14ac6991a4e33a02d8ee4da03260acf8ae77d2ed3eec60ad3469", resolved_sha256: "7c09eb104d91df1832637b0c6fb68a6790c31f8a7a31567539255e705987662d", to_h: "7da1e4df26480695fd7de29082d6f0566d882e98eeebc784b46841ff09f1008e"},
-    "rpiv" => {sha256: "7a0bceb968260d537573248169c34e2d6f87d88f8468b5ccf87501b1073de266", resolved_sha256: "048076d4f2c37dac096b3f9d74c9cd09b725cd1ce14543becf2ff91b82f0acf3", to_h: "483da6d92e6e98b8690358d5aec97731b05b1f2fbea17a23bc40f8321346c263"}
+    "rpiv-auto-approve-v2" => {sha256: "cd370228d6d147a0209a8cceb3b915cf6eaae264047be96ba335ef8291c981b7", resolved_sha256: "39cc8ff1acd49370ec2ea9cd5e8623ace7fae2c8fe6eee6713bd4875480891ea", to_h: "7e986f4cf55de61066151006b008c140c44cefa623603455888286cc5cddcfb3"},
+    "rpiv-auto-approve" => {sha256: "f8a1a4764e580d9d60cace77807c8b135057d8206dc0e4566185a25f2a4c0983", resolved_sha256: "31a18295169d229086c575d9ff6eba850baf1bb56d0a0dc3b4ec9c951d50454b", to_h: "562debf1000344f846a133d52eeed9d6dfbb3da24a7a92461f6e82d4353efd73"},
+    "rpiv" => {sha256: "d213a87f75099f5fccdfbd44020e6d47f0455e5e049aaa31e3b8c1df0edd4403", resolved_sha256: "bad1d2827f4cce9539b1382caca760d15cd50ce4b9c9cfaa4593695c2fc5fe81", to_h: "ec3b679f3e3bbe939a78922785d23b1ff89a76e9b38d8cc430fd5649b1b1f761"}
   }
 
   def canonical(value)
@@ -39,6 +39,16 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(definition.resolved_sha256).to eq(pin[:resolved_sha256])
       expect(Digest::SHA256.hexdigest(JSON.generate(canonical(definition.to_h)))).to eq(pin[:to_h])
       expect(definition.warnings).to eq([])
+    end
+  end
+
+  %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2].each do |id|
+    it "checks #{id}'s plan with the step check-ids verb and no inline Ruby" do
+      plan = PresetSimulation.definition(id).to_h["steps"].find { |step| step["id"] == "plan" }
+      run = plan["status"]["run"]
+
+      expect(run).to eq("workspace step check-ids --prefix R --defined requirements.md --allow-missing --plan-details")
+      expect(run).not_to include("ruby")
     end
   end
 end
