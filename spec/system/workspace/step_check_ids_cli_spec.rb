@@ -19,9 +19,9 @@ RSpec.describe "workspace step check-ids" do
     end
   end
 
-  def run_verb(*args, env: {})
+  def run_verb(*args, env: {}, chdir: @checkout)
     base = {"HOME" => @home, "TMPDIR" => @home, "TMUX" => nil, "TMUX_PANE" => nil, "XDG_CONFIG_HOME" => nil, "XDG_STATE_HOME" => nil, "WORKSPACE_RUN_ARTIFACTS" => nil}
-    Open3.capture3(base.merge(env), File.join(PROJECT_ROOT, "bin", "workspace"), "step", "check-ids", *args, chdir: @checkout)
+    Open3.capture3(base.merge(env), File.join(PROJECT_ROOT, "bin", "workspace"), "step", "check-ids", *args, chdir: chdir)
   end
 
   it "exits 0 with one line on stdout when every ID is covered" do
@@ -98,8 +98,14 @@ RSpec.describe "workspace step check-ids" do
       expect(JSON.parse(out)).to include("ok" => false, "reason" => "no_plan")
     end
 
+    it "finds the workspace with no --name the way plan status does, here a checkout with no marker" do
+      _out, err, status = run_verb("--prefix", "R", "--defined", "req.md", "--plan-details")
+
+      expect([status.exitstatus, err]).to eq([1, "In no task of ## Task details: R2\n"])
+    end
+
     it "is refused outside any workspace when no --name is given" do
-      out, err, status = run_verb("--prefix", "R", "--defined", "req.md", "--plan-details", "--json")
+      out, err, status = run_verb("--prefix", "R", "--defined", File.join(@checkout, "req.md"), "--plan-details", "--json", chdir: @artifacts)
 
       expect(status.exitstatus).to eq(1)
       expect(JSON.parse(out)).to include("ok" => false, "code" => "not_in_workspace")

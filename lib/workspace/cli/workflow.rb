@@ -747,10 +747,8 @@ module Workspace
         raise UsageError, "--each-line-matches goes with --covered, not --plan-details." if options[:each_line_matches] && options[:plan_details]
         line_regex = step_line_regex(options[:each_line_matches])
         workspace = nil
-        if options[:plan_details]
-          workspace = workflow_workspace(options)
-          raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or name one (--name WS).", code: "not_in_workspace", details: {"path" => @working_dir}) unless workspace
-        end
+        # The workspace is found the way `plan status` finds it, so the presets' plan check reads the plan it always did.
+        workspace = @status_scope.resolve(name: options[:name], project: nil, all: nil, working_dir: @working_dir).workspace if options[:plan_details]
         artifacts = invocation.env["WORKSPACE_RUN_ARTIFACTS"]
         base_dir = artifacts.to_s.empty? ? @working_dir : artifacts
         @workflow_command.step_check_ids(prefixes: prefixes, defined: options[:defined], covered: options[:covered], plan_details_for: workspace, line_regex: line_regex,

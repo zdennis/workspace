@@ -19,9 +19,9 @@ RSpec.describe Workspace::CLI::Workflow do
   def family(**overrides)
     names = Workspace::CLI::Names.new(project_config: project_config, project_detector: project_detector, lineage: LineageSupport.lineage, working_dir: "/src/app")
     described_class.new(workflow_command: workflow_command, workflow_start_command: start_command, workflow_project: workflow_project,
-      status_scope: status_scope, config: config, project_config: project_config, project_detector: project_detector, git: git,
+      config: config, project_config: project_config, project_detector: project_detector, git: git,
       launch_mode: CLITestHelpers.launch_mode(headless: headless), common: Workspace::CLI::Common.new, names: names, input: input,
-      working_dir: "/src/app", launcher: double("launcher"), **overrides)
+      working_dir: "/src/app", launcher: double("launcher"), status_scope: overrides.fetch(:status_scope, status_scope), **overrides.except(:status_scope))
   end
 
   def invocation
@@ -623,15 +623,20 @@ RSpec.describe Workspace::CLI::Workflow do
         expect(workflow_command.calls.map { |_, keywords| keywords[:base_dir] }).to eq(["/art", "/src/app"])
       end
 
-      it "reads the plan of the current workspace, or of --name, for --plan-details" do
-        run(*base, "--plan-details", verb: "step")
-        run(*base, "--plan-details", "--name", "web", verb: "step")
+      it "reads the plan of the workspace plan status would pick, for --plan-details" do
+        scope = double("status scope")
+        allow(scope).to receive(:resolve) { |name:, **| Workspace::StatusScope::Scope.new(kind: :workspace, workspace: name || "app") }
+        run(*base, "--plan-details", verb: "step", status_scope: scope)
+        run(*base, "--plan-details", "--name", "web", verb: "step", status_scope: scope)
 
         expect(workflow_command.calls.map { |_, keywords| keywords.values_at(:covered, :plan_details_for) }).to eq([[nil, "app"], [nil, "web"]])
+        expect(scope).to have_received(:resolve).with(name: nil, project: nil, all: nil, working_dir: "/src/app")
       end
 
-      it "refuses --plan-details outside any workspace" do
-        expect { run(*base, "--plan-details", verb: "step", workflow_project: RecordingWorkflowProject.new(workspace: nil, projects: {})) }.to raise_error(Workspace::Error, /No workspace found/) { |e| expect(e.code).to eq("not_in_workspace") }
+      it "passes on not_in_workspace when --plan-details finds no workspace" do
+        scope = double("status scope")
+        allow(scope).to receive(:resolve).and_raise(Workspace::Error.new("Not in a workspace.", code: "not_in_workspace"))
+        expect { run(*base, "--plan-details", verb: "step", status_scope: scope) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("not_in_workspace") }
       end
 
       it "exits with the code the command answers" do
