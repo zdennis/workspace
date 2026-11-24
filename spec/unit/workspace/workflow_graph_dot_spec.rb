@@ -60,11 +60,11 @@ RSpec.describe Workspace::WorkflowGraphDot do
     expect(marked).to include('"checks.group" [shape=point];', '"checks.join" -> "plan" [style=dashed, label="fail: max 2 (looped 2)"]')
   end
 
-  %w[rpiv-auto-approve explore-parallel rpiv].each do |id|
+  %w[rpiv-auto-approve explore-parallel rpiv deliver].each do |id|
     it "draws #{id}" do
       text = described_class.render(WorkflowGraphGolden.model(id))
       expect(text).to start_with("digraph workflow {\n")
-      expect(text).to include("subgraph \"cluster_") unless id == "rpiv"
+      expect(text).to include("subgraph \"cluster_") unless %w[rpiv deliver].include?(id)
     end
   end
 end
