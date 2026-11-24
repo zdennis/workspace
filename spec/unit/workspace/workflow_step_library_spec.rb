@@ -6,7 +6,7 @@ RSpec.describe "the shipped step library" do
   names = Dir[File.join(steps_dir, "*.yml")].map { |path| File.basename(path, ".yml") }.sort
 
   # The delivery chain, in order. A step that joins the library adds one name here.
-  chain = %w[goals design implement verify]
+  chain = %w[goals design tests_first implement verify]
 
   def parse(yaml)
     Dir.mktmpdir("step-library") do |dir|
@@ -18,8 +18,8 @@ RSpec.describe "the shipped step library" do
   end
 
   def host_for(names)
-    # implement has no on_fail of its own, so its default loop would go back to a guarded step; a host sets one.
-    steps = names.map { |name| "  #{name}:\n    import: #{name}\n#{"    on_fail: stop\n" if name == "implement"}" }.join
+    # tests_first has no on_fail of its own, so its default loop would go back to design, a guarded step; a host sets one.
+    steps = names.map { |name| "  #{name}:\n    import: #{name}\n#{"    on_fail: stop\n" if name == "tests_first"}" }.join
     "max_attempts: 12\ninputs:\n  task: {description: The task}\nsteps:\n#{steps}"
   end
 
@@ -70,7 +70,7 @@ RSpec.describe "the shipped step library" do
     expect(guard_codes).to eq([])
   end
 
-  it "warns of a guard looping back when implement has no on_fail of its own" do
+  it "warns of a guard looping back when tests_first has no on_fail of its own" do
     definition = parse(host_for(chain).sub("    on_fail: stop\n", ""))
     expect(definition.warnings.map { |each| each["code"] }).to include("guard_unchanged_loop_back")
   end
@@ -106,6 +106,23 @@ RSpec.describe "the shipped step library" do
         "AC1: Given x — test",
         "AC1 Given x — Test",
         "R1 Given x When y Then z — test"].each { |line| expect(line).not_to match(pattern) }
+    end
+  end
+
+  describe "tests_first's coverage check" do
+    let(:command) { YAML.safe_load_file(File.join(steps_dir, "tests_first.yml")).dig("steps", "tests_first", "status", "run") }
+    let(:pattern) { Regexp.new(command[/--each-line-matches '([^']+)'/, 1]) }
+
+    it "runs workspace step check-ids over acceptance.md and tests-first.md" do
+      expect(command).to start_with("workspace step check-ids --prefix AC --defined acceptance.md --covered tests-first.md")
+    end
+
+    it "accepts a test line and a not-test line" do
+      ["AC1 spec/foo_spec.rb shows the name", "AC-2 not-test"].each { |line| expect(line).to match(pattern) }
+    end
+
+    it "rejects a line with nothing after the number, or the colon form" do
+      ["AC1 ", "AC1", "AC1: spec/foo_spec.rb shows the name", "R1 spec/foo_spec.rb x"].each { |line| expect(line).not_to match(pattern) }
     end
   end
 end
