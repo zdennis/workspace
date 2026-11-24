@@ -861,7 +861,7 @@ A run started with this version stores `"produces_check": "strict"` in its defin
 
 #### `requirements.md`
 
-The feature presets keep a numbered list of what the task asks for, written once before planning. Each line of the list starts with its number and a space (`R1 `, `R2 `, ...); after the list come, for each part the task leaves open, the reading chosen, the readings rejected and why, or `No ambiguity.`. In `rpiv`, `rpiv-auto-approve-v2` and `rpiv-auto-approve`, `research` writes it as `requirements.md` in the artifacts and lists it in `produces`, each task in the plan's `## Task details` names the R-numbers it covers, and the plan step's `status:` check, `workspace step check-ids --prefix R --defined requirements.md --allow-missing --plan-details`, fails, printing the missing numbers to stderr (so they show in the log tail), when an R that starts a line of `requirements.md` appears nowhere in `## Task details` (see [Coverage checks](#coverage-checks)). A run with no `requirements.md` (a definition whose research does not write it) passes that check. `R-3` and `R3` are the same number. The check only looks for the number in that section, so an R written there outside any task still counts; the gate or the skeptical reviewer is the second check. `verify` checks each R against evidence. In the unattended presets the `plan` step records each chosen reading with [`workspace ask`](README.ask.md) and its default, and carries on, so a person finds them in the inbox. `bugfix` keeps its list under `## Expected behaviour` in `repro.md`, and `investigate`, `explore` and `explore-parallel` state the readings in their notes.
+The feature presets keep a numbered list of what the task asks for, written once before planning. Each line of the list starts with its number and a space (`R1 `, `R2 `, ...); after the list come, for each part the task leaves open, the reading chosen, the readings rejected and why, or `No ambiguity.`. In `rpiv`, `rpiv-auto-approve-v2`, `rpiv-auto-approve` and `deliver`, `research` writes it as `requirements.md` in the artifacts and lists it in `produces`, each task in the plan's `## Task details` names the R-numbers it covers, and the plan step's `status:` check, `workspace step check-ids --prefix R --defined requirements.md --allow-missing --plan-details`, fails, printing the missing numbers to stderr (so they show in the log tail), when an R that starts a line of `requirements.md` appears nowhere in `## Task details` (see [Coverage checks](#coverage-checks)). A run with no `requirements.md` (a definition whose research does not write it) passes that check. `R-3` and `R3` are the same number. The check only looks for the number in that section, so an R written there outside any task still counts; the gate or the skeptical reviewer is the second check. `verify` checks each R against evidence. In the unattended presets the `plan` step records each chosen reading with [`workspace ask`](README.ask.md) and its default, and carries on, so a person finds them in the inbox. `bugfix` keeps its list under `## Expected behaviour` in `repro.md`, and `investigate`, `explore` and `explore-parallel` state the readings in their notes.
 
 ### What an attempt records
 
@@ -1677,7 +1677,7 @@ A sibling that is under way also carries what `current` shows of a step: `attemp
 
 ### The `rpiv` preset
 
-`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`rpiv-auto-approve-v2`](#the-rpiv-auto-approve-v2-preset), [`pr-feedback`](#the-pr-feedback-preset), [`investigate`](#the-investigate-preset), [`explore`](#the-explore-preset), the [`explore-parallel`](#the-explore-parallel-preset) example of a `fan_out` group (`rpiv-auto-approve` is the other) and the experimental [`bugfix`](#the-bugfix-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`; `rpiv` and `rpiv-auto-approve` import it from the step library, and its failure loop goes to `implement`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. `implement` requires `commits: 1` and `plan_status: done`. The agent sets the plan's `status: done` last, and the commit must be made during that attempt, so a rerun (a pass back from `verify`, or a `resume`) has to make a new commit for the fix. The prompt says never to amend or rebase, which makes the proof unproven (`history_rewritten`), and to use `git commit --allow-empty -m '<why>'` when no code change is needed. `verify` requires `command: lint` with `optional: true`, so it passes only when the tests and, if the project sets `commands.lint`, the lint command both exit 0 (a project without one skips that proof, recorded under `proofs`). A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
+`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`rpiv-auto-approve-v2`](#the-rpiv-auto-approve-v2-preset), [`pr-feedback`](#the-pr-feedback-preset), [`investigate`](#the-investigate-preset), [`explore`](#the-explore-preset), the [`explore-parallel`](#the-explore-parallel-preset) example of a `fan_out` group (`rpiv-auto-approve` is the other) and the experimental [`bugfix`](#the-bugfix-preset) and [`deliver`](#the-deliver-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`; `rpiv` and `rpiv-auto-approve` import it from the step library, and its failure loop goes to `implement`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. `implement` requires `commits: 1` and `plan_status: done`. The agent sets the plan's `status: done` last, and the commit must be made during that attempt, so a rerun (a pass back from `verify`, or a `resume`) has to make a new commit for the fix. The prompt says never to amend or rebase, which makes the proof unproven (`history_rewritten`), and to use `git commit --allow-empty -m '<why>'` when no code change is needed. `verify` requires `command: lint` with `optional: true`, so it passes only when the tests and, if the project sets `commands.lint`, the lint command both exit 0 (a project without one skips that proof, recorded under `proofs`). A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
 
 `research` is `guard: unchanged`, so `rpiv` needs a clean checkout to start: a dirty tracked file, a stopped git operation or a branch with no commit is refused as `dirty_worktree` before anything is made, and a research step that commits or edits a tracked file fails with the guard code (`head_moved`, `tracked_changed`). `plan` is `guard: config`: it fails only on a hook or hidden-file change. A commit or a tracked edit made in `plan` is not caught; its prompt's "Don't change code" is the only rule. This is a deliberate trade-off. That is what lets a failure of `implement` after its commit go back to `plan` and run it again; under `unchanged`, `plan` would see the commit and stop the run with `head_moved`. The plan and the artifacts are untracked, so writing them is fine. A run that has already started keeps the definition it started with, so runs begun before this guard behave as they did. `workflow run rpiv` (its tree defaults to the workspace's worktree) is refused on uncommitted tracked changes the same way, not only `workflow start`. A project that tracks `IMPLEMENTATION_PLAN.md` inside the repository can write it in `plan`, since `config` does not check tracked files. `workflow resume --from research` after `implement` has committed stops with `head_moved`; `--from plan` runs `plan` again.
 
@@ -1869,6 +1869,63 @@ Two choices to know about. `bugfix` is a standalone file, not `extends: rpiv`: a
 `deny` blocks `workspace config set*` and `workspace config unset*`, because the proofs read `commands.test` from config and an agent that changed it could make any command the "tests" (see [Denying commands](#denying-commands)).
 
 The fail-first proof has limits: it does not show that the test fails for the right reason, nor that `fix` keeps the test as strict. See [Fail-first proofs](#fail-first-proofs). The reproduction you read at the gate is the real check.
+
+### The `deliver` preset
+
+**Experimental.** `deliver` carries one task from goals to an open pull request with no person in the loop. It stops at the open pull request: it does not merge, watch CI or release. Its only input is `task` (required); `workflow run` fills it from the branch when it is left out ([how](#filling-inputs-from-the-branch)).
+
+Its eleven steps are `goals`, `design`, `research`, `plan`, `tests_first`, `implement`, `verify`, `acceptance_check`, `docs_update`, `code_review` and `open_pr`. All but `plan` are imported from the [step library](#step-library); `workflow graph deliver` draws them.
+
+The `plan` step is reviewed. Its `review:` takes the reviewers `supportive`, `skeptical` and `implementer`; two of three must approve, the skeptic among them, for up to 3 rounds. Its `status:` check runs `workspace step check-ids` twice, once for `R` against `requirements.md` and once for `AC` against `acceptance.md`, both with `--plan-details`, so the plan is done only when its `## Task details` names every requirement and every acceptance criterion (see [Coverage checks](#coverage-checks)). For each part `requirements.md` leaves open, the step runs `workspace ask "<question>" --default "<reading chosen>"` and carries on, so a person finds the readings in the inbox.
+
+Two loops go back to `implement`, each at most twice:
+
+- `verify` fails: back to `implement` in the same conversation (`context: continue`), with the last 40 lines of the failed check (`log_tail: 40`). The library's `verify` allows three trips; `deliver` restates the mapping with 2.
+- `acceptance_check` fails: back to `implement` in the same conversation, as the library step has it. `verify` and `acceptance_check` run again after each trip.
+
+`tests_first` has `on_fail: stop`, since a loop back from it would land on a step that must leave the checkout unchanged.
+
+What it needs:
+
+- `commands.test` and `commands.test_files` in config, as for [`bugfix`](#the-bugfix-preset): `tests_first` proves its new tests fail before the code exists, and `verify` runs the suite.
+- `gh` logged in, a GitHub remote and the network, for `open_pr`.
+- Permission rules that allow the pane's `open_pr` commands. `open_pr` runs `workspace push`, `workspace pr create --json` and `gh pr edit`, and a pane with no rule for them stops at a permission dialog. Allow them in the `agent.permissions.rules` of the global, project or worktree config file, edited by hand ([Permission policy](README.config.md#permission-policy)). The policy only runs for a pane whose agent asks for permission: a pane started with permission prompts skipped needs no rules and is not held by them.
+
+```yaml
+agent:
+  permissions:
+    rules:
+      - {tool: Bash, pattern: "workspace push*", action: allow}
+      - {tool: Bash, pattern: "workspace pr create*", action: allow}
+      - {tool: Bash, pattern: "gh pr edit*", action: allow}
+```
+
+A definition can't grant these itself: the `permissions:` key of a workflow takes only `deny` and `ask` rules, so it can narrow what the agent may do and never widen it. `deliver` sets no `permissions:` and no `deny:`.
+
+The limits, set before there were runs (replace them with `workflow stats` once there are):
+
+- `max_attempts: 30`. The worst case, summed by hand, is 25: the 9 steps without a review once each, 6 for the plan's and `code_review`'s one attempt per review round, 3 rounds each, 4 for `verify` going back to `implement` twice (each trip runs 2 steps), and 6 for `acceptance_check` going back twice (each trip runs 3 steps). 9 + 6 + 4 + 6 = 25. The comment above `max_attempts` in the file shows the same sum.
+- `budget: {tokens: 60000000, action: stop}`. A budget has no `hold` action. `stop` is the hold: when the tokens are spent, the run waits with reason `budget_spent` and keeps its state for a person to resume or cancel (see [Token budgets](#token-budgets)).
+- `timeout: 12h` with `timeout_action: hold`: past 12 hours of active time, the next attempt is held the same way (see [Run timeouts](#run-timeouts)).
+
+To end somewhere other than an open pull request, extend `deliver` and replace `open_pr`. A replacement restates every key of the step, and a reviewed step that leaves out `review:` gets the `review_dropped` warning. This variant merges and releases locally instead:
+
+```yaml
+id: deliver-local
+extends: deliver
+replace:
+  open_pr:
+    title: Merge and release locally
+    prompt: |
+      Merge this branch into main with `git merge --no-ff`, run the project's release
+      steps, and write {{artifacts}}/release.md naming the version and the merge commit.
+    guard: config
+    produces: [release.md]
+    timeout: 30m
+    max_attempts: 3
+```
+
+Save it as its own file, such as `deliver-local.yml` (the `id` defaults to the file name), and add the permission rules for whatever the new prompt runs.
 
 ## Required proofs
 
