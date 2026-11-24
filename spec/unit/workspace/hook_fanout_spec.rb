@@ -41,11 +41,7 @@ RSpec.describe Workspace::HookFanout do
 
     it "runs a later before_record subscriber, ahead of the monitor, when an earlier one raises" do
       failing = RecordingHandoffWatcher.new(order: order, fail_with: RuntimeError.new("boom"))
-      second = Class.new do
-        def initialize(order) = (@order = order)
-
-        def before_record(_message) = (@order << [:second_before_record, :before_record])
-      end.new(order)
+      second = RecordingHandoffWatcher.new(order: order, label: :second_before_record)
       fanout(subscribers: [failing, second, queue_desk]).session_event(event("user_prompt"))
 
       expect(order).to eq([[:handoff_watcher, :before_record], [:second_before_record, :before_record],
