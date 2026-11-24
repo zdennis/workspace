@@ -61,6 +61,11 @@ RSpec.describe "the docs_update library step's proof" do
     expect(proof_exit).to eq(0)
   end
 
+  it "passes when the docs: none line ends with a CRLF" do
+    docs("docs: none\r\nmore text\r\n")
+    expect(proof_exit).to eq(0)
+  end
+
   it "fails with no commit and no docs.md" do
     expect(proof_exit).to eq(1)
   end

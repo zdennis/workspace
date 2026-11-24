@@ -21,6 +21,6 @@ steps:
       If you commit docs on a rerun, delete a docs.md an earlier attempt wrote.
     guard: config
     require:
-      - exec: "sh -c 'test -n \"$1\" && { test \"$(git rev-parse HEAD)\" != \"$1\" || head -n 1 \"$2/docs.md\" 2>/dev/null | grep -Eq \"^docs: none( |$)\"; }' _ {{attempt.head_before}} {{artifacts}}"
+      - exec: "sh -c 'test -n \"$1\" && { test \"$(git rev-parse HEAD)\" != \"$1\" || head -n 1 \"$2/docs.md\" 2>/dev/null | grep -Eq \"^docs: none([[:space:]]|$)\"; }' _ {{attempt.head_before}} {{artifacts}}"
     timeout: 20m
     max_attempts: 3

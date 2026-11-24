@@ -64,11 +64,10 @@ RSpec.describe "the shipped step library" do
     end
   end
 
-  it "chains #{chain.join(", ")} with no guard after a commit" do
+  it "chains #{chain.join(", ")} with no warning" do
     definition = parse(host_for(chain))
     expect(definition.steps.map { |step| step["id"] }).to eq(chain)
-    guard_codes = definition.warnings.map { |each| each["code"] }.grep(/\Aguard_unchanged/)
-    expect(guard_codes).to eq([])
+    expect(definition.warnings).to eq([])
   end
 
   it "warns of a guard looping back when tests_first has no on_fail of its own" do
