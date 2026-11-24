@@ -4,8 +4,18 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { PROJECT_ROOT }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto tmuxinator.template tmuxinator.worktree_template plan.stall_seconds go.branch_namer.enabled go.branch_namer.timeout go.branch_namer.command agent.kind agent.recovery.enabled agent.claude.trust_checkout agent.permissions.default agent.permissions.hang_guard agent.permissions.hang_guard_max_denies agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
-    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.sources workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt workflows.default_stall workflows.turn_failed_after workflows.permission_wait_limit workflows.downtime_after workflows.infra_retry.max workflows.recover.max_per_run events.rotate_size event_log.compact_threshold codex.hooks.install tmuxinator.backups.keep tmuxinator.backups.max_age])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto tmuxinator.template tmuxinator.worktree_template plan.stall_seconds go.branch_namer.enabled go.branch_namer.timeout go.branch_namer.command agent.kind agent.recovery.enabled agent.permissions.default agent.permissions.hang_guard agent.permissions.hang_guard_max_denies agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
+    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless agent.claude.trust_checkout launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.sources workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt workflows.default_stall workflows.turn_failed_after workflows.permission_wait_limit workflows.downtime_after workflows.infra_retry.max workflows.recover.max_per_run events.rotate_size event_log.compact_threshold codex.hooks.install tmuxinator.backups.keep tmuxinator.backups.max_age])
+  end
+
+  describe "agent.claude.trust_checkout" do
+    it "is a global-only key that is on by default" do
+      key = described_class.key("agent.claude.trust_checkout")
+
+      expect(key.global?).to be(true)
+      expect(key.overridable_in).to eq([:global])
+      expect(key.default).to be(true)
+    end
   end
 
   describe "workflows.default_stall" do

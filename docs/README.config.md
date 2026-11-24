@@ -92,7 +92,6 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `go.branch_namer.command` | global, project | Command that names the branch instead of the default agent's headless call (unset: the default agent is used). It is split into arguments with no shell, the description is appended as one last argument, stdin stays closed, and its stdout is the name | `my-namer --short` |
 | `agent.kind` | global, project, worktree | Which coding agent a new workspace's main agent pane runs: `claude`, `codex`, `opencode`, `pi` (default `claude`) | `claude`, `codex`, `opencode`, `pi` |
 | `agent.recovery.enabled` | global, project, worktree | `true` or `false`: whether the agent daemon recovers a Claude Code agent whose turn ended on an API error (`server_error`, `overloaded`, `rate_limit` or `unknown`): it types a message to continue at the live prompt first, then restarts and resumes the conversation if that fails, on a schedule of up to 12 attempts; any other error kind gets one inbox item (default `true`; ignored when `agent.kind` isn't `claude`) | `true`, `false` |
-| `agent.claude.trust_checkout` | global, project, worktree | `true` or `false`: whether `launch`, `start` and `add` mark the checkout's real path as trusted in Claude Code's `.claude.json` (`hasTrustDialogAccepted`), so a first launch does not stop on the trust dialog. Off by default because trust lets the folder's `.claude/settings.json`, hooks and MCP servers run (default `false`; ignored when `agent.kind` isn't `claude`) | `true`, `false` |
 | `agent.permissions.default` | global, project, worktree | What the permission policy does with a coding agent's tool call that no `agent.permissions.rules` entry matches: `ask` (default, the agent's own dialog), `allow` or `deny`. Of the layers that set it, the most restrictive value wins | `ask`, `allow`, `deny` |
 | `agent.permissions.hang_guard` | global, project, worktree | What the hook does when a coding agent's tool call raises a permission dialog and no rule decided it, in every pane: `deny_with_hint` (default) denies the call with a hint to run simpler commands, so the agent tries again instead of waiting at a dialog nobody answers; the cost is that in an interactive pane the agent loses a turn on a call you would have approved, at most `agent.permissions.hang_guard_max_denies` times per turn. `off` leaves every such call to the agent's own dialog; turn it off with `workspace config set agent.permissions.hang_guard off`. The most specific layer that sets it wins | `off`, `deny_with_hint` |
 | `agent.permissions.hang_guard_max_denies` | global, project, worktree | How many undecided tool calls `agent.permissions.hang_guard` denies with a hint in one turn of a pane (one attempt of a workflow step) before it lets the agent's own dialog through (default `2`, at least `1`) | `1`, `3` |
@@ -104,6 +103,7 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `context.source` | global | Global. `statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md) | `statusline`, `scrape` |
 | `context.pattern` | global | Global. Regex with exactly one capture group, used when `context.source` is `scrape` | `(\d+)% used` |
 | `launch.headless` | global | Global. `true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set | `true`, `false` |
+| `agent.claude.trust_checkout` | global | Global. `true` or `false`: whether `launch`, `start` and `add` mark the checkout's real path as trusted in Claude Code's `.claude.json` (`hasTrustDialogAccepted`), so a first launch does not stop on the trust dialog. On by default; trust lets the folder's `.claude/settings.json` permissions and hooks, its MCP servers and its `CLAUDE.md` act without asking. Only the global file is read (default `true`; ignored when `agent.kind` isn't `claude`). See [Trusting a checkout for Claude Code](README.config.md#trusting-a-checkout-for-claude-code) | `true`, `false` |
 | `launch.restore_window_position` | global | Global. `true` or `false`: whether `launch` puts a window back where it was when the workspace was stopped, if that spot is still on a connected screen (default `true`). `false` tiles every new window, as `launch --arrange` does; `stop` saves the position either way. See [`launch`](README.launch.md#window-position) | `true`, `false` |
 | `launch.window_width_percent` | global | Global. Width of a window `launch` tiles, as a percent of the active screen's width, 1 to 100 (default `22`). Tiled windows overlap when they don't all fit side by side. A window put back at its saved position keeps its saved size; see [`launch`](README.launch.md#window-position) | `22`, `66` |
 | `focus.chain` | global | Global. The window-tool steps `focus` runs on the window, joined by `+` (default `focus`, no extra steps). The first step is a bare `focus`; the others are `center`, `dim`, `highlight`, `flash`, `shake`, `snap` or `maximize` with their options. `dim` and `highlight` run in the background, so they must be last. Set `focus + center + dim --opacity 0.5 --duration 3` to also center the window and dim the others for three seconds | `focus`, `focus + center + highlight --color red` |
@@ -224,13 +224,15 @@ The command is used by every config written from then on, and at once by what wo
 
 ### Trusting a checkout for Claude Code
 
-Claude Code asks "Do you trust the files in this folder?" the first time it starts in a directory, and waits there until someone answers. A headless launch has no one to answer, so its prompt wait ends with `agent prompt never appeared`. `agent.claude.trust_checkout` answers the dialog ahead of time:
+Trusting a checkout is on by default. Claude Code asks "Do you trust the files in this folder?" the first time it starts in a directory, and waits there until someone answers; a headless launch has no one to answer, so its prompt wait would end with `agent prompt never appeared`. `agent.claude.trust_checkout` answers the dialog ahead of time.
+
+Trust lets Claude Code act on what the folder holds without asking: the checkout's `.claude/settings.json` permissions and hooks (which can run shell commands), its MCP servers and its `CLAUDE.md`. To turn it off:
 
 ```sh
-workspace config set --scope global agent.claude.trust_checkout true
-# or one project, or one worktree:
-workspace config set --scope project --name api agent.claude.trust_checkout true
+workspace config set --scope global agent.claude.trust_checkout false
 ```
+
+Only the global config file is read. A value in a project or worktree file is ignored, and `workspace config validate` flags it.
 
 When the key is `true` and the workspace's main agent is `claude`, `launch`, `start` (and what launches through them: `relaunch`, `restore`, `promote --launch`) and `add` set `projects["<checkout>"].hasTrustDialogAccepted` to `true` in Claude Code's own config file before the agent starts, and, when they newly set it, print `Note: marked <checkout> as trusted in <file> (agent.claude.trust_checkout).` (on stderr under `--json`; `add --json` rows also carry [`claude_trust`](README.add.md)).
 
@@ -238,8 +240,6 @@ When the key is `true` and the workspace's main agent is `claude`, `launch`, `st
 - **`<checkout>`** is the checkout's real path (`/tmp/demo` is recorded as `/private/tmp/demo`), and only that directory: never the parent repository, a main checkout or `$HOME`.
 - **What is left alone.** Every other key in the file stays as it was. Nothing is written when the file is missing (Claude Code has never run), when the flag is already `true`, or when the key is off or the agent is another. A file that doesn't parse as JSON, or whose `projects` isn't an object, is left unchanged with a warning, and so is one that can't be written. A failure never stops the launch: the agent just meets the dialog.
 - **The write** goes through a temp file and a rename, keeping the file's mode, then reads the file back. A running Claude Code rewrites this file often and its lock can't be taken, so when another writer replaced the file in between, the write is done once more, then given up with a warning.
-
-**Why it is off by default.** Trusting a folder lets Claude Code act on what the folder holds without asking: its `.claude/settings.json` (permissions, and hooks that run shell commands), its MCP servers and its `CLAUDE.md`. Turn it on only for repositories whose contents you would accept running on your machine. A checkout of a stranger's pull request is not one of them until you have read it.
 
 ### Permission policy
 

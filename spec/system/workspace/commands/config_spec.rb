@@ -1442,6 +1442,19 @@ RSpec.describe Workspace::Commands::Config do
         expect(Dir.glob(File.join(dir, "**", "*.yml")).map { |f| File.basename(f) }).to eq(["myapp.yml"])
       end
 
+      it "keeps agent.claude.trust_checkout global: no scope writes the global file and project or workspace scope is refused" do
+        command.set("agent.claude.trust_checkout", "false", project: "myapp")
+
+        expect(settings.load_global).to eq({"agent" => {"claude" => {"trust_checkout" => "false"}}})
+        expect(settings.load("myapp")).to eq({})
+        %w[project workspace].each do |scope|
+          expect { command.set("agent.claude.trust_checkout", "false", project: "myapp", scope: scope) }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("scope_not_allowed")
+            expect(e.details["allowed"]).to eq(["global"])
+          }
+        end
+      end
+
       it "refuses a global scope for a project-only key" do
         expect { command.set("dev.stop_timeout", "20s", project: "myapp", scope: "global") }.to raise_error(Workspace::Error) { |e|
           expect(e.details).to eq({"key" => "dev.stop_timeout", "scope" => "global", "allowed" => ["project"]})

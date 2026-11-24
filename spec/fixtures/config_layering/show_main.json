@@ -1423,40 +1423,6 @@
       ]
     },
     {
-      "key": "agent.claude.trust_checkout",
-      "scope": "project",
-      "type": "boolean",
-      "value": null,
-      "masked": false,
-      "default": false,
-      "effective": false,
-      "source": "default",
-      "source_file": null,
-      "line": null,
-      "column": null,
-      "resolve": "layered",
-      "target_layer": "project",
-      "affects": [
-        "main",
-        "main.worktree-a"
-      ],
-      "applies": "next_call",
-      "settable": true,
-      "sensitive": false,
-      "overridable_in": [
-        "global",
-        "project",
-        "worktree"
-      ],
-      "layers": [],
-      "doc": "`true` or `false`: whether `launch`, `start` and `add` mark the checkout's real path as trusted in Claude Code's `.claude.json` (`hasTrustDialogAccepted`), so a first launch does not stop on the trust dialog. Off by default because trust lets the folder's `.claude/settings.json`, hooks and MCP servers run (default `false`; ignored when `agent.kind` isn't `claude`)",
-      "problems": [],
-      "choices": [
-        "true",
-        "false"
-      ]
-    },
-    {
       "key": "agent.permissions.default",
       "scope": "project",
       "type": "enum",
@@ -1868,6 +1834,38 @@
         }
       ],
       "doc": "`true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
+    },
+    {
+      "key": "agent.claude.trust_checkout",
+      "scope": "global",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": true,
+      "effective": true,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "`true` or `false`: whether `launch`, `start` and `add` mark the checkout's real path as trusted in Claude Code's `.claude.json` (`hasTrustDialogAccepted`), so a first launch does not stop on the trust dialog. On by default; trust lets the folder's `.claude/settings.json` permissions and hooks, its MCP servers and its `CLAUDE.md` act without asking. Only the global file is read (default `true`; ignored when `agent.kind` isn't `claude`). See [Trusting a checkout for Claude Code](README.config.md#trusting-a-checkout-for-claude-code)",
       "problems": [],
       "choices": [
         "true",
