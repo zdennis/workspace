@@ -6,7 +6,7 @@ RSpec.describe "the shipped step library" do
   names = Dir[File.join(steps_dir, "*.yml")].map { |path| File.basename(path, ".yml") }.sort
 
   # The delivery chain, in order. A step that joins the library adds one name here.
-  chain = %w[goals design tests_first implement verify]
+  chain = %w[goals design tests_first implement verify acceptance_check]
 
   def parse(yaml)
     Dir.mktmpdir("step-library") do |dir|
@@ -106,6 +106,33 @@ RSpec.describe "the shipped step library" do
         "AC1: Given x — test",
         "AC1 Given x — Test",
         "R1 Given x When y Then z — test"].each { |line| expect(line).not_to match(pattern) }
+    end
+  end
+
+  describe "acceptance_check's report check" do
+    let(:command) { YAML.safe_load_file(File.join(steps_dir, "acceptance_check.yml")).dig("steps", "acceptance_check", "status", "run") }
+    let(:pattern) { Regexp.new(command[/--each-line-matches '([^']+)'/, 1]) }
+
+    it "runs workspace step check-ids over acceptance.md and acceptance-report.md" do
+      expect(command).to start_with("workspace step check-ids --prefix AC --defined acceptance.md --covered acceptance-report.md")
+    end
+
+    it "requires a clean tracked tree" do
+      step = YAML.safe_load_file(File.join(steps_dir, "acceptance_check.yml")).dig("steps", "acceptance_check")
+      expect(step["require"]).to eq([{"tracked_clean" => true}])
+    end
+
+    it "loops back to implement twice, continuing the conversation" do
+      step = YAML.safe_load_file(File.join(steps_dir, "acceptance_check.yml")).dig("steps", "acceptance_check")
+      expect(step["on_fail"]).to eq({"goto" => "implement", "max" => 2, "context" => "continue"})
+    end
+
+    it "accepts a PASS with evidence and a MANUAL with text" do
+      ["AC1 PASS spec/foo_spec.rb shows the name", "AC-2 MANUAL check the page in a browser", "AC1 PASS x "].each { |line| expect(line).to match(pattern) }
+    end
+
+    it "rejects a bare PASS, a FAIL and the colon form" do
+      ["AC1 PASS", "AC1 PASS ", "AC1 FAIL broken", "AC1: PASS x", "AC1 MANUAL", "AC1 PASSED x", "AC1 PASS  x", "AC1 pass x", "AC1 MANUAL  x"].each { |line| expect(line).not_to match(pattern) }
     end
   end
 
