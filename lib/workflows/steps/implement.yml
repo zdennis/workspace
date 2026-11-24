@@ -1,5 +1,5 @@
 schema_version: 0.1
-description: The implement step rpiv and rpiv-auto-approve share. It builds the workspace plan one commit per task and sets the plan's status to done.
+description: The implement step rpiv and rpiv-auto-approve share. It reads the plan, needs no input, builds it one commit per task, writes implement.md and sets the plan's status to done.
 
 steps:
   implement:

@@ -1,5 +1,5 @@
 schema_version: 0.1
-description: The research step rpiv and rpiv-auto-approve share. It reads the code and writes research.md and requirements.md, changing nothing.
+description: The research step rpiv and rpiv-auto-approve share. It needs {{inputs.task}}, reads the code and writes research.md and requirements.md, changing nothing.
 
 steps:
   research:
