@@ -1,0 +1,35 @@
+schema_version: 0.1
+description: >-
+  The open-pull-request step, the last of a delivery pipeline. It reads goals.md, acceptance-report.md (when it exists), docs.md or the docs commit, and review-response.md (when it exists), pushes the branch with `workspace push`, opens the pull request with `workspace pr create` (or finds the one the branch already has), sets its body from those files, and writes pr.md whose first line is `pr: <number>`. It needs no input and no command role. It needs `gh`, logged in, a GitHub remote and the network, and pane permission rules that allow `workspace push`, `workspace pr create` and `gh pr edit` (or `git push`, `gh pr create` and `gh pr edit`, for a host that overrides the prompt to call them directly), since a workflow's `permissions:` can only deny or ask, never allow. It runs with guard config. The proof is a `status:` command that reads the number from the first line of pr.md, refuses anything but `pr: ` and digits (trailing whitespace or a CR is allowed), and asks `gh pr view` for the pull request's state and head commit, which must be `OPEN` and the branch's HEAD. A failing `gh` fails the check.
+
+steps:
+  open_pr:
+    title: Open the pull request
+    prompt: |
+      Publish this branch and open its pull request. Read {{artifacts}}/goals.md,
+      {{artifacts}}/acceptance-report.md if it exists, {{artifacts}}/docs.md if it exists (or the
+      docs commit, if the docs step made one), and {{artifacts}}/review-response.md if it exists.
+      Run these as separate commands, one at a time, and stop at the first that fails:
+      1. `workspace push` publishes the branch.
+      2. `workspace pr create --json` opens the pull request, or returns the one the branch already
+      has. It fills the title and body from the commits and takes no body text; read `number` (if it is null, take the last path segment of the url) and
+      `url` from its output.
+      3. Write the body in {{artifacts}}/pr-body.md: the goal and who it serves (from goals.md), one
+      line per acceptance criterion and how it was shown (from the acceptance report), what the docs
+      change says or why none was needed, and what review changed. Say what the change does for a
+      reader, not how it was built, and invent nothing the files don't show.
+      4. `gh pr edit NUMBER --body-file {{artifacts}}/pr-body.md` sets that body, for a new pull
+      request and for an existing one.
+      Then write {{artifacts}}/pr.md. Its first line is exactly `pr: NUMBER` (digits only); a second
+      line may hold the url.
+      If the push, the pull request or the body edit fails, run
+      `workspace step done --status fail --summary "<the command and its error>"` and stop; do not retry in a loop.
+      The run's check passes when `gh pr view NUMBER` reports the pull request OPEN with the branch's
+      current HEAD as its head, so push any new commit before you finish.
+    guard: config
+    produces: [pr.md]
+    status:
+      run: |-
+        n=$(sed -n '1s/^pr: \([0-9][0-9]*\)[[:space:]]*$/\1/p' "$WORKSPACE_RUN_ARTIFACTS/pr.md") && test -n "$n" && test "$(gh pr view "$n" --json state,headRefOid --jq '.state+" "+.headRefOid')" = "OPEN $(git rev-parse HEAD)"
+    timeout: 20m
+    max_attempts: 3

@@ -6,7 +6,7 @@ RSpec.describe "the shipped step library" do
   names = Dir[File.join(steps_dir, "*.yml")].map { |path| File.basename(path, ".yml") }.sort
 
   # The delivery chain, in order. A step that joins the library adds one name here.
-  chain = %w[goals design tests_first implement verify acceptance_check docs_update code_review]
+  chain = %w[goals design tests_first implement verify acceptance_check docs_update code_review open_pr]
 
   def parse(yaml)
     Dir.mktmpdir("step-library") do |dir|
