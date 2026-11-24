@@ -179,7 +179,7 @@ module Workspace
     def library_file_problems(file, path)
       text = File.read(path, encoding: Encoding::UTF_8)
       return [problem(file, PROMPT_FILE_CODE, "sets prompt_file:, which a workflow source may not (use prompt:)")] if text.valid_encoding? && prompt_file?(text)
-      WorkflowImports.library_problems(text).map { |message| problem(file, "invalid_workflow", message) }
+      WorkflowImports.library_problems(text, dir: File.dirname(path)).map { |message| problem(file, "invalid_workflow", message) }
     rescue SystemCallError => e
       [problem(file, "invalid_workflow", "can't be read (#{e.class})")]
     end

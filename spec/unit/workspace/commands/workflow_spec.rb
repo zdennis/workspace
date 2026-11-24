@@ -5713,6 +5713,15 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to end_with("No workflow imports it.\n")
     end
 
+    it "refuses a library whose reviewer is bad, reading a prompt_file against the library's directory" do
+      File.write(library, "reviewers:\n  sec:\n    prompt_file: missing.md\nsteps:\n  research:\n    prompt: p\n")
+
+      expect { command.validate(path: library) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_step_library")
+        expect(e.details["library"]["problems"]).to match([a_string_starting_with("reviewer sec: prompt_file #{File.join(File.dirname(library), "missing.md")} can't be read")])
+      }
+    end
+
     it "passes a good library that nothing imports" do
       command.validate(path: library)
 

@@ -419,7 +419,7 @@ RSpec.describe Workspace::WorkflowImports do
 
     it "refuses another schema_version and an unknown top-level key" do
       expect(described_class.library_problems("schema_version: 2\nid: x\nsteps:\n  a:\n    prompt: p\n")).to eq([
-        "a step library has unknown key(s) id (known: schema_version, description, steps)",
+        "a step library has unknown key(s) id (known: schema_version, description, reviewers, steps)",
         "schema_version must be one of 0.1, got 2"
       ])
       expect(described_class.library_problems("schema_version: 0.10\nsteps:\n  a:\n    prompt: p\n")).to eq(["schema_version must be one of 0.1, got 0.10"])
@@ -432,6 +432,49 @@ RSpec.describe Workspace::WorkflowImports do
         "step \"Bad\": a step id must be #{Workspace::IdPatterns::WORKFLOW_ID_RULE}",
         "step b: must be a mapping of step keys"
       ])
+    end
+
+    describe "reviewers:" do
+      def reviewed(reviewers, dir: nil)
+        described_class.library_problems("reviewers:\n#{reviewers.gsub(/^/, "  ")}steps:\n  a:\n    prompt: p\n", dir: dir)
+      end
+
+      it "accepts good reviewers, with placeholders left to the host" do
+        write("global/steps/rev.md", "Check {{inputs.anything}}.")
+        text = "security:\n  prompt: Look at {{inputs.missing}}\n  scope: \"{{inputs.nope}} only\"\n  include: [x]\nstyle:\n  prompt_file: rev.md\n"
+        expect(reviewed(text, dir: File.join(@dir, "global/steps"))).to eq([])
+        expect(reviewed(text)).to eq([])
+      end
+
+      it "returns the reviewers as written" do
+        _steps, reviewers, problems = described_class.read_library("reviewers:\n  sec:\n    prompt: p\nsteps:\n  a:\n    prompt: p\n")
+        expect(problems).to eq([])
+        expect(reviewers).to eq("sec" => {"prompt" => "p"})
+      end
+
+      it "reports each of these as one problem" do
+        {
+          "sec:\n  prompt: p\n  nope: 1\n" => "reviewer sec has unknown key nope",
+          "summary:\n  prompt: p\n" => "reviewer name summary is reserved",
+          "Bad-Name:\n  prompt: p\n" => "reviewer name \"Bad-Name\" must be lowercase",
+          "sec:\n  prompt: p\n  prompt_file: f.md\n" => "reviewer sec needs exactly one of prompt and prompt_file",
+          "sec:\n  title: T\n" => "reviewer sec needs exactly one of prompt and prompt_file",
+          "sec:\n  prompt_file: gone.md\n" => "reviewer sec: prompt_file #{File.join(@dir, "global/steps/gone.md")} can't be read"
+        }.each do |text, message|
+          expect(reviewed(text, dir: File.join(@dir, "global/steps"))).to match([a_string_starting_with(message)]), text
+        end
+      end
+
+      it "reports a reviewers: that is not a mapping" do
+        expect(described_class.library_problems("reviewers: [a]\nsteps:\n  a:\n    prompt: p\n")).to eq(["reviewers must be a mapping of reviewer name to its prompt"])
+      end
+
+      it "fails an import through a library with a bad reviewer, naming the library path" do
+        path = library_at("global/steps/verify.yml", "reviewers:\n  sec:\n    prompt: p\n    nope: 1\n" + verify_library)
+        importer = imports
+        importer.expand({"steps" => {"verify" => {"import" => "verify"}}})
+        expect(importer.failure).to match([a_string_starting_with("step verify: import verify (#{path}): reviewer sec has unknown key nope")])
+      end
     end
 
     it "refuses an empty steps mapping" do

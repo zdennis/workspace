@@ -242,7 +242,7 @@ module Workspace
             path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain,
             import_lookup: @catalog.import_lookup(project, file_layer: layer), confine_dir: layer && @catalog.confine_dir(layer, project))
         rescue Workspace::Error => e
-          raise unless e.code == "invalid_workflow" && e.details["problems"] && WorkflowImports.library_problems(text).empty?
+          raise unless e.code == "invalid_workflow" && e.details["problems"] && WorkflowImports.library_problems(text, dir: (path == "-") ? nil : File.dirname(File.expand_path(path))).empty?
           problems = e.details["problems"] + [LIBRARY_OUTSIDE_STEPS]
           raise Workspace::Error.new(e.message + "\n  - #{LIBRARY_OUTSIDE_STEPS}", code: e.code, details: e.details.merge("problems" => problems))
         end
@@ -260,7 +260,7 @@ module Workspace
         end
       end
 
-      LIBRARY_OUTSIDE_STEPS = "this file has only a step library's keys (schema_version, description, steps), so it was read " \
+      LIBRARY_OUTSIDE_STEPS = "this file has only a step library's keys (schema_version, description, reviewers, steps), so it was read " \
         "as a workflow: a step library is checked as one only inside a layer's steps/ directory, such as " \
         "~/.config/workspace/workflows/steps/NAME.yml"
 
@@ -277,7 +277,7 @@ module Workspace
       #   document's "library" and "importers" in `details` (text: the results are printed first)
       def validate_library(path, text, scope, json)
         full = File.expand_path(path)
-        steps, problems = WorkflowImports.read_library(text)
+        steps, _reviewers, problems = WorkflowImports.read_library(text, dir: File.dirname(full))
         importers = @catalog.importers_of(full).map { |importer| importer_result(importer) }
         body = {"library" => {"path" => full, "scope" => scope, "valid" => problems.empty?, "steps" => steps.keys, "problems" => problems},
                 "importers" => importers}

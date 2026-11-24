@@ -17,7 +17,7 @@ module Workspace
   # be checked further, as with {WorkflowExtends#failure}.
   class WorkflowImports
     # The top-level keys a step library may hold.
-    LIBRARY_KEYS = %w[schema_version description steps].freeze
+    LIBRARY_KEYS = %w[schema_version description reviewers steps].freeze
 
     # Keys a library step may not hold, and why.
     LIBRARY_STEP_REFUSALS = {
@@ -35,27 +35,34 @@ module Workspace
     # shape and refused keys. The one check an import, `workflow validate` on a library and the source installer share.
     #
     # @param text [String] the library file's text
+    # @param dir [String, nil] the directory a reviewer's relative `prompt_file` is read against (the library file's)
     # @return [Array<String>] each fault, empty for a good library
-    def self.library_problems(text)
-      read_library(text).last
+    def self.library_problems(text, dir: nil)
+      read_library(text, dir: dir).last
     end
 
     # @param text [String]
-    # @return [Array(Hash, Array<String>)] the library's steps (step id to its mapping) and its faults
-    def self.read_library(text)
+    # @param dir [String, nil] the directory a reviewer's relative `prompt_file` is read against; nil only checks it is a path
+    # @return [Array(Hash, Hash, Array<String>)] the library's steps (step id to its mapping), its reviewers as written
+    #   (name to mapping) and its faults. Reviewers are checked by the rules a workflow's `reviewers:` follow; their
+    #   placeholders are left to the host that uses them.
+    def self.read_library(text, dir: nil)
       text = text.dup.force_encoding(Encoding::UTF_8)
-      return [{}, ["the file is not valid UTF-8 text"]] unless text.valid_encoding?
+      return [{}, {}, ["the file is not valid UTF-8 text"]] unless text.valid_encoding?
       raw = YAML.safe_load(text)
-      return [{}, ["the file must be a YAML mapping"]] unless raw.is_a?(Hash)
+      return [{}, {}, ["the file must be a YAML mapping"]] unless raw.is_a?(Hash)
       problems = []
       unknown = raw.keys.map(&:to_s) - LIBRARY_KEYS
       problems << "a step library has unknown key(s) #{unknown.join(", ")} (known: #{LIBRARY_KEYS.join(", ")})" if unknown.any?
       schema = raw.key?("schema_version") && schema_problem(raw, text)
       problems << schema if schema
+      reviewers = raw["reviewers"]
+      problems.concat(reviewer_problems(reviewers, dir)) if raw.key?("reviewers")
+      reviewers = {} unless reviewers.is_a?(Hash)
       steps = raw["steps"]
       unless steps.is_a?(Hash) && steps.any?
         problems << "a step library needs steps: a mapping of step id to step"
-        return [{}, problems]
+        return [{}, reviewers, problems]
       end
       steps.each do |step_id, step|
         unless IdPatterns::WORKFLOW_ID.match?(step_id.to_s)
@@ -68,9 +75,9 @@ module Workspace
         end
         LIBRARY_STEP_REFUSALS.each { |key, why| problems << "step #{step_id}: #{why}" if step.key?(key) }
       end
-      [steps.to_h { |step_id, step| [step_id.to_s, step] }, problems]
+      [steps.to_h { |step_id, step| [step_id.to_s, step] }, reviewers.to_h { |name, spec| [name.to_s, spec] }, problems]
     rescue Psych::Exception => e
-      [{}, ["the file is not valid YAML (#{e.message.lines.first.to_s.strip})"]]
+      [{}, {}, ["the file is not valid YAML (#{e.message.lines.first.to_s.strip})"]]
     end
 
     # The same `schema_version` rule as a workflow's: `0.1` (as written), legacy `1`, or no key.
@@ -92,7 +99,65 @@ module Workspace
       found = root.children.each_slice(2).select { |k, v| k.is_a?(Psych::Nodes::Scalar) && k.value == key && v.is_a?(Psych::Nodes::Scalar) }
       found.last&.last&.value
     end
-    private_class_method :schema_problem, :top_scalar_text
+
+    # The faults of a library's `reviewers:` by {WorkflowReviewSpec#reviewers}'s rules; its placeholder check does nothing,
+    # as the inputs a prompt may use are the host's.
+    def self.reviewer_problems(raw, dir)
+      found = []
+      noop = ->(*_args, **_kwargs) {}
+      text = ->(value, where) do
+        return nil if value.nil?
+        return value if value.is_a?(String) && !value.strip.empty?
+        found << "#{where} must be text, got #{value.inspect[0, 60]}"
+        nil
+      end
+      names = ->(value, where) do
+        return [] if value.nil?
+        return value if value.is_a?(Array) && value.all? { |name| name.is_a?(String) && !name.strip.empty? }
+        found << "#{where} must be a list of names, got #{value.inspect[0, 60]}"
+        []
+      end
+      WorkflowReviewSpec.new(
+        name_pattern: WorkflowDefinition::INPUT_PATTERN, report: ->(message) {
+          found << message
+          nil
+        },
+        prompt: ->(spec, where) { reviewer_prompt(spec, where, dir, found) }, placeholders: noop,
+        text: text, names: names, uses: noop, context: noop, duration: noop
+      ).reviewers(raw, {})
+      found
+    end
+
+    def self.reviewer_prompt(spec, where, dir, found)
+      if spec.key?("prompt") == spec.key?("prompt_file")
+        found << "#{where} needs exactly one of prompt and prompt_file"
+        return nil
+      end
+      if spec.key?("prompt")
+        value = spec["prompt"]
+        return value if value.is_a?(String) && !value.strip.empty?
+        found << "#{where}: prompt must be text, got #{value.nil? ? "nothing" : value.inspect[0, 60]}" unless value.nil?
+        return nil
+      end
+      file = spec["prompt_file"]
+      unless file.is_a?(String) && !file.strip.empty?
+        found << "#{where}: prompt_file must be a path"
+        return nil
+      end
+      return file unless dir
+      full = File.expand_path(file, dir)
+      content = File.read(full, encoding: Encoding::UTF_8)
+      unless content.valid_encoding?
+        found << "#{where}: prompt_file #{full} is not valid UTF-8 text"
+        return nil
+      end
+      found << "#{where}: prompt_file #{full} is empty" if content.strip.empty?
+      content
+    rescue SystemCallError => e
+      found << "#{where}: prompt_file #{full} can't be read (#{e.class})"
+      nil
+    end
+    private_class_method :schema_problem, :top_scalar_text, :reviewer_problems, :reviewer_prompt
 
     # @return [Array<String>] why an import can't be used, each naming the host step, the reference and the absolute path; empty when every import resolved
     attr_reader :failure
@@ -224,7 +289,7 @@ module Workspace
     end
 
     def library_step(step_id, reference, path)
-      steps, problems = @libraries[path] ||= read(path)
+      steps, _reviewers, problems = @libraries[path] ||= read(path)
       if problems.any?
         @failure.concat(problems.map { |problem| "step #{step_id}: import #{reference} (#{path}): #{problem}" })
         return nil
@@ -236,9 +301,9 @@ module Workspace
     end
 
     def read(path)
-      self.class.read_library(File.read(path))
+      self.class.read_library(File.read(path), dir: File.dirname(path))
     rescue SystemCallError => e
-      [{}, ["the file can't be read (#{e.message})"]]
+      [{}, {}, ["the file can't be read (#{e.message})"]]
     end
 
     def merge(step_id, reference, path, layer, shadows, library_step, own)
