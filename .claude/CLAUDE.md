@@ -50,6 +50,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_infra_retry.rb` — Restarts a step whose pane or agent is gone once its infra retry is due: claim, new pane, resume.
 - `lib/workspace/workflow_step_check.rb` — `workflow check`: runs one step's `status:` command outside a run.
 - `lib/workspace/workflow_expect_fail.rb` — `step expect-fail`: passes only when `commands.test` fails on the given tests, for fail-first proofs.
+- `lib/workspace/workflow_check_ids.rb` — `step check-ids`: passes only when every numbered ID one file defines is named by another file or the plan's `## Task details`.
 - `lib/workspace/workflow_simulator.rb` — `workflow simulate`: plays a script through a real engine over fakes.
 - `lib/workspace/workflow_sim_script.rb` — Parses and checks a simulator script against a definition.
 - `spec/support/preset_simulation.rb` — Parses a shipped preset, fills its inputs and masks a simulator transcript for the golden specs.
