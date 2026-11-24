@@ -47,6 +47,7 @@ workspace workflow reject [RUN] --note TEXT [--step STEP [--attempt N]] [--to ST
 workspace step done [--status pass|fail|done|running|needs_input|stuck] [--step STEP] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]
 workspace step status [--run RUN_ID] [--json]
 workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
+workspace step check-ids --prefix P[,P...] --defined FILE (--covered FILE [--each-line-matches REGEX] | --plan-details [--name WORKSPACE]) [--allow-missing] [--json]
 ```
 
 | Subcommand | Description |
@@ -84,10 +85,11 @@ workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 | `workflow simulate` | Play a workflow through the real engine with a scripted fake agent and print the transitions; nothing real runs. See [Simulating a workflow](#simulating-a-workflow) |
 | `step status` | For the agent: which run, step and attempt its pane is on, and whether the files the step must leave exist |
 | `step expect-fail` | Run by a `require: exec:` proof, from no pane: exits 0 only when `commands.test` fails on the given test files (see [Fail-first proofs](#fail-first-proofs)) |
+| `step check-ids` | Run by a step's `status:` command, from no pane: exits 0 only when every numbered ID one file defines (`R1`, `AC-3`) is covered by another file or by the plan's `## Task details` (see [Coverage checks](#coverage-checks)) |
 
 | Option | Description |
 |--------|-------------|
-| `--name WORKSPACE` | `run`: the workspace to run in. `render`, `check`: the workspace whose packs and commands are read. `status`: only this workspace's runs still going |
+| `--name WORKSPACE` | `run`: the workspace to run in. `render`, `check`: the workspace whose packs and commands are read. `status`: only this workspace's runs still going. `step check-ids --plan-details`: the workspace whose plan is read |
 | `--artifacts DIR` | `check`: an existing directory standing for the run's artifacts (`WORKSPACE_RUN_ARTIFACTS`); default an empty temporary one |
 | `--script FILE` | `simulate`: the script of what the fake agent does and how each check comes out |
 | `--input KEY=VALUE` | `run`, `start`, `render`, `simulate`: a value for one of the workflow's inputs (repeatable) |
@@ -126,6 +128,12 @@ workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 | `--summary TEXT` | `step done`: one line about what was done, or what is left |
 | `--match-file PATH` | `step expect-fail`: a file whose text (trimmed) the failing tests' stdout and stderr must hold |
 | `--timeout SECONDS` | `step expect-fail`: seconds the tests may run (default 240) |
+| `--prefix P` | `step check-ids`: the letters an ID starts with, such as `R` or `AC`; repeat the flag or separate with commas |
+| `--defined FILE` | `step check-ids`: the file whose lines start with the IDs |
+| `--covered FILE` | `step check-ids`: the file that must name every ID. Not with `--plan-details` |
+| `--plan-details` | `step check-ids`: read the plan's `## Task details` section in place of `--covered`. The plan must exist and have tasks |
+| `--each-line-matches REGEX` | `step check-ids`, with `--covered`: an ID counts only on a line that names it and matches REGEX (1 second limit per line) |
+| `--allow-missing` | `step check-ids`: pass when the `--defined` file does not exist |
 | `--code WORD` | `step done`: a word for why, kept as the failed step's `details.code` (see [Failure codes](#failure-codes)). Lowercase letters, digits and `_`, starting with a letter, at most 40 characters; anything else is a `usage` error |
 | `--run RUN_ID` | `step done`, `step status`: the run to work on when this process has no pane binding (a subagent or background run, no `$TMUX_PANE`). With no `--run`, the checkout's one going run is used when unambiguous; several is an `ambiguous_run` error naming them |
 | `--json` | Print one JSON document |
@@ -836,7 +844,7 @@ A run started with this version stores `"produces_check": "strict"` in its defin
 
 #### `requirements.md`
 
-The feature presets keep a numbered list of what the task asks for, written once before planning. Each line of the list starts with its number and a space (`R1 `, `R2 `, ...); after the list come, for each part the task leaves open, the reading chosen, the readings rejected and why, or `No ambiguity.`. In `rpiv`, `rpiv-auto-approve-v2` and `rpiv-auto-approve`, `research` writes it as `requirements.md` in the artifacts and lists it in `produces`, each task in the plan's `## Task details` names the R-numbers it covers, and the plan step's `status:` check fails, printing the missing numbers to stderr (so they show in the log tail), when an R that starts a line of `requirements.md` appears nowhere in `## Task details`. A run with no `requirements.md` (a definition whose research does not write it) is checked as before. The check only looks for the number in that section, so an R written there outside any task still counts; the gate or the skeptical reviewer is the second check. `verify` checks each R against evidence. In the unattended presets the `plan` step records each chosen reading with [`workspace ask`](README.ask.md) and its default, and carries on, so a person finds them in the inbox. `bugfix` keeps its list under `## Expected behaviour` in `repro.md`, and `investigate`, `explore` and `explore-parallel` state the readings in their notes.
+The feature presets keep a numbered list of what the task asks for, written once before planning. Each line of the list starts with its number and a space (`R1 `, `R2 `, ...); after the list come, for each part the task leaves open, the reading chosen, the readings rejected and why, or `No ambiguity.`. In `rpiv`, `rpiv-auto-approve-v2` and `rpiv-auto-approve`, `research` writes it as `requirements.md` in the artifacts and lists it in `produces`, each task in the plan's `## Task details` names the R-numbers it covers, and the plan step's `status:` check, `workspace step check-ids --prefix R --defined requirements.md --allow-missing --plan-details`, fails, printing the missing numbers to stderr (so they show in the log tail), when an R that starts a line of `requirements.md` appears nowhere in `## Task details` (see [Coverage checks](#coverage-checks)). A run with no `requirements.md` (a definition whose research does not write it) passes that check. `R-3` and `R3` are the same number. The check only looks for the number in that section, so an R written there outside any task still counts; the gate or the skeptical reviewer is the second check. `verify` checks each R against evidence. In the unattended presets the `plan` step records each chosen reading with [`workspace ask`](README.ask.md) and its default, and carries on, so a person finds them in the inbox. `bugfix` keeps its list under `## Expected behaviour` in `repro.md`, and `investigate`, `explore` and `explore-parallel` state the readings in their notes.
 
 ### What an attempt records
 
@@ -1888,6 +1896,36 @@ A proof that cannot know its facts is unproven, and its program is not run. A te
 The proofs show facts about the repository, not that the work is good: `commits: 1` passes a useless commit. A definition stored before `require:` existed has no `require` in its snapshot and behaves as before. `workflow validate` lists every bad entry (an unknown proof, a repeated proof, a bad value) under `invalid_workflow`. A step with only `require:` has proof, so it does not warn.
 
 The presets use them. `rpiv` and `rpiv-auto-approve` are described above. Every preset step that posts to the inbox on each successful path requires its `inbox_item`: `explore` (`explore:RUN` for `survey`, `explore-report:RUN` for `report`), `pr-feedback` (`pr-feedback:RUN` for `triage`, a stop path included, and `pr-feedback-fix:RUN` for `fix`) and `investigate` (`investigate:RUN` for `diagnose`, `investigate-fix:RUN` for `fix`). Their prompts post with `--reopen`, because a rerun of the step (after a rejected gate or a resume) uses the same key, and an item the person already closed would otherwise be left alone and fail the proof. A step that stops through `step done --status fail` is not checked, and `investigate`'s `reproduce` posts only on its stop paths, so it has no proof. A run already started keeps the definition it was stored with: a change to a preset affects new runs only.
+
+### Coverage checks
+
+`workspace step check-ids --prefix P[,P...] --defined FILE (--covered FILE [--each-line-matches REGEX] | --plan-details [--name WORKSPACE]) [--allow-missing] [--json]` holds an agent to ID coverage. It is meant for a step's `status:` command, so it runs from no pane and takes no lock. It reads the IDs at the start of a line of `--defined`: a prefix, an optional `-`, then digits (`R1`, `AC-3`). `AC-3` and `AC3` are the same ID; `R1` is not `R10` or `R1a`. Each ID must be named, anywhere, by the `--covered` file, or by the `## Task details` section of the workspace's plan with `--plan-details` (the plan must exist and have tasks). With `--each-line-matches`, an ID counts as covered only on a line that names it and matches the regex; a report with one `PASS` row per ID uses it. A `--defined` file with no IDs passes.
+
+Relative paths resolve against `$WORKSPACE_RUN_ARTIFACTS` when it is set and not empty, else the directory the command runs in. Each file must be a regular file, not a link, of at most 1 MiB. The inline Ruby the rpiv presets used before read through links; this does not. With `--plan-details` and no `--name`, the workspace is found the way `plan status` finds it; outside any workspace that is a `not_in_workspace` error in the `--json` envelope.
+
+It prints one line, on stdout when every ID is covered and on stderr otherwise. Every line starts with `check-ids:`, except that uncovered IDs with `--plan-details` print `In no task of ## Task details: R2 R3`, as the presets always have. With `--json` it prints one document on stdout:
+
+| Field | Meaning |
+|-------|---------|
+| `schema_version` | The document's version |
+| `ok` | `true` when every ID is covered, or when `--allow-missing` let an absent `--defined` file pass |
+| `prefixes` | The prefixes asked for |
+| `defined` | The IDs the `--defined` file defines |
+| `covered` | The IDs found covered |
+| `missing` | The IDs not covered |
+| `reason` | `null` on a pass, except `defined_absent` when `--allow-missing` let an absent `--defined` file pass; otherwise `uncovered`, `no_plan`, `defined_absent` (missing, a link, not a regular file or over 1 MiB), `covered_absent` (the same for `--covered`) or `regex_timeout` |
+| `defined_path` | The `--defined` file as resolved |
+| `covered_path` | The `--covered` file as resolved, or the plan's path with `--plan-details` |
+
+Read `reason`, not the line. The plan is checked first, so with `--plan-details` a missing plan fails even when `--allow-missing` would pass an absent `--defined` file. It exits 0 when every ID is covered and 1 when one is not or the check is refused: no plan or none with tasks, a missing `--defined` file without `--allow-missing`, a missing or unreadable `--covered` file, or a line that matches `--each-line-matches` too slowly (`regex_timeout`). A usage error (a bad or missing flag, an invalid regex) also exits 1, with code `usage` in the `--json` error envelope.
+
+```yaml
+plan:
+  status:
+    run: workspace step check-ids --prefix R --defined requirements.md --allow-missing --plan-details
+```
+
+The `rpiv`, `rpiv-auto-approve` and `rpiv-auto-approve-v2` plan steps run that check. The program is the `workspace` on the agent daemon's PATH, outside the checkout, so the agent can't edit it. An older `workspace` without the verb answers with its unknown-verb usage error and the step fails (check for `step_check_ids` in `workspace capabilities --json`).
 
 ### Fail-first proofs
 

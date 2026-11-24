@@ -1942,7 +1942,7 @@ module Workspace
           ["--each-line-matches REGEX", "With --covered: an ID counts as covered only on a line that names it and matches REGEX (1 second limit per line)"],
           ["--allow-missing", "Pass when the --defined file does not exist"],
           ["--name WORKSPACE", "With --plan-details: the workspace whose plan to read (default: the current one; not_in_workspace outside any)"],
-          ["--json", "Print {schema_version, ok, prefixes, defined, covered, missing, reason, defined_path, covered_path}; reason is null, uncovered, no_plan, defined_absent, covered_absent or regex_timeout"]],
+          ["--json", "Print {schema_version, ok, prefixes, defined, covered, missing, reason, defined_path, covered_path}; reason is null on a pass (defined_absent when --allow-missing passed an absent file), else uncovered, no_plan, defined_absent, covered_absent or regex_timeout"]],
         examples: [
           ["workspace step check-ids --prefix R --defined requirements.md --plan-details --allow-missing", "the plan check: every R of requirements.md is in a task's details"],
           ["workspace step check-ids --prefix AC --defined spec.md --covered report.md --each-line-matches PASS", "every AC-n has a PASS line in the report"],
