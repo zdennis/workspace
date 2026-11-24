@@ -6,7 +6,7 @@ RSpec.describe "the shipped step library" do
   names = Dir[File.join(steps_dir, "*.yml")].map { |path| File.basename(path, ".yml") }.sort
 
   # The delivery chain, in order. A step that joins the library adds one name here.
-  chain = %w[goals design tests_first implement verify acceptance_check]
+  chain = %w[goals design tests_first implement verify acceptance_check docs_update]
 
   def parse(yaml)
     Dir.mktmpdir("step-library") do |dir|
@@ -49,7 +49,8 @@ RSpec.describe "the shipped step library" do
       end
 
       it "names no project tool, language or file" do
-        expect(text).not_to match(/\.claude\/skills|CHANGELOG|rspec|\bruby\b|\bbundle\b|\bnpm\b|pytest/i)
+        expect(text).not_to match(/\.claude\/skills|rspec|\bruby\b|\bbundle\b|\bnpm\b|pytest/i)
+        expect(text).not_to match(/(?-i:CHANGELOG)|changelog\.\w+/i)
       end
 
       it "uses prompt, never prompt_file" do
