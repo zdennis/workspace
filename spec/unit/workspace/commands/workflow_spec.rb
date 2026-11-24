@@ -186,6 +186,72 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#step_check_ids" do
+    let(:check_err) { StringIO.new }
+    let(:keywords) { {prefixes: ["R"], defined: "req.md", covered: "plan.md", base_dir: "/art"} }
+
+    def result(**fields)
+      Workspace::WorkflowCheckIds::Result.new(passed: true, defined: ["R1"], covered: ["R1"], missing: [], reason: nil, message: "check-ids: all 1 IDs covered", defined_path: "/art/req.md", covered_path: "/art/plan.md", **fields)
+    end
+
+    def wired(checker)
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
+        lock_holder: lock_holder, check_ids: checker, output: output, error_output: check_err)
+    end
+
+    it "raises when built without a check" do
+      command = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
+        lock_holder: lock_holder, output: output, error_output: check_err)
+
+      expect { command.step_check_ids(**keywords) }.to raise_error(Workspace::Error, /no check was wired/)
+    end
+
+    it "prints the passing line on stdout and exits 0" do
+      checker = double("check ids", call: result)
+
+      expect(wired(checker).step_check_ids(**keywords, allow_missing: true)).to eq(exit_code: 0)
+
+      expect(checker).to have_received(:call).with(prefixes: ["R"], defined: "req.md", covered: "plan.md", plan_details_for: nil, line_regex: nil, allow_missing: true, base_dir: "/art")
+      expect([output.string, check_err.string]).to eq(["check-ids: all 1 IDs covered\n", ""])
+    end
+
+    it "prints the failing line on stderr, escaped, and exits 1" do
+      checker = double("check ids", call: result(passed: false, missing: ["R2"], reason: "uncovered", message: "check-ids: not in \e[31mx: R2"))
+
+      expect(wired(checker).step_check_ids(**keywords)).to eq(exit_code: 1)
+
+      expect(output.string).to eq("")
+      expect(check_err.string).not_to include("\e")
+      expect(check_err.string).to start_with("check-ids: not in")
+    end
+
+    it "prints one document with --json, on stdout whatever the verdict" do
+      checker = double("check ids", call: result(passed: false, missing: ["R2"], reason: "uncovered", message: "check-ids: not in /art/plan.md: R2"))
+
+      expect(wired(checker).step_check_ids(**keywords, json: true)).to eq(exit_code: 1)
+
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "prefixes" => ["R"], "defined" => ["R1"], "covered" => ["R1"], "missing" => ["R2"],
+        "reason" => "uncovered", "defined_path" => "/art/req.md", "covered_path" => "/art/plan.md")
+      expect(check_err.string).to eq("")
+    end
+
+    it "turns a regex that runs out of time into one check-ids line and exit 1" do
+      checker = double("check ids", call: result(passed: false, reason: "regex_timeout", message: "check-ids: --each-line-matches /(a+)+$/ took too long on a line"))
+
+      expect(wired(checker).step_check_ids(**keywords, line_regex: /(a+)+$/)).to eq(exit_code: 1)
+
+      expect(check_err.string).to match(/\Acheck-ids: --each-line-matches .* took too long on a line\n\z/)
+    end
+
+    it "reports a regex that runs out of time as regex_timeout in --json" do
+      checker = double("check ids", call: result(passed: false, reason: "regex_timeout", message: "check-ids: --each-line-matches /(a+)+$/ took too long on a line"))
+
+      expect(wired(checker).step_check_ids(**keywords, line_regex: /(a+)+$/, json: true)).to eq(exit_code: 1)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "reason" => "regex_timeout", "defined_path" => "/art/req.md")
+    end
+  end
+
   describe "#list" do
     it "lists the definitions in a table of id, source, description and path, marking one that is not valid" do
       allow(catalog).to receive(:list).and_return([

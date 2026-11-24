@@ -50,6 +50,7 @@ module Workspace
       # @param insights [Workspace::WorkflowInsights, nil] reads a workflow's newest runs into hot steps, themes, failures, holds and effects (`insights`)
       # @param simulator [Workspace::WorkflowSimulator, nil] plays a workflow with a scripted fake agent (`simulate`)
       # @param expect_fail [Workspace::WorkflowExpectFail, nil] runs the fail-first check (`step expect-fail`)
+      # @param check_ids [Workspace::WorkflowCheckIds, nil] runs the ID-coverage check (`step check-ids`)
       # @param source_installer [Workspace::WorkflowSourceInstaller, nil] fetches, checks and caches the `workflows.sources` entries (`install`)
       # @param workflow_config [Workspace::WorkflowConfig, nil] reads `workflows.default_stall`, for the stall `show` reports
       # @param infra_retry [Workspace::WorkflowInfraRetry, nil] restarts a step whose infra retry is due (`advance`'s timer look); nil leaves it to `tick`
@@ -62,7 +63,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, trace: nil, downtime: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, insights: nil, step_check: nil, simulator: nil, expect_fail: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, trace: nil, downtime: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, insights: nil, step_check: nil, simulator: nil, expect_fail: nil, check_ids: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
         clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, watch_loop: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
@@ -87,6 +88,7 @@ module Workspace
         @step_check = step_check
         @simulator = simulator
         @expect_fail = expect_fail
+        @check_ids = check_ids
         @source_installer = source_installer
         @workflow_config = workflow_config
         @infra_retry = infra_retry
@@ -1186,6 +1188,30 @@ module Workspace
           @output.flush
         end
         (result.passed ? @output : @error_output).puts TerminalText.escape(result.message)
+        {exit_code: result.passed ? 0 : 1}
+      end
+
+      # The ID-coverage check (`step check-ids`): one `check-ids:` line (stdout when every ID is covered,
+      # stderr otherwise), or with +json+ one document on stdout.
+      #
+      # @param prefixes [Array<String>] letters only, such as `R`
+      # @param defined [String] the file whose lines start with the IDs
+      # @param covered [String, nil] the file that must name them
+      # @param plan_details_for [String, nil] the workspace whose plan's Task details must name them, instead of +covered+
+      # @param line_regex [Regexp, nil] an ID counts only on a line of +covered+ that matches
+      # @param allow_missing [Boolean] a missing +defined+ file passes
+      # @param base_dir [String] what relative paths resolve against
+      # @param json [Boolean]
+      # @return [Hash{Symbol=>Integer}] `exit_code`: 0 when every ID is covered, else 1
+      def step_check_ids(prefixes:, defined:, base_dir:, covered: nil, plan_details_for: nil, line_regex: nil, allow_missing: false, json: false)
+        raise Workspace::Error, "step check-ids is not available: no check was wired" unless @check_ids
+        result = @check_ids.call(prefixes: prefixes, defined: defined, covered: covered, plan_details_for: plan_details_for, line_regex: line_regex, allow_missing: allow_missing, base_dir: base_dir)
+        if json
+          document("ok" => result.passed, "prefixes" => prefixes, "defined" => result.defined, "covered" => result.covered, "missing" => result.missing,
+            "reason" => result.reason, "defined_path" => result.defined_path, "covered_path" => result.covered_path)
+        else
+          (result.passed ? @output : @error_output).puts TerminalText.escape(result.message)
+        end
         {exit_code: result.passed ? 0 : 1}
       end
 

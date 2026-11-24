@@ -10,15 +10,16 @@ RSpec.describe "the plan step's requirements check in the shipped presets" do
   let(:catalog) { Workspace::WorkflowCatalog.new(config: config) }
   let(:artifacts) { File.join(dir, "artifacts").tap { |path| FileUtils.mkdir_p(path) } }
   let(:bin) { File.join(dir, "bin").tap { |path| FileUtils.mkdir_p(path) } }
-  let(:plan_path) { File.join(dir, "IMPLEMENTATION_PLAN.md") }
+  let(:home) { File.join(dir, "home").tap { |path| FileUtils.mkdir_p(path) } }
+  let(:checkout) { File.join(home, "app").tap { |path| FileUtils.mkdir_p(path) } }
+  let(:notes) { File.join(checkout, "tmp", "workspace-notes").tap { |path| FileUtils.mkdir_p(path) } }
+  let(:plan_path) { File.join(notes, "IMPLEMENTATION_PLAN.md") }
 
   before do
     allow(config).to receive(:workflows_dir).and_return(File.join(dir, "none"))
-    status = {"schema_version" => 1, "plans" => [{"path" => plan_path, "exists" => true, "counts" => {"total" => 2}}]}
-    File.write(File.join(dir, "status.json"), JSON.generate(status))
-    stand_in = File.join(bin, "workspace")
-    File.write(stand_in, "#!/bin/sh\ncat '#{File.join(dir, "status.json")}'\n")
-    File.chmod(0o755, stand_in)
+    FileUtils.mkdir_p(File.join(home, ".config", "tmuxinator"))
+    File.write(File.join(home, ".config", "tmuxinator", "workspace.app.yml"), "name: app\nroot: #{checkout}\nwindows: []\n")
+    File.write(File.join(checkout, ".workspace-project"), "app\n")
     File.symlink(RbConfig.ruby, File.join(bin, "ruby"))
   end
 
@@ -39,7 +40,7 @@ RSpec.describe "the plan step's requirements check in the shipped presets" do
   end
 
   def write_plan(details)
-    File.write(plan_path, <<~MD)
+    write_plan_file(<<~MD)
       # Title
 
       ## Tasks
@@ -57,9 +58,32 @@ RSpec.describe "the plan step's requirements check in the shipped presets" do
     MD
   end
 
+  def write_plan_file(text)
+    File.write(plan_path, text)
+    stub_status(exists: true, total: text.scan(/^- \[.\] T\d+/).size)
+  end
+
+  def stub_status(exists:, total:)
+    status = {"schema_version" => 1, "plans" => [{"path" => plan_path, "exists" => exists, "counts" => {"total" => total}}]}
+    File.write(File.join(dir, "status.json"), JSON.generate(status))
+  end
+
+  def install_workspace(id)
+    stand_in = File.join(bin, "workspace")
+    script = if id == "deliver-goal"
+      "#!/bin/sh\ncat '#{File.join(dir, "status.json")}'\n"
+    else
+      "#!/bin/sh\nexec '#{RbConfig.ruby}' '#{File.join(PROJECT_ROOT, "bin", "workspace")}' \"$@\"\n"
+    end
+    File.write(stand_in, script)
+    File.chmod(0o755, stand_in)
+  end
+
   def run_check(id)
-    env = {"PATH" => "#{bin}:#{ENV.fetch("PATH")}", "WORKSPACE_RUN_ARTIFACTS" => artifacts}
-    Open3.capture3(env, "sh", "-c", plan_check(id), chdir: dir)
+    install_workspace(id)
+    env = {"PATH" => "#{bin}:#{ENV.fetch("PATH")}", "HOME" => home, "TMPDIR" => home, "WORKSPACE_RUN_ARTIFACTS" => artifacts,
+           "TMUX" => nil, "TMUX_PANE" => nil, "XDG_CONFIG_HOME" => nil, "XDG_STATE_HOME" => nil}
+    Open3.capture3(env, "sh", "-c", plan_check(id), chdir: checkout)
   end
 
   %w[rpiv rpiv-auto-approve-v2 rpiv-auto-approve deliver-goal].each do |id|
@@ -84,7 +108,7 @@ RSpec.describe "the plan step's requirements check in the shipped presets" do
       end
 
       it "lists every R when the plan has no Task details section" do
-        File.write(plan_path, "# Title\n\n## Tasks\n\n- [ ] T1 First R1 R2 R3\n")
+        write_plan_file("# Title\n\n## Tasks\n\n- [ ] T1 First R1 R2 R3\n")
 
         _out, err, status = run_check(id)
 
@@ -94,7 +118,7 @@ RSpec.describe "the plan step's requirements check in the shipped presets" do
       it "reads a plan and a requirements.md with CRLF line endings" do
         File.write(File.join(artifacts, "requirements.md"), "R1 Export a PDF\r\nR2 Name it by date\r\nR3 Keep the old CSV\r\n")
         write_plan("### T1 First\n\nCovers R1, R3.\n\n### T2 Second\n\nCovers R2.")
-        File.write(plan_path, File.read(plan_path).gsub("\n", "\r\n"))
+        write_plan_file(File.read(plan_path).gsub("\n", "\r\n"))
 
         _out, err, status = run_check(id)
 
@@ -104,7 +128,7 @@ RSpec.describe "the plan step's requirements check in the shipped presets" do
       it "fails a CRLF plan that leaves an R uncovered" do
         File.write(File.join(artifacts, "requirements.md"), "R1 Export a PDF\r\nR2 Name it by date\r\n")
         write_plan("### T1 First\n\nCovers R1.")
-        File.write(plan_path, File.read(plan_path).gsub("\n", "\r\n"))
+        write_plan_file(File.read(plan_path).gsub("\n", "\r\n"))
 
         _out, err, status = run_check(id)
 
@@ -138,10 +162,21 @@ RSpec.describe "the plan step's requirements check in the shipped presets" do
   end
 
   it "still fails a plan with no tasks before it reads requirements.md" do
-    File.write(File.join(dir, "status.json"), JSON.generate({"plans" => [{"path" => plan_path, "exists" => true, "counts" => {"total" => 0}}]}))
+    write_plan_file("# Title\n\n## Tasks\n\n## Task details\n\nR1\n")
 
     _out, _err, status = run_check("rpiv")
 
     expect(status.exitstatus).to eq(1)
+  end
+
+  %w[rpiv rpiv-auto-approve-v2 rpiv-auto-approve].each do |id|
+    it "fails #{id} when the workspace has no plan" do
+      File.write(File.join(artifacts, "requirements.md"), "R1 Export a PDF\n")
+      FileUtils.rm_f(plan_path)
+
+      _out, err, status = run_check(id)
+
+      expect([status.exitstatus, err]).to eq([1, "check-ids: no plan with tasks at #{plan_path}\n"])
+    end
   end
 end

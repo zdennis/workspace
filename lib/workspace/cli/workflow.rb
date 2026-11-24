@@ -12,7 +12,7 @@ module Workspace
       SUBCOMMANDS = %w[list show graph validate add update remove edit install uninstall run start render check simulate status events files attempts trace audit stats compare insights learn sweep recover resume cancel pause unpause approve reject advance].freeze
 
       # The verbs of `step`, in the order `step --help` lists them.
-      STEP_SUBCOMMANDS = %w[done status expect-fail].freeze
+      STEP_SUBCOMMANDS = %w[done status expect-fail check-ids].freeze
 
       # The verbs a left-out RUN id defaults to a resolved run (see {Commands::Workflow#default_run}):
       # the value says whether a reviewer binding is refused (true for the mutating verbs, so a review
@@ -645,7 +645,8 @@ module Workspace
           opts.separator "is bound to. Neither is required: a step is decided when the agent's turn ends, from the"
           opts.separator "files it was told to leave and the step's check (see `workspace workflow --help`)."
           opts.separator "expect-fail is run by a step's `require: exec:` proof, from no pane: it checks that the"
-          opts.separator "given tests fail before the fix."
+          opts.separator "given tests fail before the fix. check-ids checks that every numbered ID one file"
+          opts.separator "defines (R1, AC-3) is named by another file or by the plan's Task details."
           opts.separator ""
           HelpPages.overview_verbs(HelpPages::STEP).each { |line| opts.separator line }
           opts.separator "Run `workspace step VERB --help` for a verb's options."
@@ -657,7 +658,14 @@ module Workspace
           opts.on("--run RUN_ID", "done, status: the run to work on when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous") { |v| options[:run_id] = v }
           opts.on("--match-file PATH", "expect-fail: a file whose text (trimmed) the failing tests' output must hold") { |v| options[:match_file] = v }
           opts.on("--timeout SECONDS", "expect-fail: seconds the tests may run (default #{WorkflowExpectFail::DEFAULT_TIMEOUT})") { |v| options[:timeout] = v }
-          opts.on("--json", "done, status: print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
+          opts.on("--prefix P", "check-ids: letters an ID starts with, such as R or AC (repeatable, or comma-separated)") { |v| (options[:prefix] ||= []).concat(v.split(",")) }
+          opts.on("--defined FILE", "check-ids: the file whose lines start with the IDs") { |v| options[:defined] = v }
+          opts.on("--covered FILE", "check-ids: the file that must name every ID") { |v| options[:covered] = v }
+          opts.on("--plan-details", "check-ids: the workspace plan's ## Task details must name every ID, instead of --covered") { options[:plan_details] = true }
+          opts.on("--each-line-matches REGEX", "check-ids: an ID counts as covered only on a line of --covered that matches") { |v| options[:each_line_matches] = v }
+          opts.on("--allow-missing", "check-ids: pass when the --defined file does not exist") { options[:allow_missing] = true }
+          opts.on("--name WORKSPACE", "check-ids: the workspace whose plan --plan-details reads (default: the current one)") { |v| options[:name] = v }
+          opts.on("--json", "done, status, check-ids: print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
           opts.on("-h", "--help", "Show this help") { options[:help] = true }
           opts.separator ""
           opts.separator "Examples:"
@@ -666,6 +674,7 @@ module Workspace
           opts.separator "  workspace step done --status fail --summary \"Two specs still fail in billing.\"    # fail the step at the turn's end"
           opts.separator "  workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\"    # fail it with a word for why"
           opts.separator "  workspace step expect-fail --match-file .workflow/RUN/failure.txt -- spec/models/invoice_spec.rb    # exits 0 only when the test fails with that text"
+          opts.separator "  workspace step check-ids --prefix R --defined requirements.md --covered plan.md    # exits 0 only when plan.md names every R"
         end
       end
 
@@ -682,13 +691,16 @@ module Workspace
         return invocation.output.puts(parser.help) if options[:help]
 
         unless subcommand
-          raise UsageError, args.empty? ? "Missing subcommand: done, status or expect-fail.\n\n#{parser.help}" : "Unknown step subcommand: #{args.first}. Run 'workspace step --help'."
+          raise UsageError, args.empty? ? "Missing subcommand: done, status, expect-fail or check-ids.\n\n#{parser.help}" : "Unknown step subcommand: #{args.first}. Run 'workspace step --help'."
         end
         step_flags!(subcommand, options)
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace step --help'." if args.any? && subcommand != "expect-fail"
         raise Error, "step is not available: no workflow command was wired" unless @workflow_command
 
-        if subcommand == "expect-fail"
+        if subcommand == "check-ids"
+          result = step_check_ids(options, invocation)
+          invocation.exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+        elsif subcommand == "expect-fail"
           result = @workflow_command.step_expect_fail(cwd: @working_dir, files: args, match_file: options[:match_file], timeout: step_timeout(options[:timeout]))
           invocation.exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
         elsif subcommand == "status"
@@ -703,15 +715,52 @@ module Workspace
 
       # Refuses a step flag the verb has no use for.
       def step_flags!(subcommand, options)
-        if subcommand == "expect-fail"
-          used = {"--status" => options[:status_given], "--summary" => options.key?(:summary), "--code" => options.key?(:code), "--run" => options.key?(:run_id), "--step" => options.key?(:step), "--json" => options[:json]}
-          flag = used.find { |_, set| set }&.first
+        done_flags = {"--status" => options[:status_given], "--summary" => options.key?(:summary), "--code" => options.key?(:code), "--run" => options.key?(:run_id), "--step" => options.key?(:step)}
+        check_flags = {"--prefix" => :prefix, "--defined" => :defined, "--covered" => :covered, "--plan-details" => :plan_details, "--each-line-matches" => :each_line_matches, "--allow-missing" => :allow_missing, "--name" => :name}
+        if subcommand == "check-ids"
+          flag = done_flags.merge("--match-file" => options.key?(:match_file), "--timeout" => options.key?(:timeout)).find { |_, set| set }&.first
+          raise UsageError, "#{flag} is not for `step check-ids`." if flag
+        elsif subcommand == "expect-fail"
+          flag = done_flags.merge("--json" => options[:json]).find { |_, set| set }&.first
           raise UsageError, "#{flag} is not for `step expect-fail`." if flag
+          flag = check_flags.find { |_, key| options.key?(key) }&.first
+          raise UsageError, "#{flag} is only for `step check-ids`." if flag
         else
           raise UsageError, "--step is only for `step done`." if options.key?(:step) && subcommand != "done"
           flag = {"--match-file" => :match_file, "--timeout" => :timeout}.find { |_, key| options.key?(key) }&.first
           raise UsageError, "#{flag} is only for `step expect-fail`." if flag
+          flag = check_flags.find { |_, key| options.key?(key) }&.first
+          raise UsageError, "#{flag} is only for `step check-ids`." if flag
         end
+      end
+
+      # `step check-ids`: checks the flags, then hands the parsed values to the command.
+      def step_check_ids(options, invocation)
+        prefixes = options[:prefix].to_a.map(&:strip)
+        raise UsageError, "step check-ids needs --prefix, such as --prefix R." if prefixes.empty?
+        bad = prefixes.find { |prefix| !prefix.match?(/\A[A-Za-z]+\z/) }
+        raise UsageError, "--prefix takes letters only, got #{bad[0, 40].inspect}." if bad
+        raise UsageError, "step check-ids needs --defined FILE." if options[:defined].to_s.empty?
+        raise UsageError, "step check-ids needs one of --covered FILE and --plan-details." if options[:covered].nil? && !options[:plan_details]
+        raise UsageError, "--covered and --plan-details can not be used together; use one or the other." if options[:covered] && options[:plan_details]
+        raise UsageError, "--covered needs a file name." if options[:covered] == ""
+        raise UsageError, "--each-line-matches goes with --covered, not --plan-details." if options[:each_line_matches] && options[:plan_details]
+        line_regex = step_line_regex(options[:each_line_matches])
+        workspace = nil
+        # The workspace is found the way `plan status` finds it, so the presets' plan check reads the plan it always did.
+        workspace = @status_scope.resolve(name: options[:name], project: nil, all: nil, working_dir: @working_dir).workspace if options[:plan_details]
+        artifacts = invocation.env["WORKSPACE_RUN_ARTIFACTS"]
+        base_dir = artifacts.to_s.empty? ? @working_dir : artifacts
+        @workflow_command.step_check_ids(prefixes: prefixes, defined: options[:defined], covered: options[:covered], plan_details_for: workspace, line_regex: line_regex,
+          allow_missing: options[:allow_missing] || false, base_dir: base_dir, json: options[:json])
+      end
+
+      def step_line_regex(source)
+        return nil if source.nil?
+        raise UsageError, "--each-line-matches needs a pattern." if source.empty?
+        Regexp.new(source, timeout: 1.0)
+      rescue RegexpError => e
+        raise UsageError, "--each-line-matches is not a valid regular expression: #{e.message[0, 200]}"
       end
 
       def step_timeout(text)

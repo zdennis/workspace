@@ -544,6 +544,7 @@ RSpec.describe Workspace::ShellInit do
       it "offers the step verbs" do
         expect(bash_tab(["workspace", "step", ""])).to eq(Workspace::CLI::Workflow::STEP_SUBCOMMANDS)
         expect(bash_tab(%w[workspace step ex])).to eq(%w[expect-fail])
+        expect(bash_tab(%w[workspace step check])).to eq(%w[check-ids])
         expect(bash_tab(["workspace", "step", "expect-fail", ""])).to eq([])
       end
 

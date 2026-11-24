@@ -67,8 +67,7 @@ steps:
     # Done only when the workspace plan exists, has at least one task, and names in its Task
     # details every R-number requirements.md starts a line with (when that file exists).
     status:
-      run: |
-        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit 1 unless plan && plan["exists"] && plan["counts"]["total"].to_i > 0; req = File.join(ENV.fetch("WORKSPACE_RUN_ARTIFACTS"), "requirements.md"); exit 0 unless File.file?(req); details = File.read(plan["path"])[/^## Task details\r?$(.*?)(?=^## |\z)/m, 1].to_s; missing = File.read(req).scan(/^R\d+\b/).uniq - details.scan(/\bR\d+\b/); abort "In no task of ## Task details: #{missing.join(" ")}" if missing.any?'
+      run: workspace step check-ids --prefix R --defined requirements.md --allow-missing --plan-details
     timeout: 45m
 
   reviewers:

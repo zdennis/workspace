@@ -4,16 +4,19 @@
 Usage: workspace step done [--status pass|fail|done|running|needs_input|stuck] [--step STEP] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]
        workspace step status [--run RUN_ID] [--json]
        workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
+       workspace step check-ids --prefix P[,P...] --defined FILE (--covered FILE [--each-line-matches REGEX] | --plan-details [--name WORKSPACE]) [--allow-missing] [--json]
 
 done and status are for the agent working on a workflow step, run from the pane the run
 is bound to. Neither is required: a step is decided when the agent's turn ends, from the
 files it was told to leave and the step's check (see `workspace workflow --help`).
 expect-fail is run by a step's `require: exec:` proof, from no pane: it checks that the
-given tests fail before the fix.
+given tests fail before the fix. check-ids checks that every numbered ID one file
+defines (R1, AC-3) is named by another file or by the plan's Task details.
 
   done         Record what you say about a workflow step, then end your turn
   status       Show which workflow run, step and attempt this pane is on
   expect-fail  Check that the given tests fail (a fail-first proof)
+  check-ids    Check that every numbered ID one file defines is covered (a coverage check)
 Run `workspace step VERB --help` for a verb's options.
 
         --status STATUS              done: pass (default), fail, or a stated status: done, running, needs_input, stuck
@@ -23,7 +26,14 @@ Run `workspace step VERB --help` for a verb's options.
         --run RUN_ID                 done, status: the run to work on when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous
         --match-file PATH            expect-fail: a file whose text (trimmed) the failing tests' output must hold
         --timeout SECONDS            expect-fail: seconds the tests may run (default 240)
-        --json                       done, status: print one JSON document (see docs/README.workflow.md)
+        --prefix P                   check-ids: letters an ID starts with, such as R or AC (repeatable, or comma-separated)
+        --defined FILE               check-ids: the file whose lines start with the IDs
+        --covered FILE               check-ids: the file that must name every ID
+        --plan-details               check-ids: the workspace plan's ## Task details must name every ID, instead of --covered
+        --each-line-matches REGEX    check-ids: an ID counts as covered only on a line of --covered that matches
+        --allow-missing              check-ids: pass when the --defined file does not exist
+        --name WORKSPACE             check-ids: the workspace whose plan --plan-details reads (default: the current one)
+        --json                       done, status, check-ids: print one JSON document (see docs/README.workflow.md)
     -h, --help                       Show this help
 
 Examples:
@@ -32,12 +42,13 @@ Examples:
   workspace step done --status fail --summary "Two specs still fail in billing."    # fail the step at the turn's end
   workspace step done --status fail --code not_reproduced --summary "The failure did not happen locally."    # fail it with a word for why
   workspace step expect-fail --match-file .workflow/RUN/failure.txt -- spec/models/invoice_spec.rb    # exits 0 only when the test fails with that text
+  workspace step check-ids --prefix R --defined requirements.md --covered plan.md    # exits 0 only when plan.md names every R
 --- stderr
 --- end
 ### workspace step --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace step done [--status pass|fail|done|running|needs_input|stuck] [--step STEP] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]","workspace step status [--run RUN_ID] [--json]","workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE..."],"description":"done and status are for the agent working on a workflow step, run from the pane the run\nis bound to. Neither is required: a step is decided when the agent's turn ends, from the\nfiles it was told to leave and the step's check (see `workspace workflow --help`).\nexpect-fail is run by a step's `require: exec:` proof, from no pane: it checks that the\ngiven tests fail before the fix.\n\n  done         Record what you say about a workflow step, then end your turn\n  status       Show which workflow run, step and attempt this pane is on\n  expect-fail  Check that the given tests fail (a fail-first proof)\nRun `workspace step VERB --help` for a verb's options.\n\n        --status STATUS              done: pass (default), fail, or a stated status: done, running, needs_input, stuck\n        --step STEP                  done: the fan_out sibling to report on, when this pane is bound to its group\n        --summary TEXT               done: one line about what was done, or what is left\n        --code WORD                  done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)\n        --run RUN_ID                 done, status: the run to work on when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous\n        --match-file PATH            expect-fail: a file whose text (trimmed) the failing tests' output must hold\n        --timeout SECONDS            expect-fail: seconds the tests may run (default 240)\n        --json                       done, status: print one JSON document (see docs/README.workflow.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace step status","scenario":"which run, step and attempt this pane is on"},{"command":"workspace step done --summary \"Plan written; three commits.\"","scenario":"record a pass, then end your turn"},{"command":"workspace step done --status fail --summary \"Two specs still fail in billing.\"","scenario":"fail the step at the turn's end"},{"command":"workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\"","scenario":"fail it with a word for why"},{"command":"workspace step expect-fail --match-file .workflow/RUN/failure.txt -- spec/models/invoice_spec.rb","scenario":"exits 0 only when the test fails with that text"}]}
+{"usage":["workspace step done [--status pass|fail|done|running|needs_input|stuck] [--step STEP] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]","workspace step status [--run RUN_ID] [--json]","workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...","workspace step check-ids --prefix P[,P...] --defined FILE (--covered FILE [--each-line-matches REGEX] | --plan-details [--name WORKSPACE]) [--allow-missing] [--json]"],"description":"done and status are for the agent working on a workflow step, run from the pane the run\nis bound to. Neither is required: a step is decided when the agent's turn ends, from the\nfiles it was told to leave and the step's check (see `workspace workflow --help`).\nexpect-fail is run by a step's `require: exec:` proof, from no pane: it checks that the\ngiven tests fail before the fix. check-ids checks that every numbered ID one file\ndefines (R1, AC-3) is named by another file or by the plan's Task details.\n\n  done         Record what you say about a workflow step, then end your turn\n  status       Show which workflow run, step and attempt this pane is on\n  expect-fail  Check that the given tests fail (a fail-first proof)\n  check-ids    Check that every numbered ID one file defines is covered (a coverage check)\nRun `workspace step VERB --help` for a verb's options.\n\n        --status STATUS              done: pass (default), fail, or a stated status: done, running, needs_input, stuck\n        --step STEP                  done: the fan_out sibling to report on, when this pane is bound to its group\n        --summary TEXT               done: one line about what was done, or what is left\n        --code WORD                  done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)\n        --run RUN_ID                 done, status: the run to work on when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous\n        --match-file PATH            expect-fail: a file whose text (trimmed) the failing tests' output must hold\n        --timeout SECONDS            expect-fail: seconds the tests may run (default 240)\n        --prefix P                   check-ids: letters an ID starts with, such as R or AC (repeatable, or comma-separated)\n        --defined FILE               check-ids: the file whose lines start with the IDs\n        --covered FILE               check-ids: the file that must name every ID\n        --plan-details               check-ids: the workspace plan's ## Task details must name every ID, instead of --covered\n        --each-line-matches REGEX    check-ids: an ID counts as covered only on a line of --covered that matches\n        --allow-missing              check-ids: pass when the --defined file does not exist\n        --name WORKSPACE             check-ids: the workspace whose plan --plan-details reads (default: the current one)\n        --json                       done, status, check-ids: print one JSON document (see docs/README.workflow.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace step status","scenario":"which run, step and attempt this pane is on"},{"command":"workspace step done --summary \"Plan written; three commits.\"","scenario":"record a pass, then end your turn"},{"command":"workspace step done --status fail --summary \"Two specs still fail in billing.\"","scenario":"fail the step at the turn's end"},{"command":"workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\"","scenario":"fail it with a word for why"},{"command":"workspace step expect-fail --match-file .workflow/RUN/failure.txt -- spec/models/invoice_spec.rb","scenario":"exits 0 only when the test fails with that text"},{"command":"workspace step check-ids --prefix R --defined requirements.md --covered plan.md","scenario":"exits 0 only when plan.md names every R"}]}
 --- stderr
 --- end
 ### workspace step done --help
@@ -136,6 +147,47 @@ Examples:
 {"usage":["workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE..."],"description":"Check that the given tests fail (a fail-first proof).\n\nRun by a step's `require: exec:` proof, from no pane: it finds the workspace from the directory it runs\nin (the checkout) and never reads TMUX_PANE or a pane binding. Runs the workspace's commands.test with the\nFILEs appended (shell-escaped) through `sh -c` in its own process group, prints the tests' output, then one\nline starting `expect-fail:` (only the last 1 MB of output is printed, with a line saying when it was cut).\nExits 0 only when the tests fail and, with --match-file, their stdout and stderr together hold the file's\ntext (trimmed) as one exact substring. Exits 1 when no FILE is given, commands.test is unset, the match file\nis missing, a link, empty or over 4096 bytes, the tests pass, the text is missing, or the tests run past\n--timeout.\ncommands.test must take test files as arguments. It does not prove the tests fail for the right reason.","options":[{"flags":"--match-file PATH","description":"A file (at most 4096 bytes, not a link) whose text, trimmed, the failing tests' output must hold as one exact substring; relative to the working directory"},{"flags":"--timeout SECONDS","description":"Seconds the tests may run before they are stopped (default 240)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace step expect-fail -- spec/models/invoice_spec.rb","scenario":"exits 0 only when the test fails"},{"command":"workspace step expect-fail --match-file .workflow/RUN/failure.txt -- spec/models/invoice_spec.rb","scenario":"exits 0 only when it fails with the text of failure.txt"},{"command":"workspace step expect-fail --match-file {{artifacts}}/failure.txt --timeout 840 -- {{changed.tests}}","scenario":"the exec: line of a fail-first proof (with timeout: 15m on the entry)"}]}
 --- stderr
 --- end
+### workspace step check-ids --help
+--- exit 0
+--- stdout
+Usage: workspace step check-ids --prefix P[,P...] --defined FILE (--covered FILE [--each-line-matches REGEX] | --plan-details [--name WORKSPACE]) [--allow-missing] [--json]
+
+Check that every numbered ID one file defines is covered (a coverage check).
+
+Reads the IDs at the start of a line of --defined: a prefix, an optional `-`, then digits (R1, AC-3). AC-3 and
+AC3 are the same ID; R1 is not R10 or R1a. Each must be named, anywhere, by the --covered file, or
+by the `## Task details` section of the workspace's plan with --plan-details (the plan must exist and have
+tasks). Relative files resolve against $WORKSPACE_RUN_ARTIFACTS when it is set and not empty, else the
+working directory. Files must be regular files (not links) of at most 1 MiB. No IDs defined passes.
+Prints one line (stdout when covered, stderr otherwise), or with --json one document on stdout; read --json's
+reason, not the line. The line starts `check-ids:`, except that uncovered IDs with --plan-details print
+`In no task of ## Task details: R2 R3`, as the rpiv presets always have. Exits 0 when every ID is covered, 1 when one is not or the check can't run (missing plan, missing
+--defined without --allow-missing, missing or unreadable --covered, a line that matches too slowly). A usage
+error (a bad or missing flag, an invalid regex) exits 1 with code usage, as for any command.
+
+Options:
+    --prefix P                   Letters an ID starts with, such as R or AC; repeat the flag or separate with commas
+    --defined FILE               The file whose lines start with the IDs
+    --covered FILE               The file that must name every ID (with --each-line-matches, on a matching line)
+    --plan-details               Use the plan's `## Task details` section instead of --covered
+    --each-line-matches REGEX    With --covered: an ID counts as covered only on a line that names it and matches REGEX (1 second limit per line)
+    --allow-missing              Pass when the --defined file does not exist
+    --name WORKSPACE             With --plan-details: the workspace whose plan to read (default: the current one; not_in_workspace outside any)
+    --json                       Print {schema_version, ok, prefixes, defined, covered, missing, reason, defined_path, covered_path}; reason is null on a pass (defined_absent when --allow-missing passed an absent file), else uncovered, no_plan, defined_absent, covered_absent or regex_timeout
+    -h, --help                   Show this help
+
+Examples:
+  workspace step check-ids --prefix R --defined requirements.md --plan-details --allow-missing    # the plan check: every R of requirements.md is in a task's details
+  workspace step check-ids --prefix AC --defined spec.md --covered report.md --each-line-matches PASS    # every AC-n has a PASS line in the report
+  workspace step check-ids --prefix R,AC --defined spec.md --covered plan.md --json    # the same as one JSON document
+--- stderr
+--- end
+### workspace step check-ids --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace step check-ids --prefix P[,P...] --defined FILE (--covered FILE [--each-line-matches REGEX] | --plan-details [--name WORKSPACE]) [--allow-missing] [--json]"],"description":"Check that every numbered ID one file defines is covered (a coverage check).\n\nReads the IDs at the start of a line of --defined: a prefix, an optional `-`, then digits (R1, AC-3). AC-3 and\nAC3 are the same ID; R1 is not R10 or R1a. Each must be named, anywhere, by the --covered file, or\nby the `## Task details` section of the workspace's plan with --plan-details (the plan must exist and have\ntasks). Relative files resolve against $WORKSPACE_RUN_ARTIFACTS when it is set and not empty, else the\nworking directory. Files must be regular files (not links) of at most 1 MiB. No IDs defined passes.\nPrints one line (stdout when covered, stderr otherwise), or with --json one document on stdout; read --json's\nreason, not the line. The line starts `check-ids:`, except that uncovered IDs with --plan-details print\n`In no task of ## Task details: R2 R3`, as the rpiv presets always have. Exits 0 when every ID is covered, 1 when one is not or the check can't run (missing plan, missing\n--defined without --allow-missing, missing or unreadable --covered, a line that matches too slowly). A usage\nerror (a bad or missing flag, an invalid regex) exits 1 with code usage, as for any command.","options":[{"flags":"--prefix P","description":"Letters an ID starts with, such as R or AC; repeat the flag or separate with commas"},{"flags":"--defined FILE","description":"The file whose lines start with the IDs"},{"flags":"--covered FILE","description":"The file that must name every ID (with --each-line-matches, on a matching line)"},{"flags":"--plan-details","description":"Use the plan's `## Task details` section instead of --covered"},{"flags":"--each-line-matches REGEX","description":"With --covered: an ID counts as covered only on a line that names it and matches REGEX (1 second limit per line)"},{"flags":"--allow-missing","description":"Pass when the --defined file does not exist"},{"flags":"--name WORKSPACE","description":"With --plan-details: the workspace whose plan to read (default: the current one; not_in_workspace outside any)"},{"flags":"--json","description":"Print {schema_version, ok, prefixes, defined, covered, missing, reason, defined_path, covered_path}; reason is null on a pass (defined_absent when --allow-missing passed an absent file), else uncovered, no_plan, defined_absent, covered_absent or regex_timeout"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace step check-ids --prefix R --defined requirements.md --plan-details --allow-missing","scenario":"the plan check: every R of requirements.md is in a task's details"},{"command":"workspace step check-ids --prefix AC --defined spec.md --covered report.md --each-line-matches PASS","scenario":"every AC-n has a PASS line in the report"},{"command":"workspace step check-ids --prefix R,AC --defined spec.md --covered plan.md --json","scenario":"the same as one JSON document"}]}
+--- stderr
+--- end
 ### workspace step --bogus
 --- exit 1
 --- stdout
@@ -152,21 +204,24 @@ invalid option: --bogus
 --- exit 1
 --- stdout
 --- stderr
-Missing subcommand: done, status or expect-fail.
+Missing subcommand: done, status, expect-fail or check-ids.
 
 Usage: workspace step done [--status pass|fail|done|running|needs_input|stuck] [--step STEP] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]
        workspace step status [--run RUN_ID] [--json]
        workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
+       workspace step check-ids --prefix P[,P...] --defined FILE (--covered FILE [--each-line-matches REGEX] | --plan-details [--name WORKSPACE]) [--allow-missing] [--json]
 
 done and status are for the agent working on a workflow step, run from the pane the run
 is bound to. Neither is required: a step is decided when the agent's turn ends, from the
 files it was told to leave and the step's check (see `workspace workflow --help`).
 expect-fail is run by a step's `require: exec:` proof, from no pane: it checks that the
-given tests fail before the fix.
+given tests fail before the fix. check-ids checks that every numbered ID one file
+defines (R1, AC-3) is named by another file or by the plan's Task details.
 
   done         Record what you say about a workflow step, then end your turn
   status       Show which workflow run, step and attempt this pane is on
   expect-fail  Check that the given tests fail (a fail-first proof)
+  check-ids    Check that every numbered ID one file defines is covered (a coverage check)
 Run `workspace step VERB --help` for a verb's options.
 
         --status STATUS              done: pass (default), fail, or a stated status: done, running, needs_input, stuck
@@ -176,7 +231,14 @@ Run `workspace step VERB --help` for a verb's options.
         --run RUN_ID                 done, status: the run to work on when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous
         --match-file PATH            expect-fail: a file whose text (trimmed) the failing tests' output must hold
         --timeout SECONDS            expect-fail: seconds the tests may run (default 240)
-        --json                       done, status: print one JSON document (see docs/README.workflow.md)
+        --prefix P                   check-ids: letters an ID starts with, such as R or AC (repeatable, or comma-separated)
+        --defined FILE               check-ids: the file whose lines start with the IDs
+        --covered FILE               check-ids: the file that must name every ID
+        --plan-details               check-ids: the workspace plan's ## Task details must name every ID, instead of --covered
+        --each-line-matches REGEX    check-ids: an ID counts as covered only on a line of --covered that matches
+        --allow-missing              check-ids: pass when the --defined file does not exist
+        --name WORKSPACE             check-ids: the workspace whose plan --plan-details reads (default: the current one)
+        --json                       done, status, check-ids: print one JSON document (see docs/README.workflow.md)
     -h, --help                       Show this help
 
 Examples:
@@ -185,4 +247,5 @@ Examples:
   workspace step done --status fail --summary "Two specs still fail in billing."    # fail the step at the turn's end
   workspace step done --status fail --code not_reproduced --summary "The failure did not happen locally."    # fail it with a word for why
   workspace step expect-fail --match-file .workflow/RUN/failure.txt -- spec/models/invoice_spec.rb    # exits 0 only when the test fails with that text
+  workspace step check-ids --prefix R --defined requirements.md --covered plan.md    # exits 0 only when plan.md names every R
 --- end

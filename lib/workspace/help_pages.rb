@@ -1919,6 +1919,35 @@ module Workspace
           ["workspace step expect-fail --match-file .workflow/RUN/failure.txt -- spec/models/invoice_spec.rb", "exits 0 only when it fails with the text of failure.txt"],
           ["workspace step expect-fail --match-file {{artifacts}}/failure.txt --timeout 840 -- {{changed.tests}}", "the exec: line of a fail-first proof (with timeout: 15m on the entry)"]
         ]
+      },
+      "check-ids" => {
+        usage: ["step check-ids --prefix P[,P...] --defined FILE (--covered FILE [--each-line-matches REGEX] | --plan-details [--name WORKSPACE]) [--allow-missing] [--json]"],
+        summary: "Check that every numbered ID one file defines is covered (a coverage check)",
+        about: [
+          "Reads the IDs at the start of a line of --defined: a prefix, an optional `-`, then digits (R1, AC-3). AC-3 and",
+          "AC3 are the same ID; R1 is not R10 or R1a. Each must be named, anywhere, by the --covered file, or",
+          "by the `## Task details` section of the workspace's plan with --plan-details (the plan must exist and have",
+          "tasks). Relative files resolve against $WORKSPACE_RUN_ARTIFACTS when it is set and not empty, else the",
+          "working directory. Files must be regular files (not links) of at most 1 MiB. No IDs defined passes.",
+          "Prints one line (stdout when covered, stderr otherwise), or with --json one document on stdout; read --json's",
+          "reason, not the line. The line starts `check-ids:`, except that uncovered IDs with --plan-details print",
+          "`In no task of ## Task details: R2 R3`, as the rpiv presets always have. Exits 0 when every ID is covered, 1 when one is not or the check can't run (missing plan, missing",
+          "--defined without --allow-missing, missing or unreadable --covered, a line that matches too slowly). A usage",
+          "error (a bad or missing flag, an invalid regex) exits 1 with code usage, as for any command."
+        ],
+        options: [["--prefix P", "Letters an ID starts with, such as R or AC; repeat the flag or separate with commas"],
+          ["--defined FILE", "The file whose lines start with the IDs"],
+          ["--covered FILE", "The file that must name every ID (with --each-line-matches, on a matching line)"],
+          ["--plan-details", "Use the plan's `## Task details` section instead of --covered"],
+          ["--each-line-matches REGEX", "With --covered: an ID counts as covered only on a line that names it and matches REGEX (1 second limit per line)"],
+          ["--allow-missing", "Pass when the --defined file does not exist"],
+          ["--name WORKSPACE", "With --plan-details: the workspace whose plan to read (default: the current one; not_in_workspace outside any)"],
+          ["--json", "Print {schema_version, ok, prefixes, defined, covered, missing, reason, defined_path, covered_path}; reason is null on a pass (defined_absent when --allow-missing passed an absent file), else uncovered, no_plan, defined_absent, covered_absent or regex_timeout"]],
+        examples: [
+          ["workspace step check-ids --prefix R --defined requirements.md --plan-details --allow-missing", "the plan check: every R of requirements.md is in a task's details"],
+          ["workspace step check-ids --prefix AC --defined spec.md --covered report.md --each-line-matches PASS", "every AC-n has a PASS line in the report"],
+          ["workspace step check-ids --prefix R,AC --defined spec.md --covered plan.md --json", "the same as one JSON document"]
+        ]
       }
     }.freeze
 
