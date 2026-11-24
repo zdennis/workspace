@@ -39,6 +39,16 @@ RSpec.describe Workspace::HookFanout do
       expect(log_output.string).to include("agent: RecordingHandoffWatcher before_record failed (RuntimeError: boom)")
     end
 
+    it "runs a later before_record subscriber, ahead of the monitor, when an earlier one raises" do
+      failing = RecordingHandoffWatcher.new(order: order, fail_with: RuntimeError.new("boom"))
+      second = RecordingHandoffWatcher.new(order: order, label: :second_before_record)
+      fanout(subscribers: [failing, second, queue_desk]).session_event(event("user_prompt"))
+
+      expect(order).to eq([[:handoff_watcher, :before_record], [:second_before_record, :before_record],
+        [:monitor, :record], [:hook_log, :record], [:queue_desk, :session_event]])
+      expect(log_output.string).to include("agent: RecordingHandoffWatcher before_record failed (RuntimeError: boom)")
+    end
+
     it "logs a session_event subscriber that raises and still runs the ones after it" do
       failing = RecordingHookDesk.new(order: order, label: :queue_desk, fail_with: RuntimeError.new("full"))
       fanout(subscribers: [failing, recovery_desk]).session_event(event("user_prompt"))
@@ -115,6 +125,15 @@ RSpec.describe Workspace::HookFanout do
 
       expect(order).to eq([[:work_queue_desk, :turn_ended]])
     end
+
+    it "a turn_ended that raises in one subscriber still reaches the next" do
+      stub_const("WedgedTurnEnder", Class.new { def turn_ended = raise("wedged") })
+      work_queue_desk = RecordingWorkQueueDesk.new(order: order)
+      fanout(subscribers: [WedgedTurnEnder.new, work_queue_desk]).turn_ended
+
+      expect(order).to eq([[:work_queue_desk, :turn_ended]])
+      expect(log_output.string).to include("agent: WedgedTurnEnder turn_ended failed (RuntimeError: wedged)")
+    end
   end
 
   describe "#notify" do
@@ -128,6 +147,19 @@ RSpec.describe Workspace::HookFanout do
 
       expect(listener.seen).to eq("%3")
       expect(queue_desk.calls).to be_empty
+    end
+
+    it "a later event that raises in one subscriber still reaches the next" do
+      stub_const("WedgedListener", Class.new { def wait_opened(pane) = raise("wedged on #{pane}") })
+      listener = Class.new do
+        attr_reader :seen
+
+        def wait_opened(pane) = (@seen = pane)
+      end.new
+      fanout(subscribers: [WedgedListener.new, listener]).notify(:wait_opened, "%3")
+
+      expect(listener.seen).to eq("%3")
+      expect(log_output.string).to include("agent: WedgedListener wait_opened failed (RuntimeError: wedged on %3)")
     end
   end
 
