@@ -86,7 +86,7 @@ workspace <subcommand> [options]
 
 | Subcommand | Docs | Description |
 |------------|------|-------------|
-| add | [README](docs/README.add.md) | Add a tmuxinator config for a project directory |
+| add | [README](docs/README.add.md) | Add a tmuxinator config for a project directory, and install the agent session hooks into its checkout |
 | agent | [README](docs/README.agent.md) | Umbrella for driving a workspace agent: `agent run "prompt"`, `agent status request\|post`, `agent executables` (the agent programs on PATH by family) |
 | agentd | [README](docs/README.agentd.md) | Run the long-lived workspace agent daemon for a project, or replace it (`agentd restart`) |
 | agent-run | [README](docs/README.agent-run.md) | Send a message to a running agent, or type into a pane (command, inject, restart, send, queue) |

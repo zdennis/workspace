@@ -532,7 +532,7 @@ module Workspace
         Usage: workspace <subcommand> [options]
 
         Subcommands:
-          add             Add a tmuxinator config for a project directory
+          add             Add a tmuxinator config for a project directory and install its agent hooks
           agent           Drive a workspace agent: agent run "prompt", agent status request|post
           agentd          Run the long-lived workspace agent daemon for a project, or replace it (agentd restart)
           agent-run       Send a message to a running agent, or type into a pane (command, inject, restart, send, queue)
@@ -560,7 +560,7 @@ module Workspace
           inbox           Keep a durable list of things that need a person: add, list, show, edit, done, dismiss, reopen
           instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan, research, report, plan-review, spine, promote)
           kill            Kill a worktree project, remove its worktree and the branch start made (default: the current one)
-          launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
+          launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux; installs missing agent hooks
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           library         Store named plays, prompts, recipes, agents and skills, beside the built-in packs (alias: lib)
           list            List currently active (launched) projects (--all for all available)
@@ -652,6 +652,10 @@ module Workspace
         opts.separator "Launch tmuxinator projects in iTerm2, each in its own window."
         opts.separator "Reuses existing launcher panes when available."
         opts.separator "Windows are arranged left-to-right with slight overlap."
+        opts.separator "Before each agent pane starts, missing or stale agent session hooks are installed"
+        opts.separator "into the checkout's untracked .claude/settings.local.json; nothing is written when"
+        opts.separator "they are current. A stale tracked .claude/settings.json is not rewritten and gets"
+        opts.separator "a Note. codex.hooks.install still governs ~/.codex/hooks.json."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--reattach", "Reuse a launcher pane's existing tmux session instead of relaunching",
@@ -3785,6 +3789,10 @@ module Workspace
         opts.separator "A new config for a path inside .worktrees/ also gets its notes directory"
         opts.separator "set up (see 'workspace notes dir'): stored as the config's notes.dir,"
         opts.separator "created, and kept out of git status. A problem there is a warning."
+        opts.separator "A new config also gets each coding agent's session hooks installed into the"
+        opts.separator "checkout's untracked .claude/settings.local.json, as 'start' does; nothing is"
+        opts.separator "written when they are current. codex.hooks.install still governs"
+        opts.separator "~/.codex/hooks.json. With --json these notes are warnings."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",

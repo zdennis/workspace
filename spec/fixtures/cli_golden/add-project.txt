@@ -30,6 +30,10 @@ skipped, 3 if some were, 1 if all were (the same with --json).
 A new config for a path inside .worktrees/ also gets its notes directory
 set up (see 'workspace notes dir'): stored as the config's notes.dir,
 created, and kept out of git status. A problem there is a warning.
+A new config also gets each coding agent's session hooks installed into the
+checkout's untracked .claude/settings.local.json, as 'start' does; nothing is
+written when they are current. codex.hooks.install still governs
+~/.codex/hooks.json. With --json these notes are warnings.
 
 Options:
         --json                       Print one action document (see docs/README.json.md) instead of text, which goes
