@@ -15,12 +15,14 @@ instructions: |
   Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
   inputs; read them before you start.
 
-# Worst case, summed by hand: the 9 steps without a review, once each, is 9; plan and
+# The explicit loops, summed by hand: the 9 steps without a review, once each, is 9; plan and
 # code_review take one attempt per review round, 3 rounds each, so 6; verify's on_fail goes
 # back to implement twice, and each trip re-runs implement and verify, so 2 x 2 = 4;
 # acceptance_check's on_fail goes back to implement twice, and each trip re-runs implement,
-# verify and acceptance_check, so 2 x 3 = 6. 9 + 6 + 4 + 6 = 25. The 5 to spare are for proof
-# retries: tests_first may take 4 attempts, docs_update and open_pr 3 each.
+# verify and acceptance_check, so 2 x 3 = 6. 9 + 6 + 4 + 6 = 25. The 5 to spare
+# are headroom, not a worst case: proof retries alone may add 7 (tests_first takes up to 4
+# attempts, docs_update and open_pr 3 each), and a step with no on_fail goes back one step
+# when it fails, a loop only this cap bounds.
 max_attempts: 30
 # Machine time for the longest chain of steps and review rounds, with 12h to spare.
 timeout: 12h

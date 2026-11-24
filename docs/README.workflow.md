@@ -1872,7 +1872,7 @@ The fail-first proof has limits: it does not show that the test fails for the ri
 
 ### The `deliver` preset
 
-**Experimental.** `deliver` carries one task from goals to an open pull request with no person in the loop. It stops at the open pull request: it does not merge, watch CI or release. Its only input is `task` (required); `workflow run` fills it from the branch when it is left out ([how](#filling-inputs-from-the-branch)).
+**Experimental.** `deliver` carries one task from goals to an open pull request with no person in the loop. It stops at the open pull request: it does not merge, watch CI or release. Its only input is `task` (required); `workflow run` fills it from the branch when it is left out ([how](#filling-inputs-from-the-branch)). Start it like any preset, for example `workspace go --workflow deliver PROJ-123` ([Starting from a ticket or a prompt](#starting-from-a-ticket-or-a-prompt)).
 
 Its eleven steps are `goals`, `design`, `research`, `plan`, `tests_first`, `implement`, `verify`, `acceptance_check`, `docs_update`, `code_review` and `open_pr`. All but `plan` are imported from the [step library](#step-library); `workflow graph deliver` draws them.
 
@@ -1881,15 +1881,15 @@ The `plan` step is reviewed. Its `review:` takes the reviewers `supportive`, `sk
 Two loops go back to `implement`, each at most twice:
 
 - `verify` fails: back to `implement` in the same conversation (`context: continue`), with the last 40 lines of the failed check (`log_tail: 40`). The library's `verify` allows three trips; `deliver` restates the mapping with 2.
-- `acceptance_check` fails: back to `implement` in the same conversation, as the library step has it. `verify` and `acceptance_check` run again after each trip.
+- `acceptance_check` fails: back to `implement` in the same conversation, at most 2 times, as the library step has it. `verify` and `acceptance_check` run again after each trip.
 
-`tests_first` has `on_fail: stop`, since a loop back from it would land on a step that must leave the checkout unchanged.
+`tests_first` has `on_fail: stop`: a failed fail-first proof is not fixed by redoing the plan. The other steps with no `on_fail` go back one step when they fail, and only `max_attempts` bounds that loop. One of them matters here: when `implement` fails, the run goes back to `tests_first`, whose fail-first proof usually fails once the code exists, so the run stops for a person.
 
 What it needs:
 
 - `commands.test` and `commands.test_files` in config, as for [`bugfix`](#the-bugfix-preset): `tests_first` proves its new tests fail before the code exists, and `verify` runs the suite.
 - `gh` logged in, a GitHub remote and the network, for `open_pr`.
-- Permission rules that allow the pane's `open_pr` commands. `open_pr` runs `workspace push`, `workspace pr create --json` and `gh pr edit`, and a pane with no rule for them stops at a permission dialog. Allow them in the `agent.permissions.rules` of the global, project or worktree config file, edited by hand ([Permission policy](README.config.md#permission-policy)). The policy only runs for a pane whose agent asks for permission: a pane started with permission prompts skipped needs no rules and is not held by them.
+- Permission rules that allow the pane's `open_pr` commands. `open_pr` runs `workspace push`, `workspace pr create --json` and `gh pr edit`, and in a pane with no rule for them the [hang guard](README.config.md#permission-policy) denies each call with a hint, up to `agent.permissions.hang_guard_max_denies` times a turn, and then the call stops at a permission dialog nobody answers. Allow them in the `agent.permissions.rules` of the global, project or worktree config file, edited by hand ([Permission policy](README.config.md#permission-policy)). The policy only runs for a pane whose agent asks for permission: a pane started with permission prompts skipped needs no rules and is not held by them. The rules below cover only `open_pr`; in a pane that asks for permission, the other steps' commands (`workspace ask`, `workspace plan init`, `workspace step done`, `git commit`, the test and lint commands) need allow rules too. `workspace push*` also matches `workspace push --force`.
 
 ```yaml
 agent:
@@ -1902,9 +1902,9 @@ agent:
 
 A definition can't grant these itself: the `permissions:` key of a workflow takes only `deny` and `ask` rules, so it can narrow what the agent may do and never widen it. `deliver` sets no `permissions:` and no `deny:`.
 
-The limits, set before there were runs (replace them with `workflow stats` once there are):
+The limits are estimates; no run has measured them yet (replace them with `workflow stats` once runs exist):
 
-- `max_attempts: 30`. The worst case, summed by hand, is 25: the 9 steps without a review once each, 6 for the plan's and `code_review`'s one attempt per review round, 3 rounds each, 4 for `verify` going back to `implement` twice (each trip runs 2 steps), and 6 for `acceptance_check` going back twice (each trip runs 3 steps). 9 + 6 + 4 + 6 = 25. The comment above `max_attempts` in the file shows the same sum.
+- `max_attempts: 30`. The explicit loops, summed by hand, come to 25: the 9 steps without a review once each, 6 for the plan's and `code_review`'s one attempt per review round, 3 rounds each, 4 for `verify` going back to `implement` twice (each trip runs 2 steps), and 6 for `acceptance_check` going back twice (each trip runs 3 steps). 9 + 6 + 4 + 6 = 25. The other 5 are headroom, not a bound on the worst case: proof retries alone may add 7, and the one-step-back loops of steps with no `on_fail` have no `max` of their own. The comment above `max_attempts` in the file shows the same sum.
 - `budget: {tokens: 60000000, action: stop}`. A budget has no `hold` action. `stop` is the hold: when the tokens are spent, the run waits with reason `budget_spent` and keeps its state for a person to resume or cancel (see [Token budgets](#token-budgets)).
 - `timeout: 12h` with `timeout_action: hold`: past 12 hours of active time, the next attempt is held the same way (see [Run timeouts](#run-timeouts)).
 
