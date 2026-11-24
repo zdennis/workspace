@@ -1,0 +1,37 @@
+schema_version: 0.1
+description: The acceptance-check step of a delivery pipeline, after verify. It reads acceptance.md, verify.md and tests-first.md (when they exist) and the branch, and writes acceptance-report.md with one line per AC, each PASS with evidence, FAIL with the reason, or MANUAL for a criterion the person checks. It needs the `task` input, holds the `test-db` lock (it may run the tests), runs with guard config and changes no code (the run proves no tracked file changed, so an uncommitted edit to a tracked file fails the step). A failure loops to the host's `implement` step, so a host without one overrides `on_fail`. The check is `workspace step check-ids`, which fails when an AC has no PASS or MANUAL line with text after it, so a FAIL line fails it. A line that names a second AC counts for it too, which is why each line names only its own AC. A MANUAL line on a `test` or `metric` AC is not caught by the check; the person reading the report sees every MANUAL line.
+
+steps:
+  acceptance_check:
+    title: Acceptance check
+    prompt: |
+      Check the acceptance criteria for {{inputs.task}} against the branch as it is now. Read
+      {{artifacts}}/acceptance.md, and {{artifacts}}/verify.md and {{artifacts}}/tests-first.md
+      if they exist, and the branch's diff. Run what you need to see each criterion hold.
+      Change no code and make no commit: this step only checks. If running tests or tools changed
+      a tracked file, restore it (`git checkout -- <path>`); if it can't be restored, report fail
+      naming it, since the step must leave tracked files as they were.
+      Write {{artifacts}}/acceptance-report.md with one line per AC in acceptance.md, in order,
+      each starting with its number and a space. Each line names only its own AC, never another.
+      Use one of these forms, with a single space after the number and the word:
+      `AC1 PASS <evidence: a test name, a command and its output, or a path>`
+      `AC1 FAIL <why it does not hold>`
+      `AC1 MANUAL <what the person should check>`
+      Use MANUAL for each AC whose acceptance.md line ends with `manual`; it is listed for the
+      person, not failed. Mark PASS only with evidence you saw in this turn. If an AC does not
+      hold, write FAIL with the reason.
+      If any AC is FAIL, write its FAIL line and report fail together: run
+      `workspace step done --status fail --summary "<each failing AC and why>"` and end your turn.
+      The summary reaches the implement step, and the report is in the artifacts directory.
+    produces: [acceptance-report.md]
+    uses: [test-db]
+    guard: config
+    require:
+      - tracked_clean: true
+    status:
+      run: "workspace step check-ids --prefix AC --defined acceptance.md --covered acceptance-report.md --each-line-matches '^AC-?[0-9]+ (PASS [^ ].*|MANUAL [^ ].*)$'"
+    timeout: 30m
+    on_fail:
+      goto: implement
+      max: 2
+      context: continue

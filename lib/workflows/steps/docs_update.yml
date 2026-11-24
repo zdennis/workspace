@@ -1,0 +1,26 @@
+schema_version: 0.1
+description: >-
+  The docs-update step of a delivery pipeline, after the change is built and checked. It reads goals.md, the plan, acceptance-report.md (when it exists) and the branch's diff, and either updates the project's user-facing docs and changelog, if it keeps them, and commits that, or writes docs.md whose first line is `docs: none — <reason>` and makes no commit. It needs no input and no command role, and runs with guard config since it commits. The proof is a `require: exec` check that HEAD moved since this attempt began, or that docs.md starts with `docs: none`. A rerun has to make a new commit or write that line, so an earlier attempt's commit does not count. The check can't tell a docs commit from any other commit, and a docs.md an earlier attempt wrote still counts; the prompt asks for docs-only commits and for a stale docs.md to be removed.
+
+steps:
+  docs_update:
+    title: Docs update
+    prompt: |
+      Bring the project's docs up to date for the change on this branch. Read
+      {{artifacts}}/goals.md, the workspace plan, {{artifacts}}/acceptance-report.md if it exists,
+      and the branch's diff against where it started. Find the user-facing docs the change makes
+      stale or leaves out (the README, guides, help text and examples), and the project's
+      changelog, if it keeps them. Update them to match the change, then commit that.
+      Edit docs only: don't change implementation code or tests. Say what the change does for a
+      reader, not how it was built, and don't invent behaviour the diff doesn't show.
+      If the change needs no doc update, make no commit and write {{artifacts}}/docs.md whose first
+      line is exactly `docs: none — <reason>`, with the reason in a few words.
+      The run's check passes when HEAD moved since this attempt began, or when docs.md starts with
+      that line. On a rerun (after a failed check or a resume), make a new commit, or write the
+      `docs: none` line; never amend or rebase, because an earlier attempt's commit doesn't count.
+      If you commit docs on a rerun, delete a docs.md an earlier attempt wrote.
+    guard: config
+    require:
+      - exec: "sh -c 'test -n \"$1\" && { test \"$(git rev-parse HEAD)\" != \"$1\" || head -n 1 \"$2/docs.md\" 2>/dev/null | grep -Eq \"^docs: none([[:space:]]|$)\"; }' _ {{attempt.head_before}} {{artifacts}}"
+    timeout: 20m
+    max_attempts: 3

@@ -1,0 +1,35 @@
+schema_version: 0.1
+description: The tests-first step of a delivery pipeline. It reads acceptance.md (and design.md when it exists), writes the tests that verify the acceptance criteria and commits them, and writes tests-first.md. It needs commands.test_files and a commands.test that takes test files as arguments. The run's check proves the changed tests fail as a set (`workspace step expect-fail` passes when at least one fails) and `workspace step check-ids` proves every AC has a line; an AC the agent marks `not-test` is taken on trust.
+
+steps:
+  tests_first:
+    title: Tests first
+    prompt: |
+      Write the tests first for {{inputs.task}}. Read {{artifacts}}/acceptance.md, and
+      {{artifacts}}/design.md if it exists, and the code the change touches.
+      For every AC line that ends with `test`, write a real new test that checks it. Add it to a
+      new file or an existing test file, named so the project's commands.test_files match it, and
+      run it: each new test must fail now, because the change isn't made yet. A test that passes
+      already, or fails only because it can't load, proves nothing. You may also change the test
+      helpers and fixtures the tests need; commit them with the tests. Commit only tests and their
+      helpers: don't write or commit any implementation (non-test code). Make at least one commit.
+      If the tests can't be written without changing implementation code, run
+      `workspace step done --status fail --summary "<what it needs and why>"` and end your turn.
+      The run's check lists the test files changed since this attempt began (commits included)
+      and runs them, and at least one must fail. On a rerun (after a failed check or a resume),
+      edit the tests an earlier attempt committed, or add a new one, so this attempt's commit
+      changes at least one test file; never amend or rebase. Don't leave stray untracked test files.
+      Write {{artifacts}}/tests-first.md with one line per AC in acceptance.md, in order, each
+      starting with its number and a space. A `test` AC reads `AC1 <test file> <test name>`. An AC
+      that ends with `manual` or `metric` reads `AC2 not-test`.
+    produces: [tests-first.md]
+    guard: config
+    require:
+      - commits: 1
+      # --timeout must stay below this entry's timeout: 15m (840s < 900s)
+      - exec: "workspace step expect-fail --timeout 840 -- {{changed.tests}}"
+        timeout: 15m
+    status:
+      run: "workspace step check-ids --prefix AC --defined acceptance.md --covered tests-first.md --each-line-matches '^AC-?[0-9]+ [^ ].*$'"
+    timeout: 45m
+    max_attempts: 4

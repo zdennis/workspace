@@ -1,0 +1,16 @@
+schema_version: 0.1
+description: The design step of a delivery pipeline. It reads goals.md and acceptance.md (the host's goals step writes them) and the code the change touches, changes nothing before any commit, and writes design.md. It needs {{inputs.task}}, has no reviewers and uses no command role.
+
+steps:
+  design:
+    title: Design
+    prompt: |
+      Design the surface of the change for {{inputs.task}}. Read {{artifacts}}/goals.md and
+      {{artifacts}}/acceptance.md, and the code the change touches. Don't change code or commit.
+      Write {{artifacts}}/design.md describing the surface the change has: a UI, CLI flags and
+      output, an API shape, or files. Cover the flows, the states (errors and empty states
+      included), the copy, and accessibility.
+      If the change has no user-facing surface, make the first line `design: none` and say why.
+    produces: [design.md]
+    guard: unchanged
+    timeout: 30m

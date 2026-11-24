@@ -1,0 +1,33 @@
+schema_version: 0.1
+description: The verify step rpiv and rpiv-auto-approve share. It reads the review pack, the plan and requirements.md (the host's research step writes it; without it the check of each R has nothing to read), runs the tests and linter, and writes verify.md. It needs `commands.test`, takes an optional `commands.lint` and holds the `test-db` lock. A failure loops to the host's `implement` step, so a host without one overrides `on_fail`.
+
+steps:
+  verify:
+    title: Verify
+    include: [review]
+    prompt: |
+      Verify the work against the workspace plan (`workspace plan path`). Run the tests for the
+      files the change touched, their obvious neighbors, and the tests the change obviously
+      impacts — not the whole suite (it runs on CI). Run the linter (the project's lint
+      command, when it has one, must pass: the run checks it), then review the branch's diff against its base.
+      Check each R in {{artifacts}}/requirements.md against evidence: a test name, command
+      output or file:line.
+      Write {{artifacts}}/verify.md: test results, each R with its evidence, review findings,
+      and what you fixed.
+      If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
+      and end your turn.
+    produces: [verify.md]
+    uses: [test-db]
+    status:
+      command: test
+      # The check runs the project's whole test command, which on a sizable
+      # suite can outrun the 20-minute default; the step itself allows 90m.
+      timeout: 40m
+    require:
+      - command: lint
+        optional: true
+    timeout: 90m
+    on_fail:
+      goto: implement
+      max: 3
+      context: continue

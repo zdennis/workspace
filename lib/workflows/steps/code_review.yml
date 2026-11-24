@@ -1,0 +1,67 @@
+schema_version: 0.1
+description: >-
+  The code-review step of a delivery pipeline, after the change is built and checked. It reads the plan, acceptance.md, acceptance-report.md (when it exists) and the branch's diff, and writes review-response.md saying what the author checked, fixed and left, with any fixes committed as new commits. It brings three reviewers, `correctness`, `tests` and `maintainability`, to a host that has no reviewer of that name; a host reviewer of the same name wins. It needs no input and no command role, and runs with guard config since it may commit. It asks for no commit, since a clean branch has nothing to fix. A round approves when two of the three approve and `correctness` is one of them. A rejected round starts the step's next attempt, which is handed the rejection, so the author fixes what the reviewers found and the step is reviewed again, up to 3 rounds; once all 3 are spent the run stops at `review_rounds_spent` and a person steps in: `workflow resume RUN --extra-rounds N` for more rounds, `resume --from STEP` to run a step again, or `workflow cancel`. The round's revision command, `git rev-parse HEAD 'HEAD^{tree}'`, is one git call so a failure stops the round; its output (the commit and its tree) is added to the engine's own revision hash, which already covers the step's `produces` files, HEAD and the tracked working tree.
+
+reviewers:
+  correctness:
+    title: Correctness review
+    prompt: |
+      You review {{review.subject}}. Read the workspace plan (`workspace plan path` prints it), {{artifacts}}/acceptance.md,
+      {{artifacts}}/acceptance-report.md if it exists, and the branch's diff: the diff of HEAD against
+      the merge base with the project's default branch (run `git merge-base HEAD <default branch>`, then `git diff <that commit>`). Look for bugs, behaviour that
+      does not meet an acceptance criterion, unhandled errors and edge cases, and security
+      problems (injection, unchecked input, leaked secrets, missing access checks). Say where each
+      problem is and why it is one. Do not edit the code. Reject for a problem that would make the
+      change wrong or unsafe; list lesser notes as not blocking.
+      If {{review.previous}} is set, read your earlier write-up there first and say whether each
+      objection in it was answered.
+  tests:
+    title: Tests review
+    prompt: |
+      You review {{review.subject}}. Read the workspace plan (`workspace plan path` prints it), {{artifacts}}/acceptance.md,
+      {{artifacts}}/acceptance-report.md if it exists, and the branch's diff: the diff of HEAD against
+      the merge base with the project's default branch (run `git merge-base HEAD <default branch>`, then `git diff <that commit>`). Look for acceptance criteria
+      with no test, tests that would pass even if the behaviour broke (no assertion, the wrong
+      assertion, mocks of the thing under test), and changed behaviour no test covers. Say which
+      criterion or behaviour is thin and what test would show it. Do not edit the code. Reject
+      when a criterion marked `test` is not shown by a test that would fail without the change;
+      list lesser notes as not blocking.
+      If {{review.previous}} is set, read your earlier write-up there first and say whether each
+      objection in it was answered.
+  maintainability:
+    title: Maintainability review
+    prompt: |
+      You review {{review.subject}}. Read the workspace plan (`workspace plan path` prints it), {{artifacts}}/acceptance.md,
+      {{artifacts}}/acceptance-report.md if it exists, and the branch's diff: the diff of HEAD against
+      the merge base with the project's default branch (run `git merge-base HEAD <default branch>`, then `git diff <that commit>`). Look for needless complexity,
+      duplicated code, unclear names, code that does more than the plan asks, and docs or help
+      text the change leaves out of date. Say where each is and what simpler form you would
+      accept. Do not edit the code. Reject only for something a later reader would trip on;
+      list matters of taste as not blocking.
+      If {{review.previous}} is set, read your earlier write-up there first and say whether each
+      objection in it was answered.
+
+steps:
+  code_review:
+    title: Code review
+    prompt: |
+      Review the branch's work before it ships. Read the workspace plan (`workspace plan path` prints it),
+      {{artifacts}}/acceptance.md, {{artifacts}}/acceptance-report.md if it exists, and the whole
+      branch diff (HEAD against the merge base with the project's default branch). Check the diff against the plan and against each acceptance criterion: look
+      for bugs, behaviour that misses a criterion, missing or weak tests, needless complexity,
+      duplication, unclear names and docs the change leaves stale.
+      Fix what you find and commit each fix as a new commit. Never amend or rebase. If the branch
+      is clean, change nothing and make no commit.
+      Write {{artifacts}}/review-response.md saying what you checked, what you fixed, and what you
+      left alone and why. If reviewers rejected an earlier attempt, answer each of their
+      objections there: fixed, or left and why.
+    guard: config
+    produces: [review-response.md]
+    review:
+      subject: the branch's changes, read against the plan and acceptance.md, and {{artifacts}}/review-response.md
+      from: [correctness, tests, maintainability]
+      need: 2
+      must: [correctness]
+      max_rounds: 3
+      revision: "git rev-parse HEAD 'HEAD^{tree}'"
+    timeout: 30m
