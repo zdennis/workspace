@@ -52,7 +52,7 @@ RSpec.describe Workspace::WorkflowSimulator, "event keys" do
   end
 
   # [label, definition path, id, script path]
-  cases = %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2 pr-feedback investigate explore bugfix].map do |preset|
+  cases = %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2 pr-feedback investigate explore bugfix deliver].map do |preset|
     ["preset #{preset}", File.join(EventKeysSpec::PRESETS, "#{preset}.yml"), preset, File.join(EventKeysSpec::GOLDEN, "#{preset}.script.yml")]
   end
   Dir[File.join(EventKeysSpec::FIXTURES, "*.script.yml")].sort.each do |script|

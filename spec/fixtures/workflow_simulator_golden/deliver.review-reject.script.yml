@@ -1,0 +1,9 @@
+# The script the deliver review-reject golden plays: the skeptic turns plan round 1 down, attempt 2 is a changed plan
+# all three reviewers approve; correctness then turns code_review round 1 down and its second attempt is approved.
+steps:
+  plan:
+    - reviews: {supportive: approve, skeptical: reject, implementer: approve}
+    - reviews: {supportive: approve, skeptical: approve, implementer: approve}
+  code_review:
+    - reviews: {correctness: reject, tests: approve, maintainability: approve}
+    - reviews: {correctness: approve, tests: approve, maintainability: approve}

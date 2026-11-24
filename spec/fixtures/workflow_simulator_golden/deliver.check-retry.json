@@ -1,0 +1,1208 @@
+{
+  "workflow": "deliver",
+  "inputs": {
+    "task": "golden"
+  },
+  "outcome": "completed",
+  "stopped": null,
+  "capped": false,
+  "max_actions": 200,
+  "actions": 17,
+  "run": {
+    "state": "completed",
+    "current": "open_pr",
+    "reason": null,
+    "loops": {
+      "verify->implement": 2
+    }
+  },
+  "steps": [
+    {
+      "id": "goals",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed",
+          "fresh": true
+        }
+      ]
+    },
+    {
+      "id": "design",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed",
+          "fresh": true
+        }
+      ]
+    },
+    {
+      "id": "research",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed",
+          "fresh": true
+        }
+      ]
+    },
+    {
+      "id": "plan",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed",
+          "fresh": true,
+          "reviews": [
+            {
+              "reviewer": "supportive",
+              "verdict": "approve",
+              "counted": true,
+              "problem": null,
+              "prompt": "You review {{review.subject}}. No person will look at it, so this review is t..."
+            },
+            {
+              "reviewer": "skeptical",
+              "verdict": "approve",
+              "counted": true,
+              "problem": null,
+              "prompt": "You review {{review.subject}}. No person will look at it. Assume it is wrong ..."
+            },
+            {
+              "reviewer": "implementer",
+              "verdict": "approve",
+              "counted": true,
+              "problem": null,
+              "prompt": "You review {{review.subject}}. You will have to build it. Check each task is ..."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tests_first",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed",
+          "fresh": true
+        }
+      ]
+    },
+    {
+      "id": "implement",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed",
+          "fresh": true
+        },
+        {
+          "n": 2,
+          "outcome": "passed",
+          "fresh": false
+        },
+        {
+          "n": 3,
+          "outcome": "passed",
+          "fresh": false
+        }
+      ]
+    },
+    {
+      "id": "verify",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "failed",
+          "code": "check_failed",
+          "fresh": true
+        },
+        {
+          "n": 2,
+          "outcome": "failed",
+          "code": "check_failed",
+          "fresh": true
+        },
+        {
+          "n": 3,
+          "outcome": "passed",
+          "fresh": true
+        }
+      ]
+    },
+    {
+      "id": "acceptance_check",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed",
+          "fresh": true
+        }
+      ]
+    },
+    {
+      "id": "docs_update",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed",
+          "fresh": true
+        }
+      ]
+    },
+    {
+      "id": "code_review",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed",
+          "fresh": true,
+          "reviews": [
+            {
+              "reviewer": "correctness",
+              "verdict": "approve",
+              "counted": true,
+              "problem": null,
+              "prompt": "You review {{review.subject}}. Read the workspace plan (`workspace plan path`..."
+            },
+            {
+              "reviewer": "tests",
+              "verdict": "approve",
+              "counted": true,
+              "problem": null,
+              "prompt": "You review {{review.subject}}. Read the workspace plan (`workspace plan path`..."
+            },
+            {
+              "reviewer": "maintainability",
+              "verdict": "approve",
+              "counted": true,
+              "problem": null,
+              "prompt": "You review {{review.subject}}. Read the workspace plan (`workspace plan path`..."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "open_pr",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed",
+          "fresh": true
+        }
+      ]
+    }
+  ],
+  "budget": {
+    "tokens": 60000000,
+    "action": "stop",
+    "extra_tokens": 0,
+    "allowance": 60000000,
+    "used": 0,
+    "counted": 15,
+    "uncounted": 2,
+    "estimated": 0,
+    "measured": true,
+    "spent": false,
+    "needed": null,
+    "suggested": null
+  },
+  "transitions": [
+    {
+      "n": 1,
+      "at": 0,
+      "type": "run_started",
+      "workflow": "deliver",
+      "workspace": "simulation",
+      "from_state": "waiting",
+      "to_state": "running",
+      "actor": "person",
+      "cause": "start"
+    },
+    {
+      "n": 2,
+      "at": 0,
+      "type": "step_dispatching",
+      "step": "goals",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "first",
+      "retry_of": null,
+      "from_state": "waiting",
+      "to_state": "running",
+      "actor": "person"
+    },
+    {
+      "n": 3,
+      "at": 0,
+      "type": "step_dispatched",
+      "step": "goals",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "first",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 4,
+      "at": 0,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "goals",
+      "attempt": 1,
+      "wrote": [
+        "goals.md",
+        "acceptance.md"
+      ]
+    },
+    {
+      "n": 5,
+      "at": 1,
+      "type": "check_finished",
+      "step": "goals",
+      "attempt": 1,
+      "exit_code": 0,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 6,
+      "at": 1,
+      "type": "step_passed",
+      "step": "goals",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 7,
+      "at": 1,
+      "type": "step_dispatching",
+      "step": "design",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 8,
+      "at": 1,
+      "type": "step_dispatched",
+      "step": "design",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 9,
+      "at": 1,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "design",
+      "attempt": 1,
+      "wrote": [
+        "design.md"
+      ]
+    },
+    {
+      "n": 10,
+      "at": 2,
+      "type": "step_passed",
+      "step": "design",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 11,
+      "at": 2,
+      "type": "step_dispatching",
+      "step": "research",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 12,
+      "at": 2,
+      "type": "step_dispatched",
+      "step": "research",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 13,
+      "at": 2,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "research",
+      "attempt": 1,
+      "wrote": [
+        "research.md",
+        "requirements.md"
+      ]
+    },
+    {
+      "n": 14,
+      "at": 3,
+      "type": "step_passed",
+      "step": "research",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 15,
+      "at": 3,
+      "type": "step_dispatching",
+      "step": "plan",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 16,
+      "at": 3,
+      "type": "step_dispatched",
+      "step": "plan",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 17,
+      "at": 3,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "plan",
+      "attempt": 1,
+      "wrote": [
+        "plan.md"
+      ]
+    },
+    {
+      "n": 18,
+      "at": 4,
+      "type": "check_finished",
+      "step": "plan",
+      "attempt": 1,
+      "exit_code": 0,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 19,
+      "at": 4,
+      "type": "step_checks_passed",
+      "step": "plan",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 20,
+      "at": 4,
+      "type": "review_started",
+      "step": "plan",
+      "attempt": 1,
+      "round": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 21,
+      "at": 4,
+      "type": "review_delivered",
+      "step": "plan",
+      "attempt": 1,
+      "round": 1,
+      "pane": "%simreview",
+      "window": null,
+      "reused": false
+    },
+    {
+      "n": 22,
+      "at": 4,
+      "type": "simulated_reviewers",
+      "step": "plan",
+      "attempt": 1,
+      "round": 1,
+      "reviews": {
+        "supportive": "approve",
+        "skeptical": "approve",
+        "implementer": "approve"
+      }
+    },
+    {
+      "n": 23,
+      "at": 5,
+      "type": "review_ended",
+      "step": "plan",
+      "attempt": 1,
+      "round": 1,
+      "outcome": "approved",
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 24,
+      "at": 5,
+      "type": "step_passed",
+      "step": "plan",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 25,
+      "at": 5,
+      "type": "step_dispatching",
+      "step": "tests_first",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 26,
+      "at": 5,
+      "type": "step_dispatched",
+      "step": "tests_first",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 27,
+      "at": 5,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "tests_first",
+      "attempt": 1,
+      "wrote": [
+        "tests-first.md"
+      ]
+    },
+    {
+      "n": 28,
+      "at": 6,
+      "type": "check_finished",
+      "step": "tests_first",
+      "attempt": 1,
+      "exit_code": 0,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 29,
+      "at": 6,
+      "type": "step_passed",
+      "step": "tests_first",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 30,
+      "at": 6,
+      "type": "step_dispatching",
+      "step": "implement",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 31,
+      "at": 6,
+      "type": "step_dispatched",
+      "step": "implement",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 32,
+      "at": 6,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "implement",
+      "attempt": 1,
+      "wrote": [
+        "implement.md"
+      ]
+    },
+    {
+      "n": 33,
+      "at": 7,
+      "type": "step_passed",
+      "step": "implement",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 34,
+      "at": 7,
+      "type": "step_dispatching",
+      "step": "verify",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 35,
+      "at": 7,
+      "type": "step_dispatched",
+      "step": "verify",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 36,
+      "at": 7,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "verify",
+      "attempt": 1,
+      "wrote": [
+        "verify.md"
+      ]
+    },
+    {
+      "n": 37,
+      "at": 8,
+      "type": "check_finished",
+      "step": "verify",
+      "attempt": 1,
+      "exit_code": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 38,
+      "at": 8,
+      "type": "step_failed",
+      "step": "verify",
+      "attempt": 1,
+      "cause": "check",
+      "exit_code": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 39,
+      "at": 8,
+      "type": "step_looped",
+      "from": "verify",
+      "to": "implement",
+      "count": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 40,
+      "at": 8,
+      "type": "step_dispatching",
+      "step": "implement",
+      "attempt": 2,
+      "pane": "%sim",
+      "cause": "loop",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 41,
+      "at": 8,
+      "type": "step_dispatched",
+      "step": "implement",
+      "attempt": 2,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "loop",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 42,
+      "at": 8,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "implement",
+      "attempt": 2,
+      "wrote": [
+        "implement.md"
+      ]
+    },
+    {
+      "n": 43,
+      "at": 9,
+      "type": "step_passed",
+      "step": "implement",
+      "attempt": 2,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 44,
+      "at": 9,
+      "type": "step_dispatching",
+      "step": "verify",
+      "attempt": 2,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 45,
+      "at": 9,
+      "type": "step_dispatched",
+      "step": "verify",
+      "attempt": 2,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 46,
+      "at": 9,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "verify",
+      "attempt": 2,
+      "wrote": [
+        "verify.md"
+      ]
+    },
+    {
+      "n": 47,
+      "at": 10,
+      "type": "check_finished",
+      "step": "verify",
+      "attempt": 2,
+      "exit_code": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 48,
+      "at": 10,
+      "type": "step_failed",
+      "step": "verify",
+      "attempt": 2,
+      "cause": "check",
+      "exit_code": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 49,
+      "at": 10,
+      "type": "step_looped",
+      "from": "verify",
+      "to": "implement",
+      "count": 2,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 50,
+      "at": 10,
+      "type": "step_dispatching",
+      "step": "implement",
+      "attempt": 3,
+      "pane": "%sim",
+      "cause": "loop",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 51,
+      "at": 10,
+      "type": "step_dispatched",
+      "step": "implement",
+      "attempt": 3,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "loop",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 52,
+      "at": 10,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "implement",
+      "attempt": 3,
+      "wrote": [
+        "implement.md"
+      ]
+    },
+    {
+      "n": 53,
+      "at": 11,
+      "type": "step_passed",
+      "step": "implement",
+      "attempt": 3,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 54,
+      "at": 11,
+      "type": "step_dispatching",
+      "step": "verify",
+      "attempt": 3,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 55,
+      "at": 11,
+      "type": "step_dispatched",
+      "step": "verify",
+      "attempt": 3,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 56,
+      "at": 11,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "verify",
+      "attempt": 3,
+      "wrote": [
+        "verify.md"
+      ]
+    },
+    {
+      "n": 57,
+      "at": 12,
+      "type": "check_finished",
+      "step": "verify",
+      "attempt": 3,
+      "exit_code": 0,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 58,
+      "at": 12,
+      "type": "step_passed",
+      "step": "verify",
+      "attempt": 3,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 59,
+      "at": 12,
+      "type": "step_dispatching",
+      "step": "acceptance_check",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 60,
+      "at": 12,
+      "type": "step_dispatched",
+      "step": "acceptance_check",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 61,
+      "at": 12,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "acceptance_check",
+      "attempt": 1,
+      "wrote": [
+        "acceptance-report.md"
+      ]
+    },
+    {
+      "n": 62,
+      "at": 13,
+      "type": "check_finished",
+      "step": "acceptance_check",
+      "attempt": 1,
+      "exit_code": 0,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 63,
+      "at": 13,
+      "type": "step_passed",
+      "step": "acceptance_check",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 64,
+      "at": 13,
+      "type": "step_dispatching",
+      "step": "docs_update",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 65,
+      "at": 13,
+      "type": "step_dispatched",
+      "step": "docs_update",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 66,
+      "at": 13,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "docs_update",
+      "attempt": 1,
+      "wrote": []
+    },
+    {
+      "n": 67,
+      "at": 14,
+      "type": "step_passed",
+      "step": "docs_update",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 68,
+      "at": 14,
+      "type": "step_dispatching",
+      "step": "code_review",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 69,
+      "at": 14,
+      "type": "step_dispatched",
+      "step": "code_review",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 70,
+      "at": 14,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "code_review",
+      "attempt": 1,
+      "wrote": [
+        "review-response.md"
+      ]
+    },
+    {
+      "n": 71,
+      "at": 15,
+      "type": "step_checks_passed",
+      "step": "code_review",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 72,
+      "at": 15,
+      "type": "review_started",
+      "step": "code_review",
+      "attempt": 1,
+      "round": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 73,
+      "at": 15,
+      "type": "review_delivered",
+      "step": "code_review",
+      "attempt": 1,
+      "round": 1,
+      "pane": "%simreview",
+      "window": null,
+      "reused": false
+    },
+    {
+      "n": 74,
+      "at": 15,
+      "type": "simulated_reviewers",
+      "step": "code_review",
+      "attempt": 1,
+      "round": 1,
+      "reviews": {
+        "correctness": "approve",
+        "tests": "approve",
+        "maintainability": "approve"
+      }
+    },
+    {
+      "n": 75,
+      "at": 16,
+      "type": "review_ended",
+      "step": "code_review",
+      "attempt": 1,
+      "round": 1,
+      "outcome": "approved",
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 76,
+      "at": 16,
+      "type": "step_passed",
+      "step": "code_review",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 77,
+      "at": 16,
+      "type": "step_dispatching",
+      "step": "open_pr",
+      "attempt": 1,
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
+    },
+    {
+      "n": 78,
+      "at": 16,
+      "type": "step_dispatched",
+      "step": "open_pr",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
+    },
+    {
+      "n": 79,
+      "at": 16,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "open_pr",
+      "attempt": 1,
+      "wrote": [
+        "pr.md"
+      ]
+    },
+    {
+      "n": 80,
+      "at": 17,
+      "type": "check_finished",
+      "step": "open_pr",
+      "attempt": 1,
+      "exit_code": 0,
+      "from_state": "running",
+      "to_state": "completed",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 81,
+      "at": 17,
+      "type": "step_passed",
+      "step": "open_pr",
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "completed",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    },
+    {
+      "n": 82,
+      "at": 17,
+      "type": "run_completed",
+      "from_state": "running",
+      "to_state": "completed",
+      "actor": "daemon",
+      "cause": "turn_ended"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+# The script the deliver check-retry golden plays: all three plan and code reviewers approve, verify fails its status
+# check twice and each failure loops back to implement; the third verify attempt passes and the run finishes.
+steps:
+  plan:
+    - reviews: {supportive: approve, skeptical: approve, implementer: approve}
+  verify:
+    - {check: fail, log: "2 failures in spec/models"}
+    - {check: fail, log: "1 failure in spec/models"}
+    - {}
+  code_review:
+    - reviews: {correctness: approve, tests: approve, maintainability: approve}

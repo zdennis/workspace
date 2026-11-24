@@ -30,7 +30,7 @@ RSpec.describe Workspace::WorkflowSimulator, "golden transcripts of the presets"
   end
 
   {"rpiv" => "rpiv", "rpiv-auto-approve" => "rpiv-auto-approve", "rpiv-auto-approve-v2" => "rpiv-auto-approve-v2", "pr-feedback" => "pr-feedback",
-   "investigate" => "investigate", "explore" => "explore", "bugfix" => "bugfix", "rpiv-pause" => "rpiv"}.each do |name, preset|
+   "investigate" => "investigate", "explore" => "explore", "bugfix" => "bugfix", "rpiv-pause" => "rpiv", "deliver" => "deliver"}.each do |name, preset|
     it "reproduces the #{name} transcript byte for byte" do
       text = transcript(name, preset)
       golden = File.join(fixtures, "#{name}.json")
