@@ -369,28 +369,36 @@ module Workspace
       [brought, overridden]
     end
 
-    # The reviewer's prompt file as an absolute path; for a confined host, the real path of a file inside its directory.
-    # nil, with {#failure} set, when the host's directory doesn't allow it.
+    # The reviewer's prompt file as an absolute path; for a confined host, the real path of a file inside the library's
+    # layer directory. nil, with {#failure} set, when that directory doesn't allow it.
     def anchor_reviewer_file(step_id, reference, path, name, written)
       file = File.expand_path(written, File.dirname(path))
       return file unless @confine_dir
       where = "step #{step_id}: import #{reference} (#{path}): reviewer #{name} prompt_file #{written}"
-      if written.start_with?("/", "~")
-        @failure << "#{where}: this workflow's imports must stay inside its own directory #{@confine_dir}, not absolute or ~ paths"
-        return nil
-      end
       unless File.directory?(@confine_dir)
         @failure << "#{where}: this workflow's directory #{@confine_dir} is missing, so it can't be checked"
         return nil
       end
+      root = library_root(path)
+      if written.start_with?("/", "~")
+        @failure << "#{where}: this workflow's imports must stay inside #{root}, not absolute or ~ paths"
+        return nil
+      end
       real = File.realpath(file)
-      unless inside?(real, File.realpath(@confine_dir))
-        @failure << "#{where}: the file is outside this workflow's directory #{@confine_dir} once links are followed"
+      unless inside?(real, File.realpath(root))
+        @failure << "#{where}: the file is outside #{root} once links are followed"
         return nil
       end
       real
     rescue SystemCallError
       file
+    end
+
+    # The directory a confined host's library reviewer must stay in: the host's own directory for a library inside it,
+    # else the layer directory a bare-name lookup found the library in (`<layer>/steps/NAME.yml`), such as the presets'.
+    def library_root(path)
+      return @confine_dir if inside?(File.realpath(path), File.realpath(@confine_dir))
+      File.dirname(File.dirname(path))
     end
 
     def clash?(step_id, reference, path, name, entry)
@@ -399,8 +407,10 @@ module Workspace
         @brought[name] = [path, canonical(entry)]
         return false
       end
-      return false if earlier == canonical(entry)
-      @failure << "step #{step_id}: import #{reference} (#{path}): reviewer #{name} is also brought in by #{earlier_path} with different content"
+      now = canonical(entry)
+      return false if earlier == now
+      differ = (earlier.is_a?(Hash) && now.is_a?(Hash)) ? " (#{(earlier.keys | now.keys).sort.reject { |key| earlier[key] == now[key] }.join(", ")} differ)" : ""
+      @failure << "step #{step_id}: import #{reference} (#{path}): reviewer #{name} is also brought in by #{earlier_path} with different content#{differ}"
       true
     end
 

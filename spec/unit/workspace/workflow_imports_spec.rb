@@ -579,7 +579,17 @@ RSpec.describe Workspace::WorkflowImports do
       second = write("global/two.yml", reviewed_library.sub("Doubt it.", "Doubt it harder."))
       importer = imports
       importer.expand({"steps" => {"a" => {"import" => "one.yml#verify"}, "b" => {"import" => "two.yml#verify"}}})
-      expect(importer.failure).to eq(["step b: import two.yml#verify (#{second}): reviewer skeptic is also brought in by #{first} with different content"])
+      expect(importer.failure).to eq(["step b: import two.yml#verify (#{second}): reviewer skeptic is also brought in by #{first} with different content (prompt differ)"])
+    end
+
+    it "names prompt_file when two files' reviewers point at their own copies of one relative path" do
+      first = write("global/one.yml", "reviewers:\n  fan:\n    prompt_file: fan.md\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n")
+      write("global/fan.md", "Doubt it.\n")
+      second = write("global/sub/two.yml", "reviewers:\n  fan:\n    prompt_file: fan.md\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n")
+      write("global/sub/fan.md", "Doubt it.\n")
+      importer = imports
+      importer.expand({"steps" => {"a" => {"import" => "one.yml#verify"}, "b" => {"import" => "sub/two.yml#verify"}}})
+      expect(importer.failure).to eq(["step b: import sub/two.yml#verify (#{second}): reviewer fan is also brought in by #{first} with different content (prompt_file differ)"])
     end
 
     it "accepts the same name with equal content from two files" do
@@ -611,7 +621,7 @@ RSpec.describe Workspace::WorkflowImports do
       it "refuses an absolute path" do
         path = write("builtin/prompts/fan.md", "Like it.")
         importer, = confined(path)
-        expect(importer.failure).to eq(["step v: import lib.yml#verify (#{File.join(layer_dir, "lib.yml")}): reviewer fan prompt_file #{path}: this workflow's imports must stay inside its own directory #{layer_dir}, not absolute or ~ paths"])
+        expect(importer.failure).to eq(["step v: import lib.yml#verify (#{File.join(layer_dir, "lib.yml")}): reviewer fan prompt_file #{path}: this workflow's imports must stay inside #{layer_dir}, not absolute or ~ paths"])
       end
 
       it "refuses a ~ path" do
@@ -631,7 +641,26 @@ RSpec.describe Workspace::WorkflowImports do
         FileUtils.mkdir_p(File.join(layer_dir, "prompts"))
         File.symlink(File.join(@dir, "outside/fan.md"), File.join(layer_dir, "prompts/fan.md"))
         importer, = confined("prompts/fan.md")
-        expect(importer.failure).to match([a_string_including("reviewer fan prompt_file prompts/fan.md: the file is outside this workflow's directory #{layer_dir} once links are followed")])
+        expect(importer.failure).to match([a_string_including("reviewer fan prompt_file prompts/fan.md: the file is outside #{layer_dir} once links are followed")])
+      end
+
+      it "holds a library a bare name found in a lower layer to that layer's directory, not the host's" do
+        lower = File.join(@dir, "presets")
+        write("presets/prompts/fan.md", "Like it.")
+        library_at("presets/steps/verify.yml", "reviewers:\n  fan:\n    prompt_file: ../prompts/fan.md\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n", layer: "builtin")
+        importer = imports(base_dir: layer_dir, confine_dir: FileUtils.mkdir_p(layer_dir).first)
+        raw = importer.expand({"steps" => {"v" => {"import" => "verify"}}})
+        expect(importer.failure).to eq([])
+        expect(raw["reviewers"]["fan"]).to eq("prompt_file" => File.realpath(File.join(lower, "prompts/fan.md")))
+      end
+
+      it "refuses a lower layer's library reviewer that leaves that layer's directory" do
+        lower = File.join(@dir, "presets")
+        write("outside/fan.md", "Like it.")
+        library_at("presets/steps/verify.yml", "reviewers:\n  fan:\n    prompt_file: ../../outside/fan.md\nsteps:\n  verify:\n    prompt: P\n    review: [fan]\n", layer: "builtin")
+        importer = imports(base_dir: layer_dir, confine_dir: FileUtils.mkdir_p(layer_dir).first)
+        importer.expand({"steps" => {"v" => {"import" => "verify"}}})
+        expect(importer.failure).to match([a_string_including("reviewer fan prompt_file ../../outside/fan.md: the file is outside #{lower} once links are followed")])
       end
 
       it "leaves an unconfined host as before" do

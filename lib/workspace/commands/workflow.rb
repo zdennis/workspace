@@ -242,7 +242,7 @@ module Workspace
             path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain,
             import_lookup: @catalog.import_lookup(project, file_layer: layer), confine_dir: layer && @catalog.confine_dir(layer, project))
         rescue Workspace::Error => e
-          raise unless e.code == "invalid_workflow" && e.details["problems"] && WorkflowImports.library_problems(text, dir: (path == "-") ? nil : File.dirname(File.expand_path(path))).empty?
+          raise unless e.code == "invalid_workflow" && e.details["problems"] && WorkflowImports.library_problems(text, dir: nil).empty?
           problems = e.details["problems"] + [LIBRARY_OUTSIDE_STEPS]
           raise Workspace::Error.new(e.message + "\n  - #{LIBRARY_OUTSIDE_STEPS}", code: e.code, details: e.details.merge("problems" => problems))
         end

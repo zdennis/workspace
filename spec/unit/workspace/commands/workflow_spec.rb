@@ -5773,6 +5773,15 @@ RSpec.describe Workspace::Commands::Workflow do
       }
     end
 
+    it "names the steps/ rule for a library-shaped file whose reviewer prompt_file is missing, as the rule is about its keys" do
+      path = File.join(dir, "research.yml")
+      File.write(path, "reviewers:\n  fan:\n    prompt_file: missing.md\nsteps:\n  research:\n    prompt: Research.\n    review: [fan]\n")
+
+      expect { command.validate(path: path) }.to raise_error(Workspace::Error) { |e|
+        expect(e.details["problems"]).to include(include("only inside a layer's steps/ directory"))
+      }
+    end
+
     it "does not name the steps/ rule for a workflow that fails" do
       path = File.join(dir, "flow.yml")
       File.write(path, "title: Flow\nsteps:\n  research:\n    prompt: Research {{inputs.task}}.\n")
